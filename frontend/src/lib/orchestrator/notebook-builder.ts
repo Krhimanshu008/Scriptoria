@@ -180,8 +180,13 @@ subprocess.Popen([
     "--rc-addr", "127.0.0.1:5572",
     "--rc-no-auth",
     "--drive-chunk-size", "128M",
+    "--buffer-size", "64M",
+    "--multi-thread-cutoff", "64M",
     "--multi-thread-streams", "8",
-    "--transfers", "8"
+    "--transfers", "8",
+    "--checkers", "16",
+    "--drive-pacer-min-sleep", "10ms",
+    "--drive-pacer-burst", "200"
 ], stdout=rclone_log, stderr=rclone_log)
 log_event("Rclone RC daemon listening on 127.0.0.1:5572", category="RCLONE", level="SUCCESS")
 

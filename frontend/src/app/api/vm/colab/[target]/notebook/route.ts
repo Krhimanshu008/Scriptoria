@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { getAuthUser, signVmRegistrationToken } from "@/lib/auth/session";
 import { generateVmSecret } from "@/lib/crypto/vault";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
-import { buildColabNotebookJson } from "@/lib/orchestrator/notebook-builder";
+import { buildColabNotebookJson, buildUnifiedNotebookPythonCode } from "@/lib/orchestrator/notebook-builder";
 import { resolveWebhookBaseUrl } from "@/lib/orchestrator/vm-helpers";
 
 export async function GET(
@@ -48,8 +48,9 @@ export async function GET(
       vmSecret,
     });
 
-    const nb = buildColabNotebookJson({
-      provider: "colab",
+    const format = req.nextUrl.searchParams.get("format");
+    const buildCfg = {
+      provider: "colab" as const,
       appWebhookUrl: resolveWebhookBaseUrl(req),
       registrationJwt,
       vmSecret,
@@ -57,7 +58,14 @@ export async function GET(
       gdriveBaseFolder: gdriveCred.baseFolder,
       gpuTargets: [vm.target],
       accountAlias: vm.accountAlias,
-    });
+    };
+
+    if (format === "python") {
+      const pythonCode = buildUnifiedNotebookPythonCode(buildCfg);
+      return NextResponse.json({ target, pythonCode });
+    }
+
+    const nb = buildColabNotebookJson(buildCfg);
 
     return new NextResponse(JSON.stringify(nb, null, 2), {
       status: 200,

@@ -1,114 +1,64 @@
-# 🎨 Scriptoria
+# Scriptoria
 
-> **High-Performance Multi-Cloud GPU Orchestrator, ComfyUI Studio & Automation Suite**  
-> Manage, schedule, and stream generative AI workloads seamlessly across **Kaggle Dual-GPU instances**, **Google Colab runtimes**, and a **Vercel Serverless Control Plane**.
-
----
-
-## 🌟 Highlights
-
-- **⚡ 6-GPU Multi-Cloud Cluster**:
-  - **Kaggle Account 1 (`gpu0`, `gpu1`)**: 2x Tesla T4 GPUs on ports `8188` & `8189` consuming only **1x quota meter**.
-  - **Kaggle Account 2 (`gpu2`, `gpu3`)**: 2x Tesla T4 GPUs on ports `8190` & `8191` unlocking an additional 30h/week quota.
-  - **Google Colab (`gcgpu`, `gcgpu1`)**: On-demand T4 runtimes with isolated multi-account ADC credential management.
-- **🚀 On-Demand Model Streaming (100–300 MB/s)**:
-  - Eliminates 20-minute boot times. Checkpoints (SDXL, Illustrious, Flux) stream into Linux `/tmp` in seconds via Google Drive Rclone RC.
-- **🛑 Zero Quota Leakage (`/vm-kill`)**:
-  - Remote in-band shutdown sidecars automatically terminate containers (`os._exit(0)` / `runtime.unassign()`) so no cloud credits are wasted.
-- **🌐 Real-Time Web Dashboard**:
-  - Live 5-step provisioning steppers, GPU VRAM gauges, prompt dispatch test pad, live WebSocket CLI logs, and model catalogs.
-- **☁️ Vercel Serverless Ready**:
-  - Deploys as a lightweight serverless control plane on Vercel with zero server overhead.
+> **Multi-Cloud GPU Orchestrator, ComfyUI Prompt Studio & Google Drive Model Streaming Platform**  
+> Built with **Next.js 16 (App Router)**, **Prisma (SQLite / Turso LibSQL)**, **AES-256-GCM Encrypted Credential Vault**, **Rclone RC**, and **Route-less Caddy + Cloudflared Tunnels**.
 
 ---
 
-## 📂 Repository Structure
+## Architecture Highlights
 
-```
+- **6-GPU Multi-Account Cluster**:
+  - **Kaggle Account 1 (`gpu0`, `gpu1`)**: Dual Tesla T4 (`CUDA_VISIBLE_DEVICES=0/1` on `:8188` & `:8189`) grouped by account with live weekly quota telemetry (`/api/vm/accounts`).
+  - **Kaggle Account 2 (`gpu2`, `gpu3`)**: Dual Tesla T4 (`:8188` & `:8189`) providing an isolated second weekly quota pool.
+  - **Google Colab (`gcgpu`, `gcgpu1`)**: On-demand T4 runtimes with browser Google account linking (`/api/auth/google/colab/{start,callback}`), 1-click setup cell copy (`?format=python`), and `.ipynb` export.
+- **Route-less Ingress & Zero-Quota Sidecar**:
+  - Containers run Caddy (`:8000`) authenticated via `X-VM-Secret` and `X-Target-Port`, exposed cleanly via ephemeral `cloudflared` quick tunnels reporting back to `/api/vm/heartbeat`.
+  - In-band `/vm-kill` triggers immediate container shutdown (`os._exit(0)` / runtime unassign) via Sidecar (`:9999`) to prevent idle quota burn.
+- **On-Demand Google Drive -> `/tmp` Streaming**:
+  - Rclone Remote Control (`rclone rcd` on `127.0.0.1:5572`) streams checkpoints/LoRAs on demand into `/tmp/models/*` and auto-uploads rendered outputs back to Google Drive.
+- **ComfyUI Prompt Studio & Presets**:
+  - One-click SDXL/Illustrious presets (including 2-pass Latent Hires Fix) runnable via Scriptoria or pushable directly into a GPU's live ComfyUI WebUI sidebar (`/api/workflow/push-preset`).
+
+---
+
+## Repository Structure
+
+```text
 Scriptoria/
-├── api/
-│   └── index.py             # Vercel Serverless Function entry point
-├── docs/
-│   ├── architecture.md      # Detailed cloud topology & design specifications
-│   └── multi_account_colab.md # Multi-account Colab ADC setup guide
-├── static/
-│   └── index.html           # Dark-mode Web Dashboard & live telemetry UI
-├── colab_bootstrap.py       # Colab runtime daemon & ComfyUI bootstrap
-├── comfy_client.py          # Asynchronous ComfyUI REST & WebSocket client
-├── comfy_ide_studio.py      # Terminal CLI suite for IDE workflows
-├── config.py                # Pydantic environment & endpoint configuration
-├── enroll_colab.py          # 1-Command CLI for enrolling new Google accounts
-├── log_broker.py            # Circular buffer & WebSocket real-time log broker
-├── notebook_generator.py    # Generates production Kaggle & Colab .ipynb runners
-├── server.py                # FastAPI backend & telemetry hub
-├── vm_manager.py            # Multi-cloud VM state machine & health poller
-├── .env.example             # Configuration template
-├── requirements.txt         # Python dependencies
-├── vercel.json              # Vercel deployment configuration
-└── start_dashboard.bat      # Windows 1-click dashboard launcher
+├── frontend/                  # Next.js 16 full-stack application (Vercel Root Directory)
+│   ├── prisma/                # Prisma schema & Turso SQL init script
+│   ├── scripts/               # DB seed, Turso init & credential migration scripts
+│   └── src/
+│       ├── app/               # App Router pages & REST API route handlers
+│       ├── components/        # Modular UI components (GpuCard, LiveConsole, layout shell)
+│       └── lib/               # Auth, AES-256-GCM Vault, GDrive, Prisma & VM orchestrators
+├── docs/                      # Architecture notes & historical references
+├── Migration.md               # Migration specification
+└── PROJECT_MEMORY.md          # Project design notes
 ```
 
 ---
 
-## 🚀 Quick Start
-
-### 1. Installation
-Clone the repository and install the dependencies:
-```bash
-git clone https://github.com/Krhimanshu008/Scriptoria.git
-cd Scriptoria
-pip install -r requirements.txt
-```
-
-### 2. Environment Configuration
-Copy the example environment file and configure your credentials:
-```bash
-cp .env.example .env
-```
-Fill in your Kaggle API keys, Cloudflare tunnel tokens, and Google OAuth credentials in `.env`.
-
-### 3. Launching the Web Dashboard
-```bash
-# Windows 1-Click
-start_dashboard.bat
-
-# Or terminal:
-python -m uvicorn server:app --host 127.0.0.1 --port 8000
-```
-Open **[http://127.0.0.1:8000](http://127.0.0.1:8000)** in your browser.
-
----
-
-## 💻 CLI & IDE Commands
-
-You can interact with your cloud cluster directly from the terminal using `comfy_ide_studio.py`:
+## Quick Start (Local Development)
 
 ```bash
-# Check status of all 6 cloud GPUs
-python comfy_ide_studio.py vm-status
-
-# Start or stop a specific GPU instance
-python comfy_ide_studio.py vm-toggle --target gpu2
-
-# In-band emergency stop (0 quota burn)
-python comfy_ide_studio.py vm-stop --target gpu2
-
-# Sync available model checkpoints and node catalog
-python comfy_ide_studio.py sync-catalog --target gpu2
-
-# Enroll an additional Google Colab account
-python enroll_colab.py acc2
+cd frontend
+cp .env.example .env.local
+npm install
+npm run db:push
+npm run dev
 ```
 
----
+Or build and start production mode locally:
 
-## 🔒 Security Best Practices
+```bash
+cd frontend
+npm run build
+npm run start
+```
 
-- All API keys, Google Drive tokens, and Cloudflare credentials are kept strictly in `.env`.
-- Generated notebook runners and temporary session tokens in `notebooks/` are git-ignored.
-- Containers communicate exclusively over authenticated Cloudflare Named Tunnels.
+### Vercel Production Setup
 
----
-
-## 📄 License
-MIT License. Built with ❤️ for generative AI automation.
+1. Set Vercel **Root Directory** to `frontend`.
+2. Configure environment variables (`TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `ENCRYPTION_KEY`, `JWT_SECRET`, `NEXT_PUBLIC_APP_URL`, `ALLOW_PUBLIC_REGISTRATION`, `GDRIVE_BASE_FOLDER`).
+3. Deploy from `main` (Vercel runs `npm install` with `postinstall: prisma generate` and `npm run build`).

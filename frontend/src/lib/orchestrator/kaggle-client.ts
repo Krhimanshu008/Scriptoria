@@ -16,6 +16,14 @@ export interface KernelStatusResult {
   failureMessage?: string;
 }
 
+export interface KaggleQuotaInfo {
+  usedSeconds: number;
+  reservedSeconds: number;
+  totalAllowedSeconds: number;
+  remainingSeconds: number;
+  resetAt: string | null;
+}
+
 /**
  * Pure HTTP REST Kaggle orchestrator using SaveKernel endpoint (serverless-safe).
  */
@@ -139,6 +147,43 @@ export class KaggleOrchestrator {
       throw new Error(`Kaggle status check failed (${res.status})`);
     }
     return res.json();
+  }
+
+  /**
+   * Fetches remaining weekly GPU quota statistics from Kaggle REST API.
+   */
+  public static async getQuota(credentials: KaggleCredentials): Promise<KaggleQuotaInfo> {
+    const res = await fetch(`${this.KAGGLE_BASE_URL}/kernels/quota`, {
+      method: "GET",
+      headers: this.getHeaders(credentials),
+      cache: "no-store",
+    });
+
+    if (!res.ok) {
+      throw new Error(`Kaggle quota check failed (${res.status})`);
+    }
+
+    const data = (await res.json()) as {
+      quotaRefreshTime?: string;
+      gpuQuota?: {
+        timeUsed?: { seconds?: number };
+        timeReserved?: { seconds?: number };
+        totalTimeAllowed?: { seconds?: number };
+      };
+    };
+
+    const usedSeconds = Number(data.gpuQuota?.timeUsed?.seconds || 0);
+    const reservedSeconds = Number(data.gpuQuota?.timeReserved?.seconds || 0);
+    const totalAllowedSeconds = Number(data.gpuQuota?.totalTimeAllowed?.seconds || 108000);
+    const remainingSeconds = Math.max(0, totalAllowedSeconds - usedSeconds - reservedSeconds);
+
+    return {
+      usedSeconds,
+      reservedSeconds,
+      totalAllowedSeconds,
+      remainingSeconds,
+      resetAt: data.quotaRefreshTime ?? null,
+    };
   }
 }
 

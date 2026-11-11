@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getAuthUser } from "@/lib/auth/session";
 import { ComfyClient } from "@/lib/orchestrator/comfy-client";
+import { getPresetById } from "@/lib/orchestrator/workflow-presets";
 import { appendSystemLog } from "@/lib/logs/logger";
 
 export async function POST(req: NextRequest) {
@@ -13,19 +14,28 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json();
     const target = String(body.target || "gpu0");
-    const prompt = String(body.prompt || "").trim();
+    const preset = getPresetById(body.presetId ? String(body.presetId) : null);
+    const customWorkflowJson =
+      body.customWorkflowJson && typeof body.customWorkflowJson === "object"
+        ? (body.customWorkflowJson as Record<string, unknown>)
+        : null;
+
+    const prompt = String(body.prompt || preset?.defaultPrompt || "").trim();
     const negativePrompt = body.negativePrompt
       ? String(body.negativePrompt)
-      : "bad quality, blurry, deformed";
+      : preset?.defaultNegativePrompt || "bad quality, blurry, deformed";
     const requestedCheckpoint = body.checkpoint ? String(body.checkpoint).trim() : "";
-    const width = Number(body.width) || 1024;
-    const height = Number(body.height) || 1024;
-    const steps = Number(body.steps) || 25;
-    const cfg = Number(body.cfg) || 6.0;
+    const width = Number(body.width) || preset?.width || 1024;
+    const height = Number(body.height) || preset?.height || 1024;
+    const steps = Number(body.steps) || preset?.steps || 25;
+    const cfg = Number(body.cfg) || preset?.cfg || 6.0;
+    const samplerName = String(body.samplerName || preset?.samplerName || "euler_ancestral");
+    const scheduler = String(body.scheduler || preset?.scheduler || "normal");
+    const hiresPass = Boolean(body.hiresPass ?? preset?.hiresPass);
     const seed = body.seed ? Number(body.seed) : Math.floor(100_000 + Math.random() * 999_000_000);
 
-    if (!prompt) {
-      return NextResponse.json({ error: "Prompt text is required." }, { status: 400 });
+    if (!prompt && !customWorkflowJson) {
+      return NextResponse.json({ error: "Prompt text or custom workflow JSON is required." }, { status: 400 });
     }
 
     const vm = await prisma.vmInstance.findUnique({
@@ -36,17 +46,25 @@ export async function POST(req: NextRequest) {
     }
 
     const client = new ComfyClient(vm);
-    let checkpoint = requestedCheckpoint;
-    if (!checkpoint) {
-      const catalog = await client.getCatalog(target);
-      const ckpts = catalog.models.checkpoints;
-      if (!ckpts.length) {
-        return NextResponse.json(
-          { error: "No checkpoints are loaded on this GPU yet. Stream a checkpoint in the Models tab first." },
-          { status: 400 }
-        );
+    let checkpoint = requestedCheckpoint || "custom-workflow";
+
+    if (!customWorkflowJson) {
+      if (!requestedCheckpoint) {
+        const catalog = await client.getCatalog(target);
+        const ckpts = catalog.models.checkpoints;
+        if (!ckpts.length) {
+          return NextResponse.json(
+            { error: "No checkpoints are loaded on this GPU yet. Stream a checkpoint in the Models tab first." },
+            { status: 400 }
+          );
+        }
+        checkpoint =
+          preset && ckpts.includes(preset.recommendedCheckpoint)
+            ? preset.recommendedCheckpoint
+            : ckpts[0];
+      } else {
+        checkpoint = requestedCheckpoint;
       }
-      checkpoint = ckpts[0];
     }
 
     const job = await prisma.job.create({
@@ -54,7 +72,7 @@ export async function POST(req: NextRequest) {
         userId: user.userId,
         vmInstanceId: vm.id,
         target,
-        prompt,
+        prompt: prompt || `[Custom Workflow] ${preset?.name || "API JSON"}`,
         negativePrompt,
         checkpoint,
         width,
@@ -66,17 +84,22 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    const graph = ComfyClient.buildStandardPromptGraph({
-      prompt,
-      negativePrompt,
-      checkpoint,
-      width,
-      height,
-      steps,
-      cfg,
-      seed,
-      target,
-    });
+    const graph =
+      customWorkflowJson ??
+      ComfyClient.buildStandardPromptGraph({
+        prompt,
+        negativePrompt,
+        checkpoint,
+        width,
+        height,
+        steps,
+        cfg,
+        samplerName,
+        scheduler,
+        hiresPass,
+        seed,
+        target,
+      });
 
     try {
       const { prompt_id } = await client.queuePrompt(graph, job.id);
@@ -90,7 +113,7 @@ export async function POST(req: NextRequest) {
         vmInstanceId: vm.id,
         category: "COMFYUI",
         level: "INFO",
-        message: `Queued job ${job.id} on ${target} using ${checkpoint} (prompt_id: ${prompt_id}).`,
+        message: `Queued ${preset ? `[${preset.name}]` : "job"} ${job.id} on ${target} using ${checkpoint} (${samplerName}/${scheduler}).`,
       });
 
       return NextResponse.json({
@@ -120,4 +143,3 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
-
