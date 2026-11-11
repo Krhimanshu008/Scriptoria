@@ -10,12 +10,14 @@ if str(ROOT_DIR) not in sys.path:
 
 try:
     from server import app
+    handler = app
 except Exception:
     import traceback
     from fastapi import FastAPI
     from fastapi.responses import HTMLResponse
 
     app = FastAPI(title="Scriptoria Error Diagnostic")
+    handler = app
     err_tb = traceback.format_exc()
 
     @app.get("/{path:path}", response_class=HTMLResponse)
