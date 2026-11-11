@@ -43,7 +43,7 @@ async def lifespan(app: FastAPI):
     if not IS_SERVERLESS:
         logger.info("🛑 Shutting down server...")
 
-app = FastAPI(title="Cloud GPU VM Orchestrator", lifespan=lifespan)
+app = FastAPI(title="Cloud GPU VM Orchestrator", lifespan=None if IS_SERVERLESS else lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -53,18 +53,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def catch_exceptions_middleware(request, call_next):
+    try:
+        return await call_next(request)
+    except Exception as e:
+        import traceback
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e), "traceback": traceback.format_exc()}
+        )
+
 # Static assets & outputs
 STATIC_DIR = settings.WORKSPACE_DIR / "static"
-OUTPUTS_DIR = settings.OUTPUTS_DIR
+OUTPUTS_DIR = Path("/tmp/outputs") if IS_SERVERLESS else settings.OUTPUTS_DIR
 
 try:
-    if not OUTPUTS_DIR.exists():
-        OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-except Exception:
-    OUTPUTS_DIR = Path("/tmp") / "outputs"
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
 
-if STATIC_DIR.exists():
+if not IS_SERVERLESS and STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 @app.get("/", response_class=HTMLResponse)
