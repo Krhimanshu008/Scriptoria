@@ -272,3 +272,4 @@ git push origin main
    - Implement an intelligent round-robin prompt dispatcher in `comfy_client.py` that automatically routes image generation workflows to whichever of the 6 GPUs has the shortest queue and highest free VRAM.
 3. **Automated Quota Rotation**:
    - Add a scheduled cron task that switches active workloads from Account 1 to Account 2 when weekly Kaggle quota reaches 28 hours.
+
