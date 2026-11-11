@@ -21,7 +21,13 @@ logger = logging.getLogger("comfy_client")
 
 class ComfyClient:
     def __init__(self):
-        self.http_client = httpx.AsyncClient(timeout=60.0, follow_redirects=True)
+        self._http_client: Optional[httpx.AsyncClient] = None
+
+    @property
+    def http_client(self) -> httpx.AsyncClient:
+        if self._http_client is None or self._http_client.is_closed:
+            self._http_client = httpx.AsyncClient(timeout=60.0, follow_redirects=True)
+        return self._http_client
 
     async def get_catalog(self, target: str) -> dict[str, Any]:
         cfg = settings.ENDPOINTS.get(target)
