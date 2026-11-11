@@ -45,6 +45,17 @@ def test_import():
             results[mod] = traceback.format_exc()
     return results
 
+@app.get("/api/env-check")
+def check_env():
+    from config import settings
+    return {
+        "KAGGLE_ACC1_CONFIGURED": bool(settings.KAGGLE_ACC1_KEY),
+        "KAGGLE_ACC2_CONFIGURED": bool(settings.KAGGLE_ACC2_KEY),
+        "CF_TOKEN_KAGGLE_CONFIGURED": bool(settings.CF_TOKEN_KAGGLE),
+        "CF_TOKEN_GCGPU_CONFIGURED": bool(settings.CF_TOKEN_GCGPU),
+        "GDRIVE_CONFIGURED": bool(settings.GDRIVE_REFRESH_TOKEN),
+    }
+
 @app.get("/api/debug-ping")
 async def debug_ping():
     import httpx, time
