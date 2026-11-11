@@ -107,6 +107,10 @@ async def get_status():
         await vm_manager.check_all_health()
     return await vm_manager.get_all_status()
 
+@app.get("/api/logs")
+async def get_logs(limit: int = 100):
+    return log_broker.get_recent(limit=limit)
+
 @app.post("/api/vm/{target}/toggle")
 async def toggle_vm_endpoint(target: str):
     if target not in settings.ENDPOINTS:

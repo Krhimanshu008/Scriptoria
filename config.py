@@ -43,6 +43,15 @@ class Settings:
     KAGGLE_KEY: str = os.getenv("KAGGLE_KEY", "")
     KAGGLE_API_TOKEN: str = os.getenv("KAGGLE_API_TOKEN", "")
 
+    # Cloudflare Named Tunnel Tokens
+    CF_TOKEN_KAGGLE: str = os.getenv("CF_TOKEN_KAGGLE", "")
+    CF_TOKEN_GCGPU: str = os.getenv("CF_TOKEN_GCGPU", "")
+
+    # Google Drive Rclone Credentials
+    GDRIVE_CLIENT_ID: str = os.getenv("GDRIVE_CLIENT_ID", "")
+    GDRIVE_CLIENT_SECRET: str = os.getenv("GDRIVE_CLIENT_SECRET", "")
+    GDRIVE_REFRESH_TOKEN: str = os.getenv("GDRIVE_REFRESH_TOKEN", "")
+
     # Endpoints
     ENDPOINTS = {
         "gpu0": {
@@ -113,7 +122,13 @@ class Settings:
 settings = Settings()
 
 # Check for serverless read-only filesystem
-if os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME") or os.environ.get("VERCEL_ENV"):
+IS_SERVERLESS = bool(
+    os.environ.get("VERCEL") or
+    os.environ.get("AWS_LAMBDA_FUNCTION_NAME") or
+    os.environ.get("VERCEL_ENV")
+)
+
+if IS_SERVERLESS:
     settings.NOTEBOOKS_DIR = Path("/tmp/notebooks")
     settings.OUTPUTS_DIR = Path("/tmp/outputs")
     settings.TEMPLATES_DIR = Path("/tmp/templates")

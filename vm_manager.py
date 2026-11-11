@@ -17,7 +17,7 @@ from typing import Any, Dict, Optional
 
 import httpx
 
-from config import settings
+from config import settings, IS_SERVERLESS
 from log_broker import log_broker
 from notebook_generator import build_kaggle_kernel_bundle
 
@@ -39,6 +39,7 @@ class VMState:
         self.online_since: Optional[float] = None
         self.last_check = datetime.now(timezone.utc).isoformat()
         self.last_error = ""
+        self.colab_link = "https://colab.research.google.com/github/Krhimanshu008/Scriptoria/blob/main/notebooks/gcgpu/gcgpu-comfyui-runner.ipynb" if self.provider == "colab" else ""
 
     def to_dict(self) -> dict[str, Any]:
         uptime_sec = 0
@@ -60,6 +61,7 @@ class VMState:
             "uptime_seconds": uptime_sec,
             "last_check": self.last_check,
             "last_error": self.last_error,
+            "colab_link": self.colab_link,
         }
 
 class VMManager:
@@ -121,14 +123,17 @@ class VMManager:
                 self.states[t].last_error = ""
 
             log_broker.log(f"🚀 Initializing Kaggle Dual-GPU session ({account_alias}: 2x T4 GPUs, 1x Quota)...", category="KAGGLE")
-            asyncio.create_task(self._run_kaggle_push("kaggle_dual", account_alias=account_alias))
+            await self._run_kaggle_push("kaggle_dual", account_alias=account_alias)
         elif state.provider == "colab":
             state.status = "STARTING"
             state.step = 1
             state.last_error = ""
             account_alias = "acc2" if target == "gcgpu1" else "acc1"
             log_broker.log(f"🚀 Initializing boot sequence for {state.name} ({target}, account: {account_alias})...", category=state.provider)
-            asyncio.create_task(self._run_colab_start(target, account_alias=account_alias))
+            if IS_SERVERLESS:
+                await self._run_colab_start(target, account_alias=account_alias)
+            else:
+                asyncio.create_task(self._run_colab_start(target, account_alias=account_alias))
 
         await self._broadcast_states()
         return state.to_dict()
@@ -142,61 +147,51 @@ class VMManager:
                 self.states[t].step = 2
             log_broker.log(f"📦 Kernel bundle generated at: {bundle_dir}", category="KAGGLE")
 
-            # Setup Kaggle environment variables for the selected account
-            env = os.environ.copy()
-            acc_dir = Path.home() / ".config" / "kaggle-pool" / account_alias
-            acc_dir.mkdir(parents=True, exist_ok=True)
-
             if account_alias == "acc2":
                 username = settings.KAGGLE_ACC2_USERNAME
                 key = settings.KAGGLE_ACC2_KEY
-                env.pop("KAGGLE_API_TOKEN", None)
             else:
                 username = settings.KAGGLE_ACC1_USERNAME
                 key = settings.KAGGLE_ACC1_KEY
-                env["KAGGLE_API_TOKEN"] = key
 
-            (acc_dir / "kaggle.json").write_text(json.dumps({"username": username, "key": key}), encoding="utf-8")
-            env["KAGGLE_CONFIG_DIR"] = str(acc_dir)
-            env["KAGGLE_USERNAME"] = username
-            env["KAGGLE_KEY"] = key
+            if not key:
+                err_msg = (
+                    f"Missing Kaggle API Key for account '{account_alias}' ({username}). "
+                    f"Please add KAGGLE_{account_alias.upper()}_KEY to your .env or Vercel Environment Variables."
+                )
+                log_broker.log(f"❌ {err_msg}", category="KAGGLE", level="ERROR")
+                raise ValueError(err_msg)
 
-            cmd = [sys.executable, "-m", "kaggle", "kernels", "push", "-p", str(bundle_dir)]
-            log_broker.log(f"[CLI] Executing: {' '.join(cmd)} (Account: {username})", category="CLI")
+            log_broker.log(f"🚀 Pushing kernel to Kaggle API for {username}...", category="KAGGLE")
 
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env
-            )
+            def do_push():
+                from kaggle.api.kaggle_api_extended import KaggleApi
+                base_cfg = Path("/tmp") if IS_SERVERLESS else Path.home() / ".config"
+                acc_dir = base_cfg / "kaggle-pool" / account_alias
+                acc_dir.mkdir(parents=True, exist_ok=True)
+                (acc_dir / "kaggle.json").write_text(json.dumps({"username": username, "key": key}), encoding="utf-8")
 
-            async def stream_output(stream, is_err=False):
-                while True:
-                    line = await stream.readline()
-                    if not line:
-                        break
-                    text = line.decode(errors="replace").strip()
-                    if text:
-                        log_broker.log(text, category="KAGGLE", level="ERROR" if is_err else "INFO")
+                os.environ["KAGGLE_CONFIG_DIR"] = str(acc_dir)
+                os.environ.pop("KAGGLE_API_TOKEN", None)
+                os.environ["KAGGLE_USERNAME"] = username
+                os.environ["KAGGLE_KEY"] = key
 
-            await asyncio.gather(
-                stream_output(process.stdout, False),
-                stream_output(process.stderr, True)
-            )
+                api = KaggleApi()
+                api.authenticate()
+                return api.kernels_push(str(bundle_dir))
 
-            rc = await process.wait()
-            if rc == 0:
-                for t in kaggle_targets:
-                    self.states[t].step = 3
-                log_broker.log(f"✅ Kaggle kernel successfully pushed for {username}! Dual T4 VM provisioning...", category="KAGGLE")
+            push_res = await asyncio.to_thread(do_push)
+            err = getattr(push_res, "error", None)
+            if err:
+                raise RuntimeError(f"Kaggle push rejected: {err}")
+
+            for t in kaggle_targets:
+                self.states[t].status = "STARTING"
+                self.states[t].step = 3
+            log_broker.log(f"✅ Kaggle kernel successfully pushed for {username}! Dual T4 VM is now booting on Kaggle...", category="KAGGLE", level="SUCCESS")
+
+            if not IS_SERVERLESS:
                 asyncio.create_task(self._stream_kaggle_kernel_logs(f"{username}/kaggle-dual-gpu-runner"))
-            else:
-                for t in kaggle_targets:
-                    self.states[t].status = "STOPPED"
-                    self.states[t].step = 0
-                    self.states[t].last_error = f"Kaggle push failed with exit code {rc}"
-                log_broker.log(f"❌ Kaggle push exited with code {rc}", category="KAGGLE", level="ERROR")
 
         except Exception as e:
             for t in kaggle_targets:
@@ -270,7 +265,7 @@ class VMManager:
                 pass
 
         try:
-            if is_authenticated and colab_exe.exists():
+            if is_authenticated and colab_exe.exists() and not IS_SERVERLESS:
                 state.step = 2
                 log_broker.log(f"⚡ Google Colab target selected ({target}, port: {port}).", category="COLAB")
                 log_broker.log(f"🚀 Provisioning Google Colab T4 GPU via CLI (Session: {session_name}, Account: {account_alias})...", category="COLAB")
@@ -329,16 +324,20 @@ class VMManager:
                 from notebook_generator import build_colab_bundle
                 nb_path = build_colab_bundle()
                 state.step = 1
+                state.status = "STARTING"
                 log_broker.log(f"⚡ Google Colab target selected ({target}).", category="COLAB")
-                log_broker.log(f"ℹ️ Account '{account_alias}' is not enrolled yet. Run this once in PowerShell to enroll:", category="COLAB")
-                log_broker.log(f'   python enroll_colab.py {account_alias}', category="CLI")
-                log_broker.log(f"👉 Alternatively, 1-click web runner is ready: {nb_path}", category="COLAB")
-                log_broker.log("⏳ Waiting for Colab VM to bind Cloudflare tunnel...", category="COLAB")
+                if IS_SERVERLESS:
+                    log_broker.log(f"🌐 1-Click Cloud Runner: Open {state.colab_link} in Colab and click 'Run All'!", category="COLAB", level="SUCCESS")
+                else:
+                    log_broker.log(f"ℹ️ Account '{account_alias}' is not enrolled in local CLI. Run in PowerShell: python enroll_colab.py {account_alias}", category="COLAB")
+                    log_broker.log(f"👉 1-Click Colab link: {state.colab_link}", category="COLAB")
+                log_broker.log("⏳ Listening for Cloudflare tunnel handshake once Colab notebook runs...", category="COLAB")
         except Exception as e:
             state.last_error = str(e)
+            state.status = "STOPPED"
+            state.step = 0
             log_broker.log(f"❌ Colab start error: {e}", category="COLAB", level="ERROR")
         finally:
-            await self._broadcast_states()
             await self._broadcast_states()
 
     async def stop_vm(self, target: str) -> dict[str, Any]:
@@ -368,24 +367,21 @@ class VMManager:
                 except Exception:
                     pass
 
-            # Step 2: Check Kaggle status via CLI
+            # Step 2: Check Kaggle status via Python API
             if state.slug:
                 try:
-                    env = os.environ.copy()
-                    if account_alias == "acc2":
-                        env["KAGGLE_USERNAME"] = settings.KAGGLE_ACC2_USERNAME
-                        env["KAGGLE_KEY"] = settings.KAGGLE_ACC2_KEY
-                    else:
-                        env["KAGGLE_USERNAME"] = settings.KAGGLE_ACC1_USERNAME
-                        env["KAGGLE_KEY"] = settings.KAGGLE_ACC1_KEY
-
-                    cmd = [sys.executable, "-m", "kaggle", "kernels", "status", state.slug]
-                    log_broker.log(f"[CLI] Checking status: {' '.join(cmd)}", category="CLI")
-                    res = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=8)
-                    if res.stdout:
-                        log_broker.log(f"Kaggle Status: {res.stdout.strip()}", category="KAGGLE")
+                    def check_kstatus():
+                        from kaggle.api.kaggle_api_extended import KaggleApi
+                        base_cfg = Path("/tmp") if IS_SERVERLESS else Path.home() / ".config"
+                        acc_dir = base_cfg / "kaggle-pool" / account_alias
+                        os.environ["KAGGLE_CONFIG_DIR"] = str(acc_dir)
+                        api = KaggleApi()
+                        api.authenticate()
+                        return api.kernels_status(state.slug)
+                    kstatus = await asyncio.to_thread(check_kstatus)
+                    log_broker.log(f"Kaggle Status: {kstatus}", category="KAGGLE")
                 except Exception as e:
-                    logger.debug("Kaggle CLI status check: %s", e)
+                    logger.debug("Kaggle status check: %s", e)
 
             # Mark targets as stopped
             for t in kaggle_targets:

@@ -639,17 +639,43 @@
       5: "5/5: Online & Ready (/tmp on-demand cache)"
     };
 
+    let lastSeenLogTime = "";
+
+    async function pollRecentLogs() {
+      try {
+        const resp = await fetch('/api/logs?limit=50');
+        if (resp.ok) {
+          const logs = await resp.json();
+          for (const l of logs) {
+            if (!lastSeenLogTime || l.timestamp > lastSeenLogTime) {
+              appendLog(l);
+              lastSeenLogTime = l.timestamp;
+            }
+          }
+        }
+      } catch (e) {}
+    }
+
     function connectWebSocket() {
       const loc = window.location;
       const proto = loc.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${proto}//${loc.host}/ws`;
 
-      ws = new WebSocket(wsUrl);
+      try {
+        ws = new WebSocket(wsUrl);
+      } catch (e) {
+        enablePollingFallback();
+        return;
+      }
 
       ws.onopen = () => {
         document.getElementById('ws-indicator').className = 'w-2.5 h-2.5 rounded-full bg-emerald-500';
         document.getElementById('ws-text').innerText = 'Connected';
         document.getElementById('ws-text').className = 'text-emerald-400 font-medium';
+        if (window.pollingFallbackInterval) {
+          clearInterval(window.pollingFallbackInterval);
+          window.pollingFallbackInterval = null;
+        }
       };
 
       ws.onmessage = (event) => {
@@ -657,6 +683,7 @@
           const msg = JSON.parse(event.data);
           if (msg.type === 'log') {
             appendLog(msg);
+            if (msg.timestamp) lastSeenLogTime = msg.timestamp;
           } else if (msg.type === 'status_update') {
             updateDashboardStates(msg.data);
           }
@@ -665,12 +692,24 @@
         }
       };
 
-      ws.onclose = () => {
-        document.getElementById('ws-indicator').className = 'w-2.5 h-2.5 rounded-full bg-red-500';
-        document.getElementById('ws-text').innerText = 'Reconnecting...';
-        document.getElementById('ws-text').className = 'text-red-400 font-medium';
-        setTimeout(connectWebSocket, 3000);
+      ws.onerror = () => {
+        enablePollingFallback();
       };
+
+      ws.onclose = () => {
+        enablePollingFallback();
+        setTimeout(connectWebSocket, 10000);
+      };
+    }
+
+    function enablePollingFallback() {
+      document.getElementById('ws-indicator').className = 'w-2.5 h-2.5 rounded-full bg-emerald-500';
+      document.getElementById('ws-text').innerText = 'Live (HTTP Stream)';
+      document.getElementById('ws-text').className = 'text-emerald-400 font-medium';
+      if (!window.pollingFallbackInterval) {
+        pollRecentLogs();
+        window.pollingFallbackInterval = setInterval(pollRecentLogs, 3000);
+      }
     }
 
     function appendLog(log) {
@@ -786,12 +825,43 @@
     }
 
     async function toggleVM(target) {
+      const btn = document.getElementById(`btn-toggle-${target}`);
+      const badge = document.getElementById(`badge-${target}`);
+      const isStarting = btn && btn.innerText.includes('START');
+
+      if (btn) {
+        btn.disabled = true;
+        btn.className = 'w-full py-2.5 px-4 rounded-xl font-bold text-xs flex items-center justify-center gap-2 bg-slate-800 text-slate-400 cursor-not-allowed';
+        btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> <span>${isStarting ? 'STARTING VM...' : 'STOPPING VM...'}</span>`;
+      }
+      if (badge) {
+        badge.className = 'px-2.5 py-1 text-[11px] font-semibold rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/30 pulsing-glow';
+        badge.innerText = isStarting ? 'STARTING...' : 'STOPPING...';
+      }
+
       try {
         const resp = await fetch(`/api/vm/${target}/toggle`, { method: 'POST' });
         const data = await resp.json();
         console.log("Toggle response:", data);
+        if (resp.ok && data.target) {
+          updateDashboardStates({ [data.target]: data });
+          if (data.last_error) {
+            alert(`VM Notice: ${data.last_error}`);
+          }
+          if (data.colab_link && isStarting && target.startsWith('gcgpu')) {
+            if (confirm("Colab runner notebook is ready! Open Google Colab now in a new tab to start the VM with 1-click?")) {
+              window.open(data.colab_link, '_blank');
+            }
+          }
+        } else {
+          alert("Failed to toggle VM: " + (data.detail || data.error || "Unknown server response"));
+          fetch('/api/status').then(r => r.json()).then(updateDashboardStates).catch(() => {});
+        }
       } catch (e) {
-        alert("Failed to toggle VM: " + e);
+        alert("Network error toggling VM: " + e);
+        fetch('/api/status').then(r => r.json()).then(updateDashboardStates).catch(() => {});
+      } finally {
+        if (btn) btn.disabled = false;
       }
     }
 

@@ -57,6 +57,9 @@ class LogBroker:
             if websocket in self.connections:
                 self.connections.remove(websocket)
 
+    def get_recent(self, limit: int = 100) -> list[dict[str, Any]]:
+        return [entry.to_dict() for entry in list(self.history)[-limit:]]
+
     def log(self, message: str, category: str = "INFO", level: str = "INFO", details: Optional[dict] = None) -> None:
         """Synchronously queue a log entry and schedule async broadcast."""
         entry = LogEntry(message, category, level, details)
