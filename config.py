@@ -112,8 +112,17 @@ class Settings:
 
 settings = Settings()
 
-# Ensure directories exist
-settings.NOTEBOOKS_DIR.mkdir(parents=True, exist_ok=True)
-settings.OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-settings.TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
+# Check for serverless read-only filesystem
+if os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME") or os.environ.get("VERCEL_ENV"):
+    settings.NOTEBOOKS_DIR = Path("/tmp/notebooks")
+    settings.OUTPUTS_DIR = Path("/tmp/outputs")
+    settings.TEMPLATES_DIR = Path("/tmp/templates")
+
+# Safely ensure directories exist
+try:
+    settings.NOTEBOOKS_DIR.mkdir(parents=True, exist_ok=True)
+    settings.OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+    settings.TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
 
