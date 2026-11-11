@@ -1,9 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
-  cacheComponents: true,
-  partialPrefetching: true,
+  serverExternalPackages: ["@libsql/client", "@prisma/client", "@prisma/adapter-libsql"],
   turbopack: {
     rules: {
       "*.css": {

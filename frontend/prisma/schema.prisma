@@ -1,0 +1,118 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  passwordHash String
+  role         String   @default("USER") // ADMIN, USER
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  credentials Credential[]
+  vmInstances VmInstance[]
+  jobs        Job[]
+  systemLogs  SystemLog[]
+}
+
+model Credential {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider     String   // "kaggle", "colab", "cloudflare", "gdrive"
+  accountAlias String   // e.g., "acc1", "acc2", "default"
+  username     String?  // Kaggle username, Google email, etc.
+  encryptedKey String   // AES-256-GCM ciphertext
+  iv           String   // Hex initialization vector
+  authTag      String   // Hex authentication tag
+  authType     String   // "bearer" (KGAT_), "basic", "oauth_json"
+  metadataJson String?  // Non-secret settings e.g. {"baseFolder": "Scriptoria"}
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([userId, provider, accountAlias])
+  @@index([userId])
+}
+
+model VmInstance {
+  id            String    @id @default(cuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  target        String    // "gpu0", "gpu1", "gpu2", "gpu3", "gcgpu", "gcgpu1"
+  displayName   String    @default("")
+  provider      String    // "kaggle", "colab"
+  accountAlias  String    // Bound to Credential.accountAlias ("acc1", "acc2")
+  sessionGroup  String    // Shared VM container group e.g. "kaggle-acc1", "kaggle-acc2", "colab-acc1"
+  internalPort  Int       @default(8188) // 8188 or 8189 inside VM
+  publicUrl     String    @default("")   // Live trycloudflare.com URL (Caddy :8000) or named tunnel
+  vmSecret      String?   // Per-session X-VM-Secret verified by Caddy
+  useRouteLess  Boolean   @default(true) // True: Caddy + X-Target-Port; False: legacy direct tunnel
+  status        String    @default("OFFLINE") // OFFLINE, STARTING, ONLINE, BUSY, STOPPING, ERROR
+  stepProgress  Int       @default(0) // 0: Idle, 1: Triggered, 2: Env/Rclone, 3: ComfyUI, 4: Tunnel, 5: Ready
+  lastHeartbeat DateTime?
+  onlineSince   DateTime?
+  latencyMs     Int?
+  vramTotalGb   Float?
+  vramUsedGb    Float?
+  gpuName       String?
+  lastError     String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  jobs       Job[]
+  systemLogs SystemLog[]
+
+  @@unique([userId, target])
+  @@index([userId, status])
+  @@index([userId, sessionGroup])
+}
+
+model Job {
+  id              String      @id @default(cuid())
+  userId          String
+  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vmInstanceId    String?
+  vmInstance      VmInstance? @relation(fields: [vmInstanceId], references: [id], onDelete: SetNull)
+  target          String
+  promptId        String?     // ComfyUI prompt_id for async polling
+  prompt          String
+  negativePrompt  String?
+  checkpoint      String
+  width           Int         @default(1024)
+  height          Int         @default(1024)
+  steps           Int         @default(25)
+  cfg             Float       @default(6.0)
+  seed            String?
+  status          String      @default("PENDING") // PENDING, PROCESSING, SYNCING, COMPLETED, FAILED
+  outputFiles     String?     // JSON array: [{ filename, gdriveFileId, gdrivePath, previewUrl }]
+  errorMessage    String?
+  executionTimeMs Int?
+  createdAt       DateTime    @default(now())
+  completedAt     DateTime?
+
+  @@index([userId, status])
+  @@index([userId, createdAt])
+  @@index([vmInstanceId])
+}
+
+model SystemLog {
+  id           String      @id @default(cuid())
+  userId       String
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vmInstanceId String?
+  vmInstance   VmInstance? @relation(fields: [vmInstanceId], references: [id], onDelete: Cascade)
+  category     String      @default("SYSTEM") // SYSTEM, ACTION, KAGGLE, COLAB, RCLONE, COMFYUI, HEALTH, NETWORK, ERROR
+  level        String      @default("INFO") // INFO, WARN, ERROR, SUCCESS, DEBUG
+  message      String
+  metaJson     String?
+  createdAt    DateTime    @default(now())
+
+  @@index([userId, createdAt])
+}

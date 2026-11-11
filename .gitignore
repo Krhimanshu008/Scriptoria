@@ -10,9 +10,9 @@ kaggle Legacy API 2nd Account.json
 service_account*.json
 
 # Auto-generated runtime notebooks (contain minted session tokens)
-notebooks/
-kaggle_logs/
-outputs/
+/notebooks/
+/kaggle_logs/
+/outputs/
 
 # Python bytecode & cache
 __pycache__/
@@ -20,14 +20,14 @@ __pycache__/
 *$py.class
 *.so
 .Python
-build/
+/build/
 develop-eggs/
-dist/
+/dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
 sdist/
 var/
