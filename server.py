@@ -68,11 +68,15 @@ if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 @app.get("/", response_class=HTMLResponse)
+@app.get("/api", response_class=HTMLResponse)
+@app.get("/api/index", response_class=HTMLResponse)
 async def get_index():
     candidates = [
         STATIC_DIR / "index.html",
         Path(__file__).resolve().parent / "static" / "index.html",
+        Path(__file__).resolve().parent / "api" / "static" / "index.html",
         Path("/var/task/static/index.html"),
+        Path("/var/task/api/static/index.html"),
         Path(__file__).resolve().parent.parent / "static" / "index.html",
     ]
     for c in candidates:
