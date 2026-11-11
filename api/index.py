@@ -45,6 +45,29 @@ def test_import():
             results[mod] = traceback.format_exc()
     return results
 
+@app.get("/api/debug-ping")
+async def debug_ping():
+    import httpx, time
+    from config import settings
+    res = {}
+    async with httpx.AsyncClient(timeout=6.0, follow_redirects=True) as client:
+        for t, cfg in settings.ENDPOINTS.items():
+            url = f"{cfg['url']}/system_stats"
+            t0 = time.time()
+            try:
+                r = await client.get(url)
+                res[t] = {
+                    "status_code": r.status_code,
+                    "elapsed_ms": int((time.time() - t0) * 1000),
+                    "body_snippet": r.text[:120]
+                }
+            except Exception as e:
+                res[t] = {
+                    "error": str(e),
+                    "elapsed_ms": int((time.time() - t0) * 1000)
+                }
+    return res
+
 @app.get("/api/status")
 async def get_status():
     try:
