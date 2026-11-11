@@ -164,26 +164,45 @@ class VMManager:
 
             log_broker.log(f"🚀 Pushing kernel to Kaggle API for {username}...", category="KAGGLE")
 
-            def do_push():
-                from kaggle.api.kaggle_api_extended import KaggleApi
-                base_cfg = Path("/tmp") if IS_SERVERLESS else Path.home() / ".config"
-                acc_dir = base_cfg / "kaggle-pool" / account_alias
-                acc_dir.mkdir(parents=True, exist_ok=True)
-                (acc_dir / "kaggle.json").write_text(json.dumps({"username": username, "key": key}), encoding="utf-8")
+            slug = f"{username}/kaggle-dual-gpu-runner"
+            title = "kaggle-dual-gpu-runner"
+            nb_file = bundle_dir / "kaggle-dual-gpu-runner.ipynb"
+            nb_text = nb_file.read_text(encoding="utf-8")
 
-                os.environ["KAGGLE_CONFIG_DIR"] = str(acc_dir)
-                os.environ.pop("KAGGLE_API_TOKEN", None)
-                os.environ["KAGGLE_USERNAME"] = username
-                os.environ["KAGGLE_KEY"] = key
+            payload = {
+                "slug": slug,
+                "newTitle": title,
+                "text": nb_text,
+                "language": "python",
+                "kernelType": "notebook",
+                "isPrivate": True,
+                "enableGpu": True,
+                "enableTpu": False,
+                "enableInternet": True,
+                "datasetDataSources": [],
+                "competitionDataSources": [],
+                "kernelDataSources": [],
+                "modelDataSources": [],
+                "categoryIds": []
+            }
 
-                api = KaggleApi()
-                api.authenticate()
-                return api.kernels_push(str(bundle_dir))
+            headers = {"Content-Type": "application/json"}
+            auth = None
+            if key.startswith("KGAT_"):
+                headers["Authorization"] = f"Bearer {key}"
+            else:
+                auth = (username, key)
 
-            push_res = await asyncio.to_thread(do_push)
-            err = getattr(push_res, "error", None)
-            if err:
-                raise RuntimeError(f"Kaggle push rejected: {err}")
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    "https://api.kaggle.com/v1/kernels.KernelsApiService/SaveKernel",
+                    headers=headers,
+                    auth=auth,
+                    json=payload
+                )
+                if resp.status_code != 200:
+                    raise RuntimeError(f"Kaggle API returned HTTP {resp.status_code}: {resp.text}")
+                push_res = resp.json()
 
             for t in kaggle_targets:
                 self.states[t].status = "STARTING"
@@ -207,7 +226,10 @@ class VMManager:
         log_broker.log(f"📡 Attaching live log stream for Kaggle kernel: {slug}...", category="KAGGLE")
 
         def run_stream():
-            from kaggle import api
+            try:
+                from kaggle import api
+            except ImportError:
+                return
             import re
             try:
                 for item in api.kernels_logs_stream(slug):
@@ -367,19 +389,24 @@ class VMManager:
                 except Exception:
                     pass
 
-            # Step 2: Check Kaggle status via Python API
+            # Step 2: Check Kaggle status via direct HTTP REST
             if state.slug:
                 try:
-                    def check_kstatus():
-                        from kaggle.api.kaggle_api_extended import KaggleApi
-                        base_cfg = Path("/tmp") if IS_SERVERLESS else Path.home() / ".config"
-                        acc_dir = base_cfg / "kaggle-pool" / account_alias
-                        os.environ["KAGGLE_CONFIG_DIR"] = str(acc_dir)
-                        api = KaggleApi()
-                        api.authenticate()
-                        return api.kernels_status(state.slug)
-                    kstatus = await asyncio.to_thread(check_kstatus)
-                    log_broker.log(f"Kaggle Status: {kstatus}", category="KAGGLE")
+                    base_slug = state.slug.split("/")[-1]
+                    s_headers = {}
+                    s_auth = None
+                    if key.startswith("KGAT_"):
+                        s_headers["Authorization"] = f"Bearer {key}"
+                    else:
+                        s_auth = (username, key)
+                    async with httpx.AsyncClient(timeout=8.0) as client:
+                        s_resp = await client.get(
+                            f"https://api.kaggle.com/v1/kernels/status?userName={username}&kernelSlug={base_slug}",
+                            headers=s_headers,
+                            auth=s_auth
+                        )
+                        if s_resp.status_code == 200:
+                            log_broker.log(f"Kaggle Status: {s_resp.text}", category="KAGGLE")
                 except Exception as e:
                     logger.debug("Kaggle status check: %s", e)
 
