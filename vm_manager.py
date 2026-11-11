@@ -68,12 +68,23 @@ class VMManager:
             target: VMState(target, cfg)
             for target, cfg in settings.ENDPOINTS.items()
         }
-        self.http_client = httpx.AsyncClient(timeout=10.0, follow_redirects=True)
+        self._http_client: Optional[httpx.AsyncClient] = None
         self._bg_task: Optional[asyncio.Task] = None
+
+    @property
+    def http_client(self) -> httpx.AsyncClient:
+        if self._http_client is None or self._http_client.is_closed:
+            self._http_client = httpx.AsyncClient(timeout=10.0, follow_redirects=True)
+        return self._http_client
 
     def start_background_monitoring(self):
         if self._bg_task is None or self._bg_task.done():
             self._bg_task = asyncio.create_task(self._monitor_loop())
+
+    async def check_all_health(self):
+        """Concurrently checks health of all configured GPU endpoints."""
+        tasks = [self._check_vm_health(target) for target in self.states]
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def get_all_status(self) -> dict[str, Any]:
         return {target: state.to_dict() for target, state in self.states.items()}

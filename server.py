@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 import logging
+import os
 from pathlib import Path
 import random
 from typing import Any, Optional
@@ -26,15 +27,21 @@ from notebook_generator import build_kaggle_kernel_bundle, build_colab_bundle
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("vm_server")
 
+IS_SERVERLESS = bool(
+    os.environ.get("VERCEL") or
+    os.environ.get("AWS_LAMBDA_FUNCTION_NAME") or
+    os.environ.get("VERCEL_ENV")
+)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Start background health monitoring loop
-    logger.info("🚀 Starting Cloud VM Orchestrator Server...")
-    log_broker.log("System initialized. Starting background health monitoring...", category="SYSTEM")
-    vm_manager.start_background_monitoring()
+    if not IS_SERVERLESS:
+        logger.info("🚀 Starting Cloud VM Orchestrator Server...")
+        log_broker.log("System initialized. Starting background health monitoring...", category="SYSTEM")
+        vm_manager.start_background_monitoring()
     yield
-    # Shutdown
-    logger.info("🛑 Shutting down server...")
+    if not IS_SERVERLESS:
+        logger.info("🛑 Shutting down server...")
 
 app = FastAPI(title="Cloud GPU VM Orchestrator", lifespan=lifespan)
 
@@ -50,17 +57,28 @@ app.add_middleware(
 STATIC_DIR = settings.WORKSPACE_DIR / "static"
 OUTPUTS_DIR = settings.OUTPUTS_DIR
 
-if not OUTPUTS_DIR.exists():
+try:
+    if not OUTPUTS_DIR.exists():
+        OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    OUTPUTS_DIR = Path("/tmp") / "outputs"
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+if STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 @app.get("/", response_class=HTMLResponse)
 async def get_index():
-    index_file = STATIC_DIR / "index.html"
-    if index_file.exists():
-        return FileResponse(index_file)
-    return HTMLResponse("<h1>Cloud VM Orchestrator</h1><p>static/index.html not found</p>")
+    candidates = [
+        STATIC_DIR / "index.html",
+        Path(__file__).resolve().parent / "static" / "index.html",
+        Path("/var/task/static/index.html"),
+        Path(__file__).resolve().parent.parent / "static" / "index.html",
+    ]
+    for c in candidates:
+        if c.exists():
+            return HTMLResponse(content=c.read_text(encoding="utf-8"))
+    return HTMLResponse("<h1>Scriptoria Cloud VM Orchestrator</h1><p>static/index.html not found</p>")
 
 @app.get("/outputs/{filename}")
 async def get_output_file(filename: str):
@@ -71,6 +89,8 @@ async def get_output_file(filename: str):
 
 @app.get("/api/status")
 async def get_status():
+    if IS_SERVERLESS:
+        await vm_manager.check_all_health()
     return await vm_manager.get_all_status()
 
 @app.post("/api/vm/{target}/toggle")

@@ -922,8 +922,15 @@
     // Initialize
     window.addEventListener('DOMContentLoaded', () => {
       connectWebSocket();
-      fetch('/api/status').then(r => r.json()).then(updateDashboardStates);
+      fetch('/api/status').then(r => r.json()).then(updateDashboardStates).catch(() => {});
       updateCheckpointList();
+
+      // Universal polling fallback (every 5 seconds, keeps dashboard live even on serverless without WebSockets)
+      setInterval(() => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          fetch('/api/status').then(r => r.json()).then(updateDashboardStates).catch(() => {});
+        }
+      }, 5000);
     });
   </script>
 </body>
