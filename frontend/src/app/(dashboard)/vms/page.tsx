@@ -141,6 +141,20 @@ function VmClusterContent() {
       targets: ["gpu2", "gpu3"],
       quota: null,
     },
+    {
+      accountAlias: "acc3",
+      username: "Account 3",
+      configured: false,
+      targets: ["gpu4", "gpu5"],
+      quota: null,
+    },
+    {
+      accountAlias: "acc4",
+      username: "Account 4",
+      configured: false,
+      targets: ["gpu6", "gpu7"],
+      quota: null,
+    },
   ];
   const colabAccounts: ColabAccountSummary[] = accountsData?.colabAccounts ?? [
     {

@@ -42,6 +42,7 @@ export async function GET(req: NextRequest) {
     const kaggle1 = findCred("kaggle", "acc1");
     const kaggle2 = findCred("kaggle", "acc2");
     const kaggle3 = findCred("kaggle", "acc3");
+    const kaggle4 = findCred("kaggle", "acc4");
     const colab1 = findCred("colab", "acc1");
     const colab2 = findCred("colab", "acc2");
     const hf = findCred("huggingface");
@@ -103,6 +104,16 @@ export async function GET(req: NextRequest) {
         configured: Boolean(kaggle3),
         usedFor: "Adds +30h/week Dual-T4 capacity on gpu4 + gpu5.",
         hint: kaggle3?.username ? `@${kaggle3.username}` : "Optional third Kaggle account",
+      },
+      {
+        id: "kaggle-acc4",
+        title: "Kaggle Account (acc4 · Quaternary Dual T4)",
+        tier: "OPTIONAL",
+        provider: "kaggle",
+        accountAlias: "acc4",
+        configured: Boolean(kaggle4),
+        usedFor: "Adds +30h/week Dual-T4 capacity on gpu6 + gpu7.",
+        hint: kaggle4?.username ? `@${kaggle4.username}` : "Optional fourth Kaggle account",
       },
       {
         id: "colab-acc1",
