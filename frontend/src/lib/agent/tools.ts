@@ -15,7 +15,12 @@ export const AGENT_TOOL_DEFINITIONS: LlmToolDefinition[] = [
       "Inspect all GPUs (gpu0..gpu3, gcgpu, gcgpu1), online status, worker profiles, free VRAM, cached /tmp checkpoints, and recent batch jobs.",
     parameters: {
       type: "object",
-      properties: {},
+      properties: {
+        scope: {
+          type: "string",
+          description: "Scope of GPUs to inspect: 'all' or 'online'",
+        },
+      },
     },
   },
   {
@@ -83,10 +88,20 @@ export const AGENT_TOOL_DEFINITIONS: LlmToolDefinition[] = [
     parameters: {
       type: "object",
       properties: {
-        target: { type: "string", description: "Target ONLINE GPU" },
-        spec: { type: "object", description: "WorkflowBuildSpec JSON" },
+        target: { type: "string", description: "Target ONLINE GPU (e.g. gpu0, gcgpu)" },
+        pipeline: {
+          type: "string",
+          description:
+            "sdxl_txt2img | sdxl_detailer_upscale | flux_gguf | qwen_edit | audio_kokoro | audio_f5 | audio_mmaudio | audio_stable | video_ltx | video_latentsync",
+        },
+        baseModel: { type: "string", description: "Checkpoint / UNet / Audio model filename" },
+        prompt: { type: "string", description: "Positive prompt or dialogue text" },
+        width: { type: "number", description: "Width in px (e.g. 1024)" },
+        height: { type: "number", description: "Height in px (e.g. 1024)" },
+        steps: { type: "number", description: "Sampling steps" },
+        cfg: { type: "number", description: "CFG scale" },
       },
-      required: ["target", "spec"],
+      required: ["target", "pipeline"],
     },
   },
   {
@@ -257,7 +272,18 @@ export async function executeAgentTool(
 
   if (name === "run_compiled_workflow") {
     const target = String(args.target || "gpu0");
-    const spec = (args.spec || { pipeline: "sdxl_txt2img" }) as WorkflowBuildSpec;
+    const spec: WorkflowBuildSpec =
+      args.spec && typeof args.spec === "object"
+        ? (args.spec as WorkflowBuildSpec)
+        : {
+            pipeline: (String(args.pipeline || "sdxl_txt2img") as WorkflowBuildSpec["pipeline"]),
+            baseModel: args.baseModel ? String(args.baseModel) : undefined,
+            prompt: args.prompt ? String(args.prompt) : undefined,
+            width: typeof args.width === "number" ? args.width : undefined,
+            height: typeof args.height === "number" ? args.height : undefined,
+            steps: typeof args.steps === "number" ? args.steps : undefined,
+            cfg: typeof args.cfg === "number" ? args.cfg : undefined,
+          };
     const vm = await prisma.vmInstance.findUnique({
       where: { userId_target: { userId, target } },
     });

@@ -23,73 +23,205 @@ export interface LlmChatMessage {
 }
 
 export interface ResolvedLlmConfig {
-  provider: "gemini" | "openai" | "openrouter" | "ollama";
+  provider: "gemini" | "groq" | "openai" | "openrouter" | "ollama";
   model: string;
   apiKey: string;
   baseUrl: string;
+  source: "vault" | "env";
 }
 
-export async function resolveUserLlmConfig(
+export const FREE_RECOMMENDED_MODELS: Record<ResolvedLlmConfig["provider"], string> = {
+  gemini: "gemini-3.5-flash-lite",
+  groq: "openai/gpt-oss-120b",
+  openrouter: "openrouter/free",
+  openai: "gpt-4.1-mini",
+  ollama: "qwen2.5:14b",
+};
+
+export function defaultBaseUrlForProvider(provider: ResolvedLlmConfig["provider"]): string {
+  switch (provider) {
+    case "gemini":
+      return "https://generativelanguage.googleapis.com/v1beta";
+    case "groq":
+      return "https://api.groq.com/openai/v1";
+    case "openrouter":
+      return "https://openrouter.ai/api/v1";
+    case "ollama":
+      return "http://127.0.0.1:11434/v1";
+    default:
+      return "https://api.openai.com/v1";
+  }
+}
+
+function normalizeProvider(raw: string): ResolvedLlmConfig["provider"] {
+  const p = raw.trim().toLowerCase();
+  if (p === "groq" || p === "openai" || p === "openrouter" || p === "ollama") return p;
+  return "gemini";
+}
+
+function normalizeModelForProvider(
+  provider: ResolvedLlmConfig["provider"],
+  rawModel?: string | null
+): string {
+  const trimmed = (rawModel || "").trim();
+  if (!trimmed) return FREE_RECOMMENDED_MODELS[provider];
+
+  // Auto-upgrade known sunsetted free-tier models
+  if (provider === "gemini" && (trimmed === "gemini-2.5-flash" || trimmed === "gemini-2.0-flash")) {
+    return "gemini-3.5-flash-lite";
+  }
+  if (provider === "groq" && trimmed === "llama-3.3-70b-versatile") {
+    return "openai/gpt-oss-120b";
+  }
+  return trimmed;
+}
+
+function sanitizeBaseUrl(provider: ResolvedLlmConfig["provider"], candidate?: string | null): string {
+  const trimmed = (candidate || "").trim();
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    return trimmed.replace(/\/$/, "");
+  }
+  return defaultBaseUrlForProvider(provider);
+}
+
+function looksLikeBrowserAutofill(secret: string): boolean {
+  const s = secret.trim();
+  if (!s || s.includes("@")) return true;
+  // Common accidental placeholder password string
+  if (s.toLowerCase() === "changeme123!") return true;
+  return false;
+}
+
+/**
+ * Returns an ordered list of valid LLM configurations (Vault keys prioritized by user preference,
+ * followed by `.env` free-tier keys as automatic failover).
+ */
+export async function resolveCandidateLlmConfigs(
   userId: string,
   preferredAlias?: string
-): Promise<ResolvedLlmConfig | null> {
+): Promise<ResolvedLlmConfig[]> {
   const settings = await getOrCreateWorkspaceSettings(userId);
   const creds = await prisma.credential.findMany({
     where: { userId, provider: "llm" },
     orderBy: { updatedAt: "desc" },
   });
 
-  if (creds.length === 0) return null;
+  const preferredProv = (preferredAlias || settings.preferredLlmProvider || "gemini").toLowerCase();
+  const candidates: ResolvedLlmConfig[] = [];
 
-  const targetAlias = (preferredAlias || settings.preferredLlmProvider || "").toLowerCase();
-  const chosen =
-    creds.find((c) => c.accountAlias.toLowerCase() === targetAlias) || creds[0];
+  const pushUnique = (cfg: ResolvedLlmConfig) => {
+    if (looksLikeBrowserAutofill(cfg.apiKey)) return;
+    if (
+      candidates.some(
+        (c) => c.provider === cfg.provider && c.apiKey === cfg.apiKey && c.model === cfg.model
+      )
+    ) {
+      return;
+    }
+    candidates.push(cfg);
+  };
 
-  const apiKey = decryptSecret({
-    ciphertext: chosen.encryptedKey,
-    iv: chosen.iv,
-    authTag: chosen.authTag,
+  // Sort Vault entries so any key matching user's preferred provider/alias goes first
+  const sortedCreds = [...creds].sort((a, b) => {
+    const getProv = (row: typeof a) => {
+      try {
+        const m = row.metadataJson ? (JSON.parse(row.metadataJson) as { llmProvider?: string }) : {};
+        return (m.llmProvider || row.accountAlias).toLowerCase();
+      } catch {
+        return row.accountAlias.toLowerCase();
+      }
+    };
+    const am =
+      a.accountAlias.toLowerCase() === preferredProv || getProv(a) === preferredProv ? 0 : 1;
+    const bm =
+      b.accountAlias.toLowerCase() === preferredProv || getProv(b) === preferredProv ? 0 : 1;
+    return am - bm;
   });
 
-  let meta: { llmProvider?: string; model?: string; baseUrl?: string } = {};
-  if (chosen.metadataJson) {
+  for (const c of sortedCreds) {
     try {
-      meta = JSON.parse(chosen.metadataJson);
+      const apiKey = decryptSecret({
+        ciphertext: c.encryptedKey,
+        iv: c.iv,
+        authTag: c.authTag,
+      });
+      let meta: { llmProvider?: string; model?: string; baseUrl?: string } = {};
+      if (c.metadataJson) {
+        try {
+          meta = JSON.parse(c.metadataJson);
+        } catch {
+          meta = {};
+        }
+      }
+      const provider = normalizeProvider(meta.llmProvider || c.accountAlias || "gemini");
+      const rawModel =
+        c.accountAlias.toLowerCase() === preferredProv
+          ? meta.model || c.username || settings.preferredLlmModel
+          : meta.model || c.username;
+
+      pushUnique({
+        provider,
+        model: normalizeModelForProvider(provider, rawModel),
+        apiKey,
+        baseUrl: sanitizeBaseUrl(provider, meta.baseUrl),
+        source: "vault",
+      });
     } catch {
-      meta = {};
+      // Skip malformed/unreadable row
     }
   }
 
-  const rawProv = (meta.llmProvider || chosen.accountAlias || "gemini").toLowerCase();
-  const provider: ResolvedLlmConfig["provider"] =
-    rawProv === "openai" || rawProv === "openrouter" || rawProv === "ollama"
-      ? rawProv
-      : "gemini";
+  // Env-backed free-tier fallbacks (helps both fresh local setups & rate-limit resilience)
+  const envEntries: Array<{ provider: ResolvedLlmConfig["provider"]; key?: string; model?: string }> = [
+    {
+      provider: "gemini",
+      key: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
+      model: process.env.GEMINI_MODEL || "gemini-3.5-flash-lite",
+    },
+    {
+      provider: "gemini",
+      key: process.env.GOOGLE_API_KEY_SECONDARY,
+      model: "gemini-3.5-flash-lite",
+    },
+    {
+      provider: "groq",
+      key: process.env.GROQ_API_KEY,
+      model: process.env.GROQ_MODEL || "openai/gpt-oss-120b",
+    },
+    {
+      provider: "openrouter",
+      key: process.env.OPENROUTER_API_KEY,
+      model: process.env.OPENROUTER_MODEL || "openrouter/free",
+    },
+  ];
 
-  const defaultModel =
-    provider === "gemini"
-      ? settings.preferredLlmModel || "gemini-2.5-flash"
-      : provider === "openai"
-      ? "gpt-4.1-mini"
-      : provider === "openrouter"
-      ? "google/gemini-2.5-flash"
-      : "qwen2.5:14b";
+  // Put env entry matching preferredProv ahead of other env fallbacks
+  envEntries.sort((a, b) => {
+    const am = a.provider === preferredProv ? 0 : 1;
+    const bm = b.provider === preferredProv ? 0 : 1;
+    return am - bm;
+  });
 
-  const defaultBase =
-    provider === "gemini"
-      ? "https://generativelanguage.googleapis.com/v1beta"
-      : provider === "openrouter"
-      ? "https://openrouter.ai/api/v1"
-      : provider === "ollama"
-      ? "http://127.0.0.1:11434/v1"
-      : "https://api.openai.com/v1";
+  for (const entry of envEntries) {
+    if (!entry.key) continue;
+    pushUnique({
+      provider: entry.provider,
+      model: normalizeModelForProvider(entry.provider, entry.model),
+      apiKey: entry.key.trim(),
+      baseUrl: defaultBaseUrlForProvider(entry.provider),
+      source: "env",
+    });
+  }
 
-  return {
-    provider,
-    model: (meta.model || chosen.username || defaultModel).trim(),
-    apiKey,
-    baseUrl: (meta.baseUrl || defaultBase).replace(/\/$/, ""),
-  };
+  return candidates;
+}
+
+export async function resolveUserLlmConfig(
+  userId: string,
+  preferredAlias?: string
+): Promise<ResolvedLlmConfig | null> {
+  const list = await resolveCandidateLlmConfigs(userId, preferredAlias);
+  return list[0] ?? null;
 }
 
 export interface LlmTurnResult {
@@ -101,7 +233,7 @@ export interface LlmTurnResult {
 
 /**
  * Unified multi-provider LLM chat completion supporting function/tool calling across
- * Google Gemini, OpenAI, OpenRouter, and Ollama OpenAI-compatible endpoints.
+ * Google Gemini, Groq, OpenAI, OpenRouter, and Ollama OpenAI-compatible endpoints.
  */
 export async function callLlmWithTools(params: {
   config: ResolvedLlmConfig;
@@ -124,6 +256,7 @@ export async function callLlmWithTools(params: {
               parts.push({ functionCall: { name: tc.name, args: tc.args } });
             }
           }
+          if (parts.length === 0) parts.push({ text: "Proceeding." });
           return { role: "model", parts };
         }
         if (m.role === "tool") {
@@ -178,13 +311,13 @@ export async function callLlmWithTools(params: {
           "x-goog-api-key": config.apiKey,
         },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(45000),
+        signal: AbortSignal.timeout(25000),
       }
     );
 
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
-      throw new Error(`Gemini error (${res.status}): ${errText.slice(0, 220)}`);
+      throw new Error(`Gemini (${config.model}) error ${res.status}: ${errText.slice(0, 220)}`);
     }
 
     const data = (await res.json()) as {
@@ -220,7 +353,7 @@ export async function callLlmWithTools(params: {
     };
   }
 
-  // OpenAI / OpenRouter / Ollama compatible chat/completions
+  // Groq / OpenAI / OpenRouter / Ollama compatible chat/completions
   const oaiMessages: Array<Record<string, unknown>> = [
     { role: "system", content: systemPrompt },
     ...messages
@@ -268,23 +401,30 @@ export async function callLlmWithTools(params: {
   if (config.apiKey && config.apiKey !== "ollama") {
     headers["Authorization"] = `Bearer ${config.apiKey}`;
   }
+  if (config.provider === "openrouter") {
+    headers["HTTP-Referer"] = process.env.NEXT_PUBLIC_APP_URL || "https://scriptoria.krhimanshu.in";
+    headers["X-Title"] = "Scriptoria Studio";
+  }
 
   const res = await fetch(`${config.baseUrl}/chat/completions`, {
     method: "POST",
     headers,
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(45000),
+    signal: AbortSignal.timeout(25000),
   });
 
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
-    throw new Error(`${config.provider.toUpperCase()} error (${res.status}): ${errText.slice(0, 220)}`);
+    throw new Error(
+      `${config.provider.toUpperCase()} (${config.model}) error ${res.status}: ${errText.slice(0, 220)}`
+    );
   }
 
   const data = (await res.json()) as {
     choices?: Array<{
       message?: {
         content?: string | null;
+        reasoning_content?: string | null;
         tool_calls?: Array<{
           id: string;
           function?: { name: string; arguments?: string };
@@ -310,8 +450,9 @@ export async function callLlmWithTools(params: {
     };
   });
 
+  const resolvedText = (msg?.content || msg?.reasoning_content || "").trim();
   return {
-    text: (msg?.content || "").trim(),
+    text: resolvedText,
     toolCalls,
     provider: config.provider,
     model: config.model,
@@ -319,8 +460,45 @@ export async function callLlmWithTools(params: {
 }
 
 /**
- * Helper to ask the configured LLM for structured JSON output (used by Drive classification
- * Preview & Review and Flexible External Ingestion Adapter).
+ * Calls the preferred LLM provider and automatically fails over across any other configured
+ * free/paid providers (Gemini -> Groq -> OpenRouter) if rate limits (429), 503, or bad configs occur.
+ */
+export async function callLlmWithFailover(params: {
+  userId: string;
+  systemPrompt: string;
+  messages: LlmChatMessage[];
+  tools?: LlmToolDefinition[];
+  temperature?: number;
+  preferredAlias?: string;
+}): Promise<LlmTurnResult> {
+  const candidates = await resolveCandidateLlmConfigs(params.userId, params.preferredAlias);
+  if (candidates.length === 0) {
+    throw new Error(
+      "No valid LLM API key found in Vault or environment. Add a Gemini, Groq, or OpenRouter free key in Settings."
+    );
+  }
+
+  const errors: string[] = [];
+  for (const config of candidates) {
+    try {
+      return await callLlmWithTools({
+        config,
+        systemPrompt: params.systemPrompt,
+        messages: params.messages,
+        tools: params.tools,
+        temperature: params.temperature,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      errors.push(`${config.provider}(${config.model}): ${msg}`);
+    }
+  }
+
+  throw new Error(`All configured AI providers failed -> ${errors.join(" | ")}`);
+}
+
+/**
+ * Helper to ask the configured LLM for structured JSON output with automatic free-tier failover.
  */
 export async function callLlmJson<T>(params: {
   userId: string;
@@ -328,11 +506,12 @@ export async function callLlmJson<T>(params: {
   userPrompt: string;
   preferredAlias?: string;
 }): Promise<{ data: T; provider: string; model: string } | null> {
-  const config = await resolveUserLlmConfig(params.userId, params.preferredAlias);
-  if (!config) return null;
+  const candidates = await resolveCandidateLlmConfigs(params.userId, params.preferredAlias);
+  if (candidates.length === 0) return null;
 
-  const res = await callLlmWithTools({
-    config,
+  const res = await callLlmWithFailover({
+    userId: params.userId,
+    preferredAlias: params.preferredAlias,
     systemPrompt: `${params.systemPrompt}\n\nCRITICAL: Respond with valid raw JSON only. No markdown fences.`,
     messages: [{ role: "user", content: params.userPrompt }],
     temperature: 0.15,
@@ -346,4 +525,3 @@ export async function callLlmJson<T>(params: {
   const parsed = JSON.parse(cleaned) as T;
   return { data: parsed, provider: res.provider, model: res.model };
 }
-

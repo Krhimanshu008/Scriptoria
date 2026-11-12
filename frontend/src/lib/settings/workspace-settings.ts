@@ -38,7 +38,7 @@ export async function getOrCreateWorkspaceSettings(
       defaultWorkerProfile: "BASE_COMFY",
       autoVaeFixSdxl: true,
       preferredLlmProvider: "gemini",
-      preferredLlmModel: "gemini-2.5-flash",
+      preferredLlmModel: "gemini-3.5-flash-lite",
       agentMode: "COPILOT",
       systemInstructions: "",
     },

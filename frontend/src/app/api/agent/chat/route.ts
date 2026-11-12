@@ -4,8 +4,8 @@ import { getAuthUser } from "@/lib/auth/session";
 import { ensureDbSchemaReady } from "@/lib/db/ensure-schema";
 import { getOrCreateWorkspaceSettings } from "@/lib/settings/workspace-settings";
 import {
-  callLlmWithTools,
-  resolveUserLlmConfig,
+  callLlmWithFailover,
+  resolveCandidateLlmConfigs,
   type LlmChatMessage,
 } from "@/lib/agent/llm-client";
 import {
@@ -78,16 +78,18 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Message is required." }, { status: 400 });
     }
 
-    const llmConfig = await resolveUserLlmConfig(user.userId);
-    if (!llmConfig) {
+    const candidates = await resolveCandidateLlmConfigs(user.userId);
+    if (candidates.length === 0) {
       return NextResponse.json(
         {
           error:
-            "No Agentic AI Provider Key is stored in Settings yet. Add a Gemini, OpenAI, OpenRouter, or Ollama key in Settings → Stored Keys.",
+            "No valid Agentic AI Provider Key is stored in Settings Vault or environment. Add a Gemini, Groq, OpenRouter, or Ollama key in Settings → Stored Keys.",
         },
         { status: 400 }
       );
     }
+    let activeProvider = candidates[0].provider as string;
+    let activeModel = candidates[0].model;
 
     const settings = await getOrCreateWorkspaceSettings(user.userId);
     const mode = body.mode || settings.agentMode || "COPILOT";
@@ -152,12 +154,14 @@ Use tools (` +
 
     // Bounded tool-calling loop (max 4 steps)
     for (let step = 0; step < 4; step++) {
-      const turn = await callLlmWithTools({
-        config: llmConfig,
+      const turn = await callLlmWithFailover({
+        userId: user.userId,
         systemPrompt,
         messages: llmMessages,
         tools: AGENT_TOOL_DEFINITIONS,
       });
+      activeProvider = turn.provider;
+      activeModel = turn.model;
 
       if (!turn.toolCalls.length) {
         finalAssistantText = turn.text;
@@ -227,8 +231,8 @@ Use tools (` +
 
     return NextResponse.json({
       sessionId: session.id,
-      provider: llmConfig.provider,
-      model: llmConfig.model,
+      provider: activeProvider,
+      model: activeModel,
       message: {
         id: savedAssistant.id,
         role: savedAssistant.role,

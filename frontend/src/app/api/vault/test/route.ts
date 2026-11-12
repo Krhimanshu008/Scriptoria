@@ -4,6 +4,7 @@ import { getDecryptedCredential } from "@/lib/crypto/credentials";
 import { getUserGDriveCredential, mintGDriveAccessToken } from "@/lib/gdrive/client";
 import { KaggleOrchestrator } from "@/lib/orchestrator/kaggle-client";
 import { resolveReachableWebhookBaseUrl } from "@/lib/orchestrator/webhook-tunnel";
+import { callLlmWithTools, defaultBaseUrlForProvider, type ResolvedLlmConfig } from "@/lib/agent/llm-client";
 
 function formatBytesToTbOrGb(bytesStr?: string): string {
   const bytes = Number(bytesStr || 0);
@@ -263,57 +264,57 @@ export async function POST(req: NextRequest) {
           { status: 404 }
         );
       }
+      if (!cred.secret.trim() || cred.secret.includes("@") || cred.secret === "ChangeMe123!") {
+        return NextResponse.json({
+          ok: false,
+          detail:
+            "Stored secret looks like browser login autofill, not an API key. Click Edit and enter your real API key.",
+        });
+      }
+
       const meta = (cred.metadata || {}) as {
         llmProvider?: string;
         model?: string;
         baseUrl?: string;
       };
-      const llmProvider = (meta.llmProvider || accountAlias || "gemini").toLowerCase();
+      const rawProv = (meta.llmProvider || accountAlias || "gemini").toLowerCase();
+      const llmProvider: ResolvedLlmConfig["provider"] =
+        rawProv === "groq" || rawProv === "openai" || rawProv === "openrouter" || rawProv === "ollama"
+          ? rawProv
+          : "gemini";
+      const model = (
+        meta.model ||
+        cred.username ||
+        (llmProvider === "gemini"
+          ? "gemini-3.5-flash-lite"
+          : llmProvider === "groq"
+          ? "openai/gpt-oss-120b"
+          : llmProvider === "openrouter"
+          ? "openrouter/free"
+          : "gpt-4.1-mini")
+      ).trim();
 
-      if (llmProvider === "gemini") {
-        const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=5", {
-          headers: { "x-goog-api-key": cred.secret },
-          cache: "no-store",
-          signal: AbortSignal.timeout(10000),
-        });
-        if (!res.ok) {
-          return NextResponse.json({
-            ok: false,
-            detail: `Gemini API rejected key (${res.status}).`,
-          });
-        }
-        return NextResponse.json({
-          ok: true,
-          detail: `Gemini API verified · Model: ${meta.model || cred.username || "gemini-2.5-flash"}`,
-        });
-      }
+      const validBaseUrl =
+        meta.baseUrl && (meta.baseUrl.startsWith("http://") || meta.baseUrl.startsWith("https://"))
+          ? meta.baseUrl.replace(/\/$/, "")
+          : defaultBaseUrlForProvider(llmProvider);
 
-      const defaultBase =
-        llmProvider === "openrouter"
-          ? "https://openrouter.ai/api/v1"
-          : llmProvider === "ollama"
-          ? "http://127.0.0.1:11434/v1"
-          : "https://api.openai.com/v1";
-      const baseUrl = (meta.baseUrl || defaultBase).replace(/\/$/, "");
-      const headers: Record<string, string> = {};
-      if (cred.secret && cred.secret !== "ollama") {
-        headers["Authorization"] = `Bearer ${cred.secret}`;
-      }
-
-      const res = await fetch(`${baseUrl}/models`, {
-        headers,
-        cache: "no-store",
-        signal: AbortSignal.timeout(10000),
+      const res = await callLlmWithTools({
+        config: {
+          provider: llmProvider,
+          model,
+          apiKey: cred.secret,
+          baseUrl: validBaseUrl,
+          source: "vault",
+        },
+        systemPrompt: "Respond concisely with OK.",
+        messages: [{ role: "user", content: "Reply with OK only." }],
+        temperature: 0,
       });
-      if (!res.ok) {
-        return NextResponse.json({
-          ok: false,
-          detail: `${llmProvider.toUpperCase()} endpoint returned HTTP ${res.status}.`,
-        });
-      }
+
       return NextResponse.json({
         ok: true,
-        detail: `${llmProvider.toUpperCase()} verified · Model: ${meta.model || cred.username || "default"}`,
+        detail: `${llmProvider.toUpperCase()} verified live · Model: ${res.model}`,
       });
     }
 

@@ -21,9 +21,11 @@ import {
   Eye,
   EyeOff,
   FileCode2,
+  RefreshCw,
 } from "lucide-react";
 import type { ReadinessItem } from "@/app/api/settings/readiness/route";
 import type { PublicWorkspaceSettings } from "@/lib/settings/workspace-settings";
+import type { FetchedModelOption } from "@/app/api/vault/llm-models/route";
 import { WORKER_PROFILE_LIST } from "@/lib/catalog/worker-profiles";
 import { ExternalApiTokensCard } from "@/components/settings/ExternalApiTokensCard";
 import {
@@ -139,10 +141,14 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
   const [savingSourceKey, setSavingSourceKey] = useState<"huggingface" | "civitai" | null>(null);
 
   const [llmProvider, setLlmProvider] = useState("gemini");
-  const [llmModel, setLlmModel] = useState("gemini-2.5-flash");
+  const [llmAlias, setLlmAlias] = useState("gemini");
+  const [llmModel, setLlmModel] = useState("gemini-3.5-flash-lite");
   const [llmBaseUrl, setLlmBaseUrl] = useState("");
   const [llmApiKey, setLlmApiKey] = useState("");
   const [savingLlm, setSavingLlm] = useState(false);
+  const [fetchingModels, setFetchingModels] = useState(false);
+  const [fetchedModels, setFetchedModels] = useState<FetchedModelOption[]>([]);
+  const [editFetchedModels, setEditFetchedModels] = useState<FetchedModelOption[]>([]);
 
   // Preferences draft overrides (derived cleanly from query without useEffect setState)
   const [prefsOverrides, setPrefsOverrides] = useState<Partial<PublicWorkspaceSettings>>({});
@@ -410,9 +416,48 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
     }
   }
 
+  async function handleFetchLlmModels(params: {
+    provider: string;
+    apiKey?: string;
+    accountAlias?: string;
+    baseUrl?: string;
+    target: "add" | "edit";
+  }) {
+    setFetchingModels(true);
+    try {
+      const res = await fetch("/api/vault/llm-models", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: params.provider,
+          apiKey: params.apiKey,
+          accountAlias: params.accountAlias,
+          baseUrl: params.baseUrl,
+          onlyFree: true,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || "Failed to fetch live models");
+        return;
+      }
+      const list = (data.models || []) as FetchedModelOption[];
+      if (params.target === "add") {
+        setFetchedModels(list);
+        if (list[0]) setLlmModel(list[0].id);
+      } else {
+        setEditFetchedModels(list);
+      }
+      toast.success(`Loaded ${list.length} free/compatible model(s) from ${params.provider.toUpperCase()}`);
+    } finally {
+      setFetchingModels(false);
+    }
+  }
+
   async function handleSaveLlm(e: React.FormEvent) {
     e.preventDefault();
     if (!llmApiKey.trim()) return;
+    const resolvedAlias = llmAlias.trim().toLowerCase() || llmProvider;
     setSavingLlm(true);
     try {
       const res = await fetch("/api/vault", {
@@ -420,7 +465,7 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           provider: "llm",
-          accountAlias: llmProvider,
+          accountAlias: resolvedAlias,
           username: llmModel.trim() || llmProvider,
           rawSecret: llmApiKey.trim(),
           metadata: {
@@ -435,7 +480,7 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
         toast.error(body.error || "Failed to save LLM API key");
         return;
       }
-      toast.success(`Encrypted & saved ${llmProvider.toUpperCase()} AI key`);
+      toast.success(`Encrypted & saved ${llmProvider.toUpperCase()} key (${resolvedAlias})`);
       setLlmApiKey("");
       await Promise.all([refetchVault(), refetchReadiness()]);
     } finally {
@@ -1071,12 +1116,34 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
 
             {/* Multi-Provider LLM Vault */}
             <form onSubmit={handleSaveLlm} className="glass-panel space-y-4 rounded-2xl p-5">
-              <div className="flex items-center gap-2 text-sm font-semibold text-white">
-                <KeyRound className="h-4 w-4 text-violet-400" />
-                <span>Agentic AI Co-Director LLM Key</span>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                  <KeyRound className="h-4 w-4 text-violet-400" />
+                  <span>Agentic AI Co-Director LLM Keys (Multi-Key Failover)</span>
+                </div>
+                <button
+                  type="button"
+                  disabled={fetchingModels}
+                  onClick={() =>
+                    handleFetchLlmModels({
+                      provider: llmProvider,
+                      apiKey: llmApiKey.trim() || undefined,
+                      baseUrl: llmBaseUrl.trim() || undefined,
+                      target: "add",
+                    })
+                  }
+                  className="glass-pill flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-medium text-cyan-200 hover:bg-white/10"
+                >
+                  {fetchingModels ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-3 w-3" />
+                  )}
+                  Fetch Free Models
+                </button>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <div className="space-y-1.5">
                   <Label>Provider</Label>
                   <select
@@ -1084,21 +1151,27 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
                     onChange={(e) => {
                       const p = e.target.value;
                       setLlmProvider(p);
-                      if (p === "gemini") setLlmModel("gemini-2.5-flash");
+                      setLlmAlias(p);
+                      setFetchedModels([]);
+                      if (p === "gemini") setLlmModel("gemini-3.5-flash-lite");
+                      else if (p === "groq") setLlmModel("openai/gpt-oss-120b");
+                      else if (p === "openrouter") setLlmModel("openrouter/free");
                       else if (p === "openai") setLlmModel("gpt-4.1-mini");
-                      else if (p === "openrouter") setLlmModel("google/gemini-2.5-flash");
                       else if (p === "ollama") setLlmModel("qwen2.5:14b");
                     }}
                     className="glass-input w-full rounded-xl px-3 py-2 text-xs text-zinc-100"
                   >
                     <option value="gemini" className="bg-zinc-900">
-                      Google Gemini
+                      Google Gemini (Free Flash-Lite)
+                    </option>
+                    <option value="groq" className="bg-zinc-900">
+                      Groq (Free Fast LPUs)
+                    </option>
+                    <option value="openrouter" className="bg-zinc-900">
+                      OpenRouter (:free Gateway)
                     </option>
                     <option value="openai" className="bg-zinc-900">
                       OpenAI
-                    </option>
-                    <option value="openrouter" className="bg-zinc-900">
-                      OpenRouter
                     </option>
                     <option value="ollama" className="bg-zinc-900">
                       Ollama / Local OpenAI-Compatible
@@ -1107,19 +1180,53 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
                 </div>
 
                 <div className="space-y-1.5">
+                  <Label>Key Label / Alias</Label>
+                  <Input
+                    name="llm-key-alias"
+                    autoComplete="off"
+                    value={llmAlias}
+                    onChange={(e) => setLlmAlias(e.target.value)}
+                    placeholder="gemini, gemini-2, groq-2"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
                   <Label>Default Model</Label>
                   <Input
+                    name="llm-model-id"
+                    autoComplete="off"
                     value={llmModel}
                     onChange={(e) => setLlmModel(e.target.value)}
-                    placeholder="gemini-2.5-flash"
+                    placeholder="gemini-3.5-flash-lite"
                   />
                 </div>
               </div>
+
+              {fetchedModels.length > 0 && (
+                <div className="space-y-1">
+                  <Label className="text-[11px] text-emerald-300">
+                    Live Fetched Free Models ({fetchedModels.length})
+                  </Label>
+                  <select
+                    value={llmModel}
+                    onChange={(e) => setLlmModel(e.target.value)}
+                    className="glass-input w-full rounded-xl px-3 py-2 font-mono text-xs text-emerald-200"
+                  >
+                    {fetchedModels.map((m) => (
+                      <option key={m.id} value={m.id} className="bg-zinc-900">
+                        {m.label} {m.note ? `· ${m.note}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               {(llmProvider === "openrouter" || llmProvider === "ollama") && (
                 <div className="space-y-1.5">
                   <Label>Custom Base URL</Label>
                   <Input
+                    name="llm-custom-base-url"
+                    autoComplete="off"
                     value={llmBaseUrl}
                     onChange={(e) => setLlmBaseUrl(e.target.value)}
                     placeholder={
@@ -1134,11 +1241,13 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
               <div className="space-y-1.5">
                 <Label>API Key (use &quot;ollama&quot; for local server)</Label>
                 <Input
+                  name="llm-secret-token"
+                  autoComplete="new-password"
                   required
                   type="password"
                   value={llmApiKey}
                   onChange={(e) => setLlmApiKey(e.target.value)}
-                  placeholder="AIza... / sk-... / ollama"
+                  placeholder="AIza... / gsk_... / sk-or-... / sk-..."
                 />
               </div>
 
@@ -1362,13 +1471,16 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
                   className="glass-input w-full rounded-xl px-3 py-2 text-xs text-zinc-100"
                 >
                   <option value="gemini" className="bg-zinc-900">
-                    Google Gemini
+                    Google Gemini (Free)
+                  </option>
+                  <option value="groq" className="bg-zinc-900">
+                    Groq (Free Fast LPUs)
+                  </option>
+                  <option value="openrouter" className="bg-zinc-900">
+                    OpenRouter (:free)
                   </option>
                   <option value="openai" className="bg-zinc-900">
                     OpenAI
-                  </option>
-                  <option value="openrouter" className="bg-zinc-900">
-                    OpenRouter
                   </option>
                   <option value="ollama" className="bg-zinc-900">
                     Ollama
@@ -1507,17 +1619,54 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
                         onChange={(e) => setEditLlmProvider(e.target.value)}
                       />
                     </div>
-                    <div className="space-y-1">
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
                       <Label>Default Model</Label>
-                      <Input
-                        value={editLlmModel}
-                        onChange={(e) => setEditLlmModel(e.target.value)}
-                      />
+                      <button
+                        type="button"
+                        disabled={fetchingModels}
+                        onClick={() =>
+                          handleFetchLlmModels({
+                            provider: editLlmProvider,
+                            accountAlias: editingCred.accountAlias,
+                            baseUrl: editLlmBaseUrl.trim() || undefined,
+                            target: "edit",
+                          })
+                        }
+                        className="text-[10px] font-medium text-cyan-300 hover:text-cyan-200"
+                      >
+                        {fetchingModels ? "Loading..." : "Fetch Free Models"}
+                      </button>
                     </div>
+                    <Input
+                      name="edit-llm-model"
+                      autoComplete="off"
+                      value={editLlmModel}
+                      onChange={(e) => setEditLlmModel(e.target.value)}
+                    />
                   </div>
+                </div>
+                {editFetchedModels.length > 0 && (
+                  <div className="space-y-1">
+                    <Label className="text-[10px] text-emerald-300">Pick Fetched Model</Label>
+                    <select
+                      value={editLlmModel}
+                      onChange={(e) => setEditLlmModel(e.target.value)}
+                      className="glass-input w-full rounded-xl px-2.5 py-1.5 font-mono text-xs text-emerald-200"
+                    >
+                      {editFetchedModels.map((m) => (
+                        <option key={m.id} value={m.id} className="bg-zinc-900">
+                          {m.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
                   <div className="space-y-1">
                     <Label>Custom Base URL (Optional)</Label>
                     <Input
+                      name="edit-llm-base-url"
+                      autoComplete="off"
                       value={editLlmBaseUrl}
                       onChange={(e) => setEditLlmBaseUrl(e.target.value)}
                       placeholder="https://openrouter.ai/api/v1"
@@ -1529,6 +1678,8 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
               <div className="space-y-1">
                 <Label>Rotate / Replace Secret (Optional)</Label>
                 <Input
+                  name="edit-rotate-secret"
+                  autoComplete="new-password"
                   type="password"
                   value={editNewSecret}
                   onChange={(e) => setEditNewSecret(e.target.value)}

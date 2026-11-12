@@ -101,7 +101,8 @@ export async function PATCH(req: NextRequest) {
     }
 
     if (body.preferredLlmModel !== undefined) {
-      updateData.preferredLlmModel = String(body.preferredLlmModel).trim() || "gemini-2.5-flash";
+      updateData.preferredLlmModel =
+        String(body.preferredLlmModel).trim() || "gemini-3.5-flash-lite";
     }
 
     if (body.agentMode !== undefined) {
