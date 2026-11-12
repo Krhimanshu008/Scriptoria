@@ -70,12 +70,13 @@ export function buildRedactedSecretHint(provider: string, rawSecret: string): st
 export async function saveUserCredential(userId: string, input: SaveCredentialInput) {
   const provider = input.provider.trim().toLowerCase();
   const accountAlias = input.accountAlias.trim();
-  const enc = encryptSecret(input.rawSecret);
+  const rawSecret = input.rawSecret.trim();
+  const enc = encryptSecret(rawSecret);
 
   const authType =
     input.authType ||
     (provider === "kaggle"
-      ? input.rawSecret.startsWith("KGAT_")
+      ? rawSecret.startsWith("KGAT_")
         ? "bearer"
         : "basic"
       : provider === "gdrive"
@@ -84,15 +85,17 @@ export async function saveUserCredential(userId: string, input: SaveCredentialIn
 
   const mergedMeta: Record<string, unknown> = {
     ...(input.metadata || {}),
-    secretHint: buildRedactedSecretHint(provider, input.rawSecret),
+    secretHint: buildRedactedSecretHint(provider, rawSecret),
   };
+
+  const username = input.username?.trim() ?? null;
 
   return prisma.credential.upsert({
     where: {
       userId_provider_accountAlias: { userId, provider, accountAlias },
     },
     update: {
-      username: input.username ?? null,
+      username,
       encryptedKey: enc.ciphertext,
       iv: enc.iv,
       authTag: enc.authTag,
@@ -103,7 +106,7 @@ export async function saveUserCredential(userId: string, input: SaveCredentialIn
       userId,
       provider,
       accountAlias,
-      username: input.username ?? null,
+      username,
       encryptedKey: enc.ciphertext,
       iv: enc.iv,
       authTag: enc.authTag,

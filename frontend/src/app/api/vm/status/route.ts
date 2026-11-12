@@ -100,28 +100,32 @@ export async function GET(req: NextRequest) {
     );
 
     // Rate-limited Kaggle boot polling: catch failed kernels or silent heartbeat blocks quickly
-    const startingKaggleAliases = new Set<string>();
+    const startingKaggleGroups = new Map<string, { alias: string; sessionGroup: string; isTpu: boolean }>();
     for (const vm of updatedRows) {
       if (vm.provider !== "kaggle" || vm.status !== "STARTING") continue;
-      const pollKey = `${user.userId}:${vm.accountAlias}`;
+      const pollKey = `${user.userId}:${vm.sessionGroup}`;
       const lastPolledMs = lastKagglePollAt.get(pollKey) || 0;
       const lastActivityMs = Math.max(vm.updatedAt.getTime(), vm.lastHeartbeat?.getTime() || 0, lastPolledMs);
       const pollInterval = vm.stepProgress <= 1 ? KAGGLE_PRE_HEARTBEAT_POLL_MS : KAGGLE_ACTIVE_POLL_MS;
       if (forceProbe || now - lastActivityMs >= pollInterval) {
-        startingKaggleAliases.add(vm.accountAlias);
+        startingKaggleGroups.set(vm.sessionGroup, {
+          alias: vm.accountAlias,
+          sessionGroup: vm.sessionGroup,
+          isTpu: vm.target.startsWith("tpu") || vm.workerProfile === "TPU_QWEN27B_V5E",
+        });
         lastKagglePollAt.set(pollKey, now);
       }
     }
 
-    if (startingKaggleAliases.size > 0) {
+    if (startingKaggleGroups.size > 0) {
       await Promise.all(
-        Array.from(startingKaggleAliases).map(async (alias) => {
+        Array.from(startingKaggleGroups.values()).map(async (group) => {
           const groupRows = updatedRows.filter(
-            (r) => r.provider === "kaggle" && r.accountAlias === alias && r.status === "STARTING"
+            (r) => r.userId === user.userId && r.sessionGroup === group.sessionGroup && r.status === "STARTING"
           );
           if (groupRows.length === 0) return;
 
-          const kc = await getDecryptedCredential(user.userId, "kaggle", alias);
+          const kc = await getDecryptedCredential(user.userId, "kaggle", group.alias);
           if (!kc?.username || !kc.secret) return;
 
           const creds = {
@@ -130,10 +134,9 @@ export async function GET(req: NextRequest) {
             authType: (kc.authType === "bearer" ? "bearer" : "basic") as "bearer" | "basic",
           };
 
-          const isTpu = groupRows.some((r) => r.workerProfile === "TPU_QWEN27B_V5E");
-          const kernelSlug = isTpu
-            ? `kaggle-tpu-runner-${alias}`
-            : `kaggle-dual-gpu-runner-${alias}`;
+          const kernelSlug = group.isTpu
+            ? `kaggle-tpu-runner-${group.alias}`
+            : `kaggle-dual-gpu-runner-${group.alias}`;
 
           try {
             const st = await KaggleOrchestrator.getKernelStatus(creds, kernelSlug);
@@ -153,8 +156,7 @@ export async function GET(req: NextRequest) {
               await prisma.vmInstance.updateMany({
                 where: {
                   userId: user.userId,
-                  provider: "kaggle",
-                  accountAlias: alias,
+                  sessionGroup: group.sessionGroup,
                   status: "STARTING",
                 },
                 data: {
@@ -170,23 +172,22 @@ export async function GET(req: NextRequest) {
                 vmInstanceId: groupRows[0].id,
                 category: nextStatus === "ERROR" ? "ERROR" : "ACTION",
                 level: nextStatus === "ERROR" ? "ERROR" : "WARN",
-                message: `Kaggle (${alias}) ${kStatus}: ${detail}`,
+                message: `Kaggle (${group.alias} / ${group.sessionGroup}) ${kStatus}: ${detail}`,
               });
             } else {
               const allPreHeartbeat = groupRows.every((r) => r.stepProgress <= 1);
               if (allPreHeartbeat) {
                 const hint =
                   kStatus === "running"
-                    ? "Running on Kaggle GPU — awaiting first heartbeat callback..."
+                    ? `Running on Kaggle ${group.isTpu ? "TPU v5e-8" : "GPU"} — awaiting first heartbeat callback...`
                     : kStatus === "queued"
-                    ? "Queued on Kaggle GPU..."
+                    ? `Queued on Kaggle ${group.isTpu ? "TPU v5e-8" : "GPU"}...`
                     : null;
                 if (groupRows.some((r) => r.lastError !== hint)) {
                   await prisma.vmInstance.updateMany({
                     where: {
                       userId: user.userId,
-                      provider: "kaggle",
-                      accountAlias: alias,
+                      sessionGroup: group.sessionGroup,
                       status: "STARTING",
                       stepProgress: { lte: 1 },
                     },

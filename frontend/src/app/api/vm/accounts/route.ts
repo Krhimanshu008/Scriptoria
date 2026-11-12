@@ -14,6 +14,17 @@ export interface KaggleAccountSummary {
   username: string | null;
   configured: boolean;
   targets: string[];
+  gpuTargets?: string[];
+  tpuTargets?: string[];
+  quota: KaggleQuotaInfo | null;
+  quotaError?: string;
+}
+
+export interface TpuAccountSummary {
+  accountAlias: string;
+  username: string | null;
+  configured: boolean;
+  target: string;
   quota: KaggleQuotaInfo | null;
   quotaError?: string;
 }
@@ -73,10 +84,14 @@ export async function GET(req: NextRequest) {
       .sort();
     const kaggleAccounts: KaggleAccountSummary[] = await Promise.all(
       kaggleAliases.map(async (alias) => {
-        const targets = vms
+        const allTargets = vms
           .filter((v) => v.provider === "kaggle" && v.accountAlias === alias)
           .map((v) => v.target)
           .sort();
+        const gpuTargets = allTargets.filter((t) => t.startsWith("gpu"));
+        const tpuTargets = allTargets.filter((t) => t.startsWith("tpu"));
+        // Keep targets as gpuTargets for existing GPU cluster card compatibility
+        const targets = gpuTargets;
         let cred: Awaited<ReturnType<typeof getDecryptedCredential>> = null;
         try {
           cred = await getDecryptedCredential(user.userId, "kaggle", alias);
@@ -86,6 +101,8 @@ export async function GET(req: NextRequest) {
             username: null,
             configured: false,
             targets,
+            gpuTargets,
+            tpuTargets,
             quota: null,
             quotaError:
               err instanceof Error
@@ -99,6 +116,8 @@ export async function GET(req: NextRequest) {
             username: null,
             configured: false,
             targets,
+            gpuTargets,
+            tpuTargets,
             quota: null,
           };
         }
@@ -112,6 +131,8 @@ export async function GET(req: NextRequest) {
             username: cred.username,
             configured: true,
             targets,
+            gpuTargets,
+            tpuTargets,
             quota: cached.quota,
           };
         }
@@ -128,6 +149,8 @@ export async function GET(req: NextRequest) {
             username: cred.username,
             configured: true,
             targets,
+            gpuTargets,
+            tpuTargets,
             quota,
           };
         } catch (err) {
@@ -136,12 +159,33 @@ export async function GET(req: NextRequest) {
             username: cred.username,
             configured: true,
             targets,
+            gpuTargets,
+            tpuTargets,
             quota: null,
             quotaError: err instanceof Error ? err.message : "Failed to load quota",
           };
         }
       })
     );
+
+    const tpuAccounts: TpuAccountSummary[] = kaggleAccounts.map((acc) => {
+      const defaultTpuTarget =
+        acc.accountAlias === "acc1"
+          ? "tpu0"
+          : acc.accountAlias === "acc2"
+          ? "tpu1"
+          : acc.accountAlias === "acc3"
+          ? "tpu2"
+          : "tpu3";
+      return {
+        accountAlias: acc.accountAlias,
+        username: acc.username,
+        configured: acc.configured,
+        target: acc.tpuTargets?.[0] || defaultTpuTarget,
+        quota: acc.quota,
+        quotaError: acc.quotaError,
+      };
+    });
 
     const colabAliases = ["acc1", "acc2"];
     const colabAccounts: ColabAccountSummary[] = colabAliases.map((alias) => {
@@ -211,6 +255,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       kaggleAccounts,
+      tpuAccounts,
       colabAccounts,
       googleOAuthAvailable: oauthConfigured,
       activeTunnelUrl: peekActiveTunnelUrl(),

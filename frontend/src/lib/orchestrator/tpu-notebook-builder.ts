@@ -17,7 +17,7 @@ export interface BuildTpuNotebookOptions {
 
 export function buildTpuNotebookPythonCode(opts: BuildTpuNotebookOptions): string {
   const idleSeconds = Math.max(300, opts.idleTimeoutSeconds ?? 900); // default 15m
-  const targets = opts.gpuTargets.length > 0 ? opts.gpuTargets : ["gpu0", "gpu1"];
+  const targets = opts.gpuTargets.length > 0 ? opts.gpuTargets : ["tpu0"];
 
   return `import os, sys, re, time, json, secrets, shutil, subprocess, threading, urllib.request, urllib.error
 from collections import deque

@@ -121,7 +121,7 @@ function VmClusterContent() {
     staleTime: 30000,
   });
 
-  const vms = vmData?.vms ?? [];
+  const vms = (vmData?.vms ?? []).filter((v) => !v.target.startsWith("tpu"));
   const onlineVms = vms.filter((v) => v.status === "ONLINE" || v.status === "BUSY");
   const totalOnlineVram = onlineVms.reduce((acc, v) => acc + (v.vramTotalGb || 16), 0);
   const usedOnlineVram = onlineVms.reduce((acc, v) => acc + (v.vramUsedGb || 0), 0);

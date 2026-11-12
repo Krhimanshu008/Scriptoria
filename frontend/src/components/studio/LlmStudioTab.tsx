@@ -21,6 +21,7 @@ import {
   Trash2,
   Wrench,
   X,
+  Zap,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -557,10 +558,17 @@ export function LlmStudioTab() {
             Probe
           </button>
           <Link
+            href="/tpu-cluster"
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/15 px-2.5 text-[11px] font-medium text-amber-300 hover:bg-amber-500/25"
+          >
+            <Zap className="h-3 w-3" />
+            TPU Cluster (130 tok/s)
+          </Link>
+          <Link
             href="/vms"
             className="inline-flex h-7 items-center gap-1.5 rounded-md border border-indigo-500/40 bg-indigo-500/15 px-2.5 text-[11px] font-medium text-indigo-300 hover:bg-indigo-500/25"
           >
-            Manage Dual-T4 on /vms
+            GPU Cluster
           </Link>
         </div>
       </div>

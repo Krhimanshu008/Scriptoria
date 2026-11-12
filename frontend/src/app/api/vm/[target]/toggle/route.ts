@@ -47,9 +47,10 @@ export async function POST(
         await VmGateway.killVm(vm);
       } else if (vm.provider === "kaggle") {
         try {
+          const metaProvider = vm.target.startsWith("tpu") ? "kaggle-tpu-meta" : "kaggle-meta";
           const [kaggleCred, kaggleMeta] = await Promise.all([
             getDecryptedCredential(user.userId, "kaggle", vm.accountAlias),
-            getDecryptedCredential(user.userId, "kaggle-meta", vm.accountAlias),
+            getDecryptedCredential(user.userId, metaProvider, vm.accountAlias),
           ]);
           const sessionId = Number(kaggleMeta?.secret || 0);
           if (kaggleCred?.username && sessionId > 0) {
@@ -240,7 +241,7 @@ export async function POST(
 
         if (pushRes.kernelSessionId) {
           await saveUserCredential(user.userId, {
-            provider: "kaggle-meta",
+            provider: isTpu ? "kaggle-tpu-meta" : "kaggle-meta",
             accountAlias: vm.accountAlias,
             username: kaggleCred.username,
             rawSecret: String(pushRes.kernelSessionId),

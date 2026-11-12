@@ -121,6 +121,42 @@ export const DEFAULT_VM_SLOTS: DefaultVmSlotSpec[] = [
     workerProfile: "AUDIO_LIPSYNC",
     internalPort: 8188,
   },
+  {
+    target: "tpu0",
+    displayName: "Kaggle TPU 0 (v5e-8 · Acc 1)",
+    provider: "kaggle",
+    accountAlias: "acc1",
+    sessionGroup: "kaggle-tpu-acc1",
+    workerProfile: "TPU_QWEN27B_V5E",
+    internalPort: 8000,
+  },
+  {
+    target: "tpu1",
+    displayName: "Kaggle TPU 1 (v5e-8 · Acc 2)",
+    provider: "kaggle",
+    accountAlias: "acc2",
+    sessionGroup: "kaggle-tpu-acc2",
+    workerProfile: "TPU_QWEN27B_V5E",
+    internalPort: 8000,
+  },
+  {
+    target: "tpu2",
+    displayName: "Kaggle TPU 2 (v5e-8 · Acc 3)",
+    provider: "kaggle",
+    accountAlias: "acc3",
+    sessionGroup: "kaggle-tpu-acc3",
+    workerProfile: "TPU_QWEN27B_V5E",
+    internalPort: 8000,
+  },
+  {
+    target: "tpu3",
+    displayName: "Kaggle TPU 3 (v5e-8 · Acc 4)",
+    provider: "kaggle",
+    accountAlias: "acc4",
+    sessionGroup: "kaggle-tpu-acc4",
+    workerProfile: "TPU_QWEN27B_V5E",
+    internalPort: 8000,
+  },
 ];
 
 function getJwtSecret(): string {

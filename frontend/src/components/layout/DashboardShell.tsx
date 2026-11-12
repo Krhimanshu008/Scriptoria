@@ -15,6 +15,7 @@ import {
   Sparkles,
   Cpu,
   Bot,
+  Zap,
   X,
   PanelLeftClose,
   PanelLeftOpen,
@@ -30,7 +31,8 @@ const NAV_GROUPS = [
   {
     section: "Compute",
     items: [
-      { href: "/vms", label: "VM Cluster", icon: Cpu },
+      { href: "/vms", label: "GPU Cluster", icon: Server },
+      { href: "/tpu-cluster", label: "TPU Cluster", icon: Zap },
       { href: "/models", label: "Models & Drive", icon: HardDriveDownload },
     ],
   },
@@ -50,7 +52,8 @@ const NAV_GROUPS = [
 
 function pageTitleForPath(pathname: string): string {
   if (pathname.startsWith("/llm-studio")) return "LLM Studio";
-  if (pathname.startsWith("/vms")) return "VM Cluster";
+  if (pathname.startsWith("/tpu-cluster")) return "TPU Cluster (v5e-8)";
+  if (pathname.startsWith("/vms")) return "GPU Cluster";
   if (pathname.startsWith("/studio")) return "Studio Workstation";
   if (pathname.startsWith("/models")) return "Models & Drive";
   if (pathname.startsWith("/history")) return "Output Gallery";

@@ -149,7 +149,7 @@ export const WORKER_PROFILES: Record<WorkerProfileId, WorkerProfileSpec> = {
     shortTag: "TPU-V5E",
     description:
       "Full unquantized Qwen3.8-27B BF16 on 8 TPU chips (128 GB HBM). Native Vision, 262K context, MTP speculative decoding (~130 tok/s), OpenAI-compatible /v1 API.",
-    recommendedTargets: ["gpu4", "gpu5", "gpu2", "gpu3", "gpu0", "gpu1"],
+    recommendedTargets: ["tpu0", "tpu1", "tpu2", "tpu3"],
     customNodes: [],
     accelerator: "tpu",
   },
@@ -173,6 +173,9 @@ export function getWorkerProfile(id?: string | null): WorkerProfileSpec {
 }
 
 export function defaultWorkerProfileForTarget(target: string): WorkerProfileId {
+  if (target.startsWith("tpu")) {
+    return "TPU_QWEN27B_V5E";
+  }
   switch (target) {
     case "gpu2":
       return "IMAGE_GGUF_EDIT";

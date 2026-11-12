@@ -87,8 +87,14 @@ export async function GET() {
       loadedModel,
       probeLatencyMs,
       probeError,
-      gpuName: onlineLlm?.gpuName || llmVms[0]?.gpuName || null,
-      vramTotalGb: onlineLlm?.vramTotalGb ?? llmVms[0]?.vramTotalGb ?? 30,
+      gpuName:
+        onlineLlm?.target?.startsWith("tpu")
+          ? "TPU v5e-8 (8 chips · 128GB HBM)"
+          : onlineLlm?.gpuName || llmVms[0]?.gpuName || null,
+      vramTotalGb:
+        onlineLlm?.target?.startsWith("tpu")
+          ? 128
+          : onlineLlm?.vramTotalGb ?? llmVms[0]?.vramTotalGb ?? 30,
       vramUsedGb: onlineLlm?.vramUsedGb ?? llmVms[0]?.vramUsedGb ?? 0,
       acc2RunningWrongProfile: acc2WrongProfile
         ? {

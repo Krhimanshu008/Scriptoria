@@ -26,6 +26,10 @@ export interface KaggleQuotaInfo {
   totalAllowedSeconds: number;
   remainingSeconds: number;
   resetAt: string | null;
+  tpuUsedSeconds?: number;
+  tpuReservedSeconds?: number;
+  tpuTotalAllowedSeconds?: number;
+  tpuRemainingSeconds?: number;
 }
 
 /**
@@ -39,10 +43,16 @@ export class KaggleOrchestrator {
       "Content-Type": "application/json",
     };
 
-    if (creds.authType === "bearer" || creds.key.startsWith("KGAT_")) {
-      headers["Authorization"] = `Bearer ${creds.key}`;
+    const username = (creds.username || "").trim();
+    let key = (creds.key || "").trim();
+    if ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'"))) {
+      key = key.slice(1, -1).trim();
+    }
+
+    if (creds.authType === "bearer" || key.startsWith("KGAT_")) {
+      headers["Authorization"] = `Bearer ${key}`;
     } else {
-      const basicToken = Buffer.from(`${creds.username}:${creds.key}`).toString("base64");
+      const basicToken = Buffer.from(`${username}:${key}`).toString("base64");
       headers["Authorization"] = `Basic ${basicToken}`;
     }
 
@@ -265,6 +275,11 @@ export class KaggleOrchestrator {
         timeReserved?: { seconds?: number };
         totalTimeAllowed?: { seconds?: number };
       };
+      tpuQuota?: {
+        timeUsed?: { seconds?: number };
+        timeReserved?: { seconds?: number };
+        totalTimeAllowed?: { seconds?: number };
+      };
     };
 
     const usedSeconds = Number(data.gpuQuota?.timeUsed?.seconds || 0);
@@ -272,12 +287,21 @@ export class KaggleOrchestrator {
     const totalAllowedSeconds = Number(data.gpuQuota?.totalTimeAllowed?.seconds || 108000);
     const remainingSeconds = Math.max(0, totalAllowedSeconds - usedSeconds - reservedSeconds);
 
+    const tpuUsed = Number(data.tpuQuota?.timeUsed?.seconds || 0);
+    const tpuReserved = Number(data.tpuQuota?.timeReserved?.seconds || 0);
+    const tpuTotal = Number(data.tpuQuota?.totalTimeAllowed?.seconds || 72000);
+    const tpuRemaining = Math.max(0, tpuTotal - tpuUsed - tpuReserved);
+
     return {
       usedSeconds,
       reservedSeconds,
       totalAllowedSeconds,
       remainingSeconds,
       resetAt: data.quotaRefreshTime ?? null,
+      tpuUsedSeconds: tpuUsed,
+      tpuReservedSeconds: tpuReserved,
+      tpuTotalAllowedSeconds: tpuTotal,
+      tpuRemainingSeconds: tpuRemaining,
     };
   }
 }
