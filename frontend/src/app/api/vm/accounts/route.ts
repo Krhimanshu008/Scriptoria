@@ -48,7 +48,7 @@ export async function GET(req: NextRequest) {
         },
         select: { provider: true, accountAlias: true, username: true, metadataJson: true },
       }),
-      getUserGDriveCredential(user.userId),
+      getUserGDriveCredential(user.userId).catch(() => null),
     ]);
 
     const kaggleAliases = ["acc1", "acc2"];
@@ -58,7 +58,22 @@ export async function GET(req: NextRequest) {
           .filter((v) => v.provider === "kaggle" && v.accountAlias === alias)
           .map((v) => v.target)
           .sort();
-        const cred = await getDecryptedCredential(user.userId, "kaggle", alias);
+        let cred: Awaited<ReturnType<typeof getDecryptedCredential>> = null;
+        try {
+          cred = await getDecryptedCredential(user.userId, "kaggle", alias);
+        } catch (err) {
+          return {
+            accountAlias: alias,
+            username: null,
+            configured: false,
+            targets,
+            quota: null,
+            quotaError:
+              err instanceof Error
+                ? `Decrypt failed (${err.message}). Check ENCRYPTION_KEY.`
+                : "Failed to decrypt Kaggle credential",
+          };
+        }
         if (!cred || !cred.username) {
           return {
             accountAlias: alias,

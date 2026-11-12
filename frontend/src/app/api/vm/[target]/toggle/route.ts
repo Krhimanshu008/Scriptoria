@@ -99,10 +99,23 @@ export async function POST(
     }
 
     // TOGGLE ON: Provision Kaggle or prepare Colab bundle
-    const gdriveCred = await getUserGDriveCredential(user.userId);
-    if (!gdriveCred) {
+    let gdriveCred: Awaited<ReturnType<typeof getUserGDriveCredential>> = null;
+    let gdriveDecryptError: string | null = null;
+    try {
+      gdriveCred = await getUserGDriveCredential(user.userId);
+    } catch (err) {
+      gdriveDecryptError =
+        err instanceof Error ? err.message : "Failed to decrypt Google Drive credential";
+    }
+
+    const isLlmProfile = vm.workerProfile === "LLM_QWEN_VLM";
+    if (!gdriveCred && !isLlmProfile) {
       return NextResponse.json(
-        { error: "Missing Google Drive credential in Settings Vault. Please add your Rclone/OAuth token first." },
+        {
+          error: gdriveDecryptError
+            ? `Google Drive credential could not be decrypted (${gdriveDecryptError}). Re-save Google Drive in Settings → Vault or sync ENCRYPTION_KEY with Vercel.`
+            : "Missing Google Drive credential in Settings Vault. Please add your Rclone/OAuth token first.",
+        },
         { status: 400 }
       );
     }
@@ -132,7 +145,19 @@ export async function POST(
     const appWebhookUrl = webhook.url;
 
     if (vm.provider === "kaggle") {
-      const kaggleCred = await getDecryptedCredential(user.userId, "kaggle", vm.accountAlias);
+      let kaggleCred: Awaited<ReturnType<typeof getDecryptedCredential>> = null;
+      try {
+        kaggleCred = await getDecryptedCredential(user.userId, "kaggle", vm.accountAlias);
+      } catch (err) {
+        return NextResponse.json(
+          {
+            error: `Kaggle '${vm.accountAlias}' credential could not be decrypted (${
+              err instanceof Error ? err.message : "decrypt error"
+            }). Re-save it in Settings → Vault or sync ENCRYPTION_KEY.`,
+          },
+          { status: 400 }
+        );
+      }
       if (!kaggleCred || !kaggleCred.username) {
         return NextResponse.json(
           { error: `Missing Kaggle credentials for account '${vm.accountAlias}' in Settings Vault.` },
@@ -159,8 +184,8 @@ export async function POST(
         appWebhookUrl,
         registrationJwt,
         vmSecret,
-        gdriveTokenJson: gdriveCred.rawTokenJson,
-        gdriveBaseFolder: gdriveCred.baseFolder || workspaceSettings.gdriveBaseFolder,
+        gdriveTokenJson: gdriveCred?.rawTokenJson || "",
+        gdriveBaseFolder: gdriveCred?.baseFolder || workspaceSettings.gdriveBaseFolder,
         gpuTargets: groupTargets,
         accountAlias: vm.accountAlias,
         workerProfile: profileSpec.id,

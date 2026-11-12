@@ -22,6 +22,22 @@ export async function GET(
       return NextResponse.json({ error: `VM ${target} is offline.` }, { status: 400 });
     }
 
+    if (vm.workerProfile === "LLM_QWEN_VLM") {
+      return NextResponse.json({
+        target,
+        totalNodesAvailable: 0,
+        models: {
+          checkpoints: ["Qwen3.8-27B-UD-Q4_K_M.gguf"],
+          loras: [],
+          vaes: [],
+          controlnets: [],
+          ipadapters: [],
+          clip_visions: ["mmproj-F16.gguf"],
+          upscale_models: [],
+        },
+      });
+    }
+
     const catalog = await new ComfyClient(vm).getCatalog(target);
     return NextResponse.json(catalog);
   } catch (error) {

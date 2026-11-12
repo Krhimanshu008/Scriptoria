@@ -121,6 +121,27 @@ export async function resolveCandidateLlmConfigs(
     candidates.push(cfg);
   };
 
+  // Prefer live self-hosted Kaggle QWEN-LLM VM when ONLINE and no explicit Vault alias overrides it
+  if (!preferredAlias) {
+    const onlineQwen = await prisma.vmInstance.findFirst({
+      where: {
+        userId,
+        workerProfile: "LLM_QWEN_VLM",
+        status: "ONLINE",
+      },
+      orderBy: { lastHeartbeat: "desc" },
+    });
+    if (onlineQwen?.publicUrl && onlineQwen.vmSecret) {
+      pushUnique({
+        provider: "openai",
+        model: "qwen-27b",
+        apiKey: onlineQwen.vmSecret,
+        baseUrl: `${onlineQwen.publicUrl.replace(/\/$/, "")}/v1`,
+        source: "env",
+      });
+    }
+  }
+
   // Sort Vault entries so any key matching user's preferred provider/alias goes first
   const sortedCreds = [...creds].sort((a, b) => {
     const getProv = (row: typeof a) => {

@@ -768,6 +768,9 @@ with open("/tmp/Caddyfile", "w", encoding="utf-8") as f:
 # -------------------------------------------------------------
 def setup_rclone():
     global RCLONE_READY
+    if not gdrive_cfg:
+        log_event("Google Drive token omitted; skipping Rclone Drive cache.", category="RCLONE", level="WARN")
+        return False
     t0 = time.time()
     try:
         if not os.path.exists("/usr/local/bin/rclone"):
@@ -996,26 +999,62 @@ if PROFILE_ID == "LLM_QWEN_VLM":
                 log_event(f"Drive llama-server lookup: {re_err}", category="SYSTEM")
 
         try:
-            tar_url = "https://github.com/ai-dock/llama.cpp-cuda/releases/latest/download/llama.cpp-cuda-amd64.tar.gz"
-            log_event("Fetching prebuilt CUDA llama-server release...", category="SYSTEM")
-            urllib.request.urlretrieve(tar_url, "/tmp/llama_cuda.tar.gz")
+            log_event("Fetching official ggml-org/llama.cpp Ubuntu CUDA release...", category="SYSTEM")
+            rel_req = urllib.request.Request(
+                "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=8",
+                headers={"Accept": "application/vnd.github+json", "User-Agent": "Scriptoria"},
+            )
+            with urllib.request.urlopen(rel_req, timeout=20) as rel_resp:
+                releases = json.loads(rel_resp.read().decode("utf-8"))
+            bin_url = None
+            cudart_url = None
+            for rel in releases:
+                assets = rel.get("assets", []) or []
+                b_hit = next((a["browser_download_url"] for a in assets if "bin-ubuntu-cuda-12" in a.get("name", "") and a.get("name", "").startswith("llama-") and a.get("name", "").endswith("-x64.tar.gz")), None)
+                c_hit = next((a["browser_download_url"] for a in assets if "bin-ubuntu-cuda-12" in a.get("name", "") and a.get("name", "").startswith("cudart-llama-") and a.get("name", "").endswith("-x64.tar.gz")), None)
+                if b_hit:
+                    bin_url = b_hit
+                    cudart_url = c_hit
+                    break
+            if not bin_url:
+                raise RuntimeError("No Ubuntu CUDA-12 release tarball found in ggml-org/llama.cpp")
+            urllib.request.urlretrieve(bin_url, "/tmp/llama_cuda.tar.gz")
             subprocess.run(["tar", "-xzf", "/tmp/llama_cuda.tar.gz", "-C", "/tmp/llama_bin"], check=True)
+            if cudart_url:
+                urllib.request.urlretrieve(cudart_url, "/tmp/llama_cudart.tar.gz")
+                subprocess.run(["tar", "-xzf", "/tmp/llama_cudart.tar.gz", "-C", "/tmp/llama_bin"], check=True)
             for root, _, files in os.walk("/tmp/llama_bin"):
-                if "llama-server" in files:
-                    found = os.path.join(root, "llama-server")
-                    if found != "/tmp/llama_bin/llama-server":
-                        shutil.copy2(found, "/tmp/llama_bin/llama-server")
-                        for f_so in os.listdir(root):
-                            if ".so" in f_so:
-                                shutil.copy2(os.path.join(root, f_so), os.path.join("/tmp/llama_bin", f_so))
-                    os.chmod("/tmp/llama_bin/llama-server", 0o755)
-                    return "/tmp/llama_bin/llama-server"
+                for fname in files:
+                    if fname == "llama-server" or ".so" in fname:
+                        src_p = os.path.join(root, fname)
+                        dst_p = os.path.join("/tmp/llama_bin", fname)
+                        if src_p != dst_p and not os.path.exists(dst_p):
+                            shutil.copy2(src_p, dst_p)
+            dst_srv = "/tmp/llama_bin/llama-server"
+            if os.path.exists(dst_srv):
+                os.chmod(dst_srv, 0o755)
+                chk_env = os.environ.copy()
+                chk_env["LD_LIBRARY_PATH"] = f"/tmp/llama_bin:{chk_env.get('LD_LIBRARY_PATH', '')}"
+                chk = subprocess.run([dst_srv, "--version"], env=chk_env, capture_output=True, text=True, timeout=15)
+                if chk.returncode == 0:
+                    log_event(f"Prebuilt llama-server ready: {(chk.stdout or chk.stderr).strip()[:100]}", category="SYSTEM", level="SUCCESS")
+                    return dst_srv
+                raise RuntimeError(f"llama-server --version failed ({chk.returncode}): {(chk.stderr or chk.stdout)[-240:]}")
         except Exception as pe:
             log_event(f"Prebuilt llama-server failed ({pe}); compiling sm_75 once...", category="SYSTEM", level="WARN")
 
-        subprocess.run(["git", "clone", "--depth", "1", "https://github.com/ggerganov/llama.cpp.git", "/tmp/llama_src"], check=True)
-        subprocess.run(["cmake", "-B", "/tmp/llama_src/build", "-S", "/tmp/llama_src", "-DGGML_CUDA=ON", "-DCMAKE_CUDA_ARCHITECTURES=75", "-DLLAMA_CURL=OFF"], check=True)
-        subprocess.run(["cmake", "--build", "/tmp/llama_src/build", "--config", "Release", "--target", "llama-server", "-j", "4"], check=True)
+        def _run_logged(cmd_list, step_label):
+            res = subprocess.run(cmd_list, capture_output=True, text=True)
+            if res.returncode != 0:
+                tail = (res.stderr or res.stdout or "")[-400:]
+                log_event(f"{step_label} failed (rc={res.returncode}): {tail}", category="ERROR", level="ERROR")
+                raise RuntimeError(f"{step_label} failed (rc={res.returncode}): {tail}")
+
+        _run_logged(["bash", "-lc", "which cmake >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq cmake build-essential)"], "apt cmake")
+        if not os.path.exists("/tmp/llama_src"):
+            _run_logged(["git", "clone", "--depth", "1", "https://github.com/ggml-org/llama.cpp.git", "/tmp/llama_src"], "git clone llama.cpp")
+        _run_logged(["cmake", "-B", "/tmp/llama_src/build", "-S", "/tmp/llama_src", "-DGGML_CUDA=ON", "-DCMAKE_CUDA_ARCHITECTURES=75", "-DLLAMA_CURL=OFF"], "cmake configure")
+        _run_logged(["cmake", "--build", "/tmp/llama_src/build", "--config", "Release", "--target", "llama-server", "-j", "4"], "cmake build")
         shutil.copy2("/tmp/llama_src/build/bin/llama-server", "/tmp/llama_bin/llama-server")
         for f_so in os.listdir("/tmp/llama_src/build/bin"):
             if ".so" in f_so:
@@ -1057,7 +1096,7 @@ if PROFILE_ID == "LLM_QWEN_VLM":
             subprocess.run([sys.executable, "-m", "pip", "install", "-q", "huggingface_hub"], check=False)
         from huggingface_hub import hf_hub_download, list_repo_files
         files = list_repo_files(LLM_MODEL_REPO)
-        ggufs = [f for f in files if f.lower().endswith(".gguf") and "mmproj" not in f.lower()]
+        ggufs = [f for f in files if f.lower().endswith(".gguf") and "mmproj" not in f.lower() and not f.lower().startswith("mtp/")]
         mms = [f for f in files if f.lower().endswith(".gguf") and "mmproj" in f.lower()]
         chosen_gguf = None
         for pat in ["Q4_K_M", "UD-Q4_K_XL", "Q4_K_S", "Q4_0"]:
@@ -1067,7 +1106,7 @@ if PROFILE_ID == "LLM_QWEN_VLM":
                 break
         if not chosen_gguf:
             raise RuntimeError(f"No 4-bit GGUF found in {LLM_MODEL_REPO}")
-        chosen_mm = next((f for f in mms if "f16" in f.lower() or "bf16" in f.lower()), mms[0] if mms else None)
+        chosen_mm = next((f for f in mms if "mmproj-f16" in f.lower()), next((f for f in mms if "f16" in f.lower() or "bf16" in f.lower()), mms[0] if mms else None))
         log_event(f"Downloading {LLM_MODEL_REPO}/{chosen_gguf} from Hugging Face...", category="SYSTEM")
         m_local = hf_hub_download(repo_id=LLM_MODEL_REPO, filename=chosen_gguf, local_dir="/tmp/models/llm")
         mm_local = hf_hub_download(repo_id=LLM_MODEL_REPO, filename=chosen_mm, local_dir="/tmp/models/llm") if chosen_mm else None

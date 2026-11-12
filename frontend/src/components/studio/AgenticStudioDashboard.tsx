@@ -9,10 +9,11 @@ import { StudioWorkspace } from "@/components/studio/StudioWorkspace";
 import { SmartWorkflowCreator } from "@/components/studio/SmartWorkflowCreator";
 import { SceneBatchStudio } from "@/components/studio/SceneBatchStudio";
 import { WorkflowGalleryTab } from "@/components/studio/WorkflowGalleryTab";
+import { LlmStudioTab } from "@/components/studio/LlmStudioTab";
 import { AgentCoDirectorPanel } from "@/components/studio/AgentCoDirectorPanel";
 import { LiveConsole } from "@/components/logs/LiveConsole";
 
-type StudioTabId = "single" | "creator" | "scenes" | "batch" | "gallery";
+type StudioTabId = "single" | "creator" | "scenes" | "batch" | "gallery" | "llm";
 
 const STUDIO_TABS: Array<{ id: StudioTabId; label: string }> = [
   { id: "single", label: "Prompt" },
@@ -20,6 +21,7 @@ const STUDIO_TABS: Array<{ id: StudioTabId; label: string }> = [
   { id: "scenes", label: "5-Track Scenes" },
   { id: "batch", label: "Batch & Ingest" },
   { id: "gallery", label: "Templates" },
+  { id: "llm", label: "LLM Studio" },
 ];
 
 export function AgenticStudioDashboard() {
@@ -114,6 +116,7 @@ export function AgenticStudioDashboard() {
           {activeTab === "scenes" && <SceneBatchStudio subView="scenes" />}
           {activeTab === "batch" && <SceneBatchStudio subView="batch" />}
           {activeTab === "gallery" && <WorkflowGalleryTab vms={vms} />}
+          {activeTab === "llm" && <LlmStudioTab />}
           <LiveConsole />
         </div>
 
