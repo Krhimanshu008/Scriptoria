@@ -208,9 +208,10 @@ try:
     n_chips = len(devices)
     platform = devices[0].platform if n_chips > 0 else "none"
     if n_chips != 8 or platform != "tpu":
-        err_msg = f"Ghost TPU detected! Found {n_chips} {platform} devices, expected 8 TPU chips. Stopping cleanly."
+        err_msg = f"Ghost TPU detected! Found {n_chips} {platform} devices, expected 8 TPU chips. Ensure Kaggle phone verification is completed in Kaggle -> Settings."
         log_event(err_msg, "ERROR", "ERROR")
         post_heartbeat(1, status="ERROR", telemetry={"lastError": err_msg})
+        time.sleep(2)
         os._exit(1)
     log_event(f"Hardware verified: 8 TPU v5e chips detected in mesh.", "SYSTEM", "SUCCESS")
 except Exception as e:
@@ -408,3 +409,4 @@ except KeyboardInterrupt:
     post_heartbeat(5, status="OFFLINE")
 `;
 }
+

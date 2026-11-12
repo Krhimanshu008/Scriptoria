@@ -11,7 +11,8 @@ export interface PushKernelParams {
   datasetDataSources?: string[];
   enableGpu?: boolean;
   enableTpu?: boolean;
-  accelerator?: "nvidiaTeslaT4" | "tpuV5e";
+  machineShape?: string;
+  accelerator?: "nvidiaTeslaT4" | "tpuV5e" | "TpuV5E8";
 }
 
 export interface KernelStatusResult {
@@ -90,12 +91,14 @@ export class KaggleOrchestrator {
       datasetDataSources = [],
       enableGpu = true,
       enableTpu = false,
+      machineShape,
       accelerator,
     } = params;
     const notebookJson = this.wrapPythonAsNotebookJson(pythonCode);
     const fullSlug = `${credentials.username}/${kernelSlug}`;
 
-    const isTpu = Boolean(enableTpu || accelerator === "tpuV5e");
+    const isTpu = Boolean(enableTpu || accelerator === "tpuV5e" || accelerator === "TpuV5E8");
+    const shape = machineShape || (isTpu ? "TpuV5E8" : enableGpu ? "NvidiaTeslaT4" : undefined);
 
     const payload: Record<string, unknown> = {
       slug: fullSlug,
@@ -107,11 +110,7 @@ export class KaggleOrchestrator {
       enableGpu: isTpu ? false : enableGpu,
       enableTpu: isTpu,
       enableInternet: true,
-      ...(isTpu
-        ? { accelerator: "tpuV5e" }
-        : enableGpu
-        ? { machineShape: "NvidiaTeslaT4" }
-        : {}),
+      ...(shape ? { machineShape: shape } : {}),
       datasetDataSources,
       competitionDataSources: [],
       kernelDataSources: [],

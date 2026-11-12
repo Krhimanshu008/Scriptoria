@@ -235,7 +235,7 @@ export async function POST(
             : [],
           enableTpu: isTpu,
           enableGpu: !isTpu,
-          accelerator: isTpu ? "tpuV5e" : "nvidiaTeslaT4",
+          machineShape: isTpu ? "TpuV5E8" : "NvidiaTeslaT4",
         });
 
         if (pushRes.kernelSessionId) {
