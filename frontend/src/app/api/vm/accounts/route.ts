@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { getAuthUser } from "@/lib/auth/session";
+import { getAuthUser, ensureUserVmSlots } from "@/lib/auth/session";
 import { getDecryptedCredential } from "@/lib/crypto/credentials";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
 import { KaggleOrchestrator, KaggleQuotaInfo } from "@/lib/orchestrator/kaggle-client";
@@ -38,8 +38,9 @@ export async function GET(req: NextRequest) {
     }
 
     prewarmLocalTunnelIfNeeded(req);
+    await ensureUserVmSlots(user.userId);
 
-    const [vms, colabRelatedCreds, gdriveCred] = await Promise.all([
+    const [vms, colabRelatedCreds, gdriveCred, kaggleCreds] = await Promise.all([
       prisma.vmInstance.findMany({ where: { userId: user.userId } }),
       prisma.credential.findMany({
         where: {
@@ -49,9 +50,24 @@ export async function GET(req: NextRequest) {
         select: { provider: true, accountAlias: true, username: true, metadataJson: true },
       }),
       getUserGDriveCredential(user.userId).catch(() => null),
+      prisma.credential.findMany({
+        where: {
+          userId: user.userId,
+          provider: "kaggle",
+        },
+        select: { accountAlias: true },
+      }),
     ]);
 
-    const kaggleAliases = ["acc1", "acc2"];
+    const vmAliases = vms
+      .filter((v) => v.provider === "kaggle")
+      .map((v) => v.accountAlias);
+    const defaultAliases = ["acc1", "acc2", "acc3", "acc4"];
+    const kaggleAliases = Array.from(
+      new Set([...defaultAliases, ...kaggleCreds.map((c) => c.accountAlias), ...vmAliases])
+    )
+      .filter(Boolean)
+      .sort();
     const kaggleAccounts: KaggleAccountSummary[] = await Promise.all(
       kaggleAliases.map(async (alias) => {
         const targets = vms

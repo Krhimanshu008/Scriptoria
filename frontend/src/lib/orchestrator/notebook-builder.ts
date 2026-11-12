@@ -1319,9 +1319,10 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"):
                         chunk = resp.read(1024)
                         if not chunk:
                             break
-                        self.wfile.write(f"{len(chunk):X}\r\n".encode("latin1") + chunk + b"\r\n")
+                        chunk_hdr = hex(len(chunk))[2:].encode("ascii") + b"\\r\\n"
+                        self.wfile.write(chunk_hdr + chunk + b"\\r\\n")
                         self.wfile.flush()
-                    self.wfile.write(b"0\r\n\r\n")
+                    self.wfile.write(b"0\\r\\n\\r\\n")
                     self.wfile.flush()
             except Exception as pe:
                 err = json.dumps({"error": str(pe)}).encode("utf-8")

@@ -41,6 +41,7 @@ export async function GET(req: NextRequest) {
     const gdrive = findCred("gdrive");
     const kaggle1 = findCred("kaggle", "acc1");
     const kaggle2 = findCred("kaggle", "acc2");
+    const kaggle3 = findCred("kaggle", "acc3");
     const colab1 = findCred("colab", "acc1");
     const colab2 = findCred("colab", "acc2");
     const hf = findCred("huggingface");
@@ -49,7 +50,7 @@ export async function GET(req: NextRequest) {
     const preferredLlm =
       llmCreds.find((c) => c.accountAlias === settings.preferredLlmProvider) || llmCreds[0];
 
-    const hasPrimaryCompute = Boolean(kaggle1 || kaggle2 || colab1 || colab2);
+    const hasPrimaryCompute = Boolean(kaggle1 || kaggle2 || kaggle3 || colab1 || colab2);
 
     const items: ReadinessItem[] = [
       {
@@ -92,6 +93,16 @@ export async function GET(req: NextRequest) {
         configured: Boolean(kaggle2),
         usedFor: "Adds +30h/week Dual-T4 capacity on gpu2 + gpu3.",
         hint: kaggle2?.username ? `@${kaggle2.username}` : "Optional second Kaggle account",
+      },
+      {
+        id: "kaggle-acc3",
+        title: "Kaggle Account (acc3 · Tertiary Dual T4)",
+        tier: "OPTIONAL",
+        provider: "kaggle",
+        accountAlias: "acc3",
+        configured: Boolean(kaggle3),
+        usedFor: "Adds +30h/week Dual-T4 capacity on gpu4 + gpu5.",
+        hint: kaggle3?.username ? `@${kaggle3.username}` : "Optional third Kaggle account",
       },
       {
         id: "colab-acc1",

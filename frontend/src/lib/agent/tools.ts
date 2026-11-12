@@ -12,7 +12,7 @@ export const AGENT_TOOL_DEFINITIONS: LlmToolDefinition[] = [
   {
     name: "get_cluster_state",
     description:
-      "Inspect all GPUs (gpu0..gpu3, gcgpu, gcgpu1), online status, worker profiles, free VRAM, cached /tmp checkpoints, and recent batch jobs.",
+      "Inspect all GPUs (gpu0..gpu7, gcgpu, gcgpu1), online status, worker profiles, free VRAM, cached /tmp checkpoints, and recent batch jobs.",
     parameters: {
       type: "object",
       properties: {
@@ -72,7 +72,7 @@ export const AGENT_TOOL_DEFINITIONS: LlmToolDefinition[] = [
     parameters: {
       type: "object",
       properties: {
-        target: { type: "string", description: "gpu0 | gpu1 | gpu2 | gpu3 | gcgpu | gcgpu1" },
+        target: { type: "string", description: "gpu0 | gpu1 | gpu2 | gpu3 | gpu4 | gpu5 | gpu6 | gpu7 | gcgpu | gcgpu1" },
         modelFilenamesOrSlugs: {
           type: "array",
           items: { type: "string" },

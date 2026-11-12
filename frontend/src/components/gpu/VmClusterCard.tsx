@@ -115,7 +115,11 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
   const primaryTarget =
     primaryVm?.target ||
     (kind === "kaggle"
-      ? kaggleAccount?.accountAlias === "acc2"
+      ? kaggleAccount?.accountAlias === "acc4"
+        ? "gpu6"
+        : kaggleAccount?.accountAlias === "acc3"
+        ? "gpu4"
+        : kaggleAccount?.accountAlias === "acc2"
         ? "gpu2"
         : "gpu0"
       : colabAccount?.accountAlias === "acc2"

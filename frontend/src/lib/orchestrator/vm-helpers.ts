@@ -38,7 +38,7 @@ export interface PublicVmInstance {
   uptimeSeconds: number;
 }
 
-const TARGET_ORDER = ["gpu0", "gpu1", "gpu2", "gpu3", "gcgpu", "gcgpu1"];
+const TARGET_ORDER = ["gpu0", "gpu1", "gpu2", "gpu3", "gpu4", "gpu5", "gpu6", "gpu7", "gcgpu", "gcgpu1"];
 
 export function sortVmsByCanonicalTarget(vms: VmInstance[]): VmInstance[] {
   return [...vms].sort((a, b) => {

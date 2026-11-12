@@ -1260,8 +1260,10 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
                     onChange={(e) => setKaggleAlias(e.target.value)}
                     className="h-9 w-full rounded-md border border-zinc-800 bg-zinc-950 px-2.5 text-xs text-zinc-100"
                   >
-                    <option value="acc1" className="bg-zinc-900">acc1 (gpu0 &amp; gpu1)</option>
-                    <option value="acc2" className="bg-zinc-900">acc2 (gpu2 &amp; gpu3)</option>
+                    <option value="acc1" className="bg-zinc-900">acc1 (gpu0 &amp; gpu1 · Primary Dual-T4)</option>
+                    <option value="acc2" className="bg-zinc-900">acc2 (gpu2 &amp; gpu3 · Secondary Dual-T4)</option>
+                    <option value="acc3" className="bg-zinc-900">acc3 (gpu4 &amp; gpu5 · Tertiary Dual-T4)</option>
+                    <option value="acc4" className="bg-zinc-900">acc4 (gpu6 &amp; gpu7 · Quaternary Dual-T4)</option>
                   </select>
                 </div>
                 <div className="space-y-1">

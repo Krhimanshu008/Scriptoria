@@ -129,7 +129,7 @@ export const WORKER_PROFILES: Record<WorkerProfileId, WorkerProfileSpec> = {
     shortTag: "QWEN-LLM",
     description:
       "Dual-T4 llama-server + DFlash2 speculative drafter + mmproj vision. Best for Visual QA, multi-modal frame auditing, and mixed storyboarding (~35-85 tok/s).",
-    recommendedTargets: ["gpu2", "gpu3"],
+    recommendedTargets: ["gpu0", "gpu1", "gpu2", "gpu3", "gpu4", "gpu5"],
     customNodes: [],
   },
   LLM_QWEN_TEXT_TURBO: {
@@ -138,7 +138,7 @@ export const WORKER_PROFILES: Record<WorkerProfileId, WorkerProfileSpec> = {
     shortTag: "QWEN-TURBO",
     description:
       "Dual-T4 ExLlamaV3 + DFlash2 drafter + Tensor Parallelism. Fastest single-user text throughput (55-154 tok/s) for ingesting 100s of novel chapters without vision.",
-    recommendedTargets: ["gpu2", "gpu3"],
+    recommendedTargets: ["gpu0", "gpu1", "gpu2", "gpu3", "gpu4", "gpu5"],
     customNodes: [],
   },
 };

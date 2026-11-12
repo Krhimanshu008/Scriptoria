@@ -522,6 +522,12 @@ function VmClusterContent() {
             <option value="acc2" className="bg-zinc-900">
               acc2 (CPU)
             </option>
+            <option value="acc3" className="bg-zinc-900">
+              acc3 (CPU)
+            </option>
+            <option value="acc4" className="bg-zinc-900">
+              acc4 (CPU)
+            </option>
           </select>
 
           <button

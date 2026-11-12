@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { getAuthUser } from "@/lib/auth/session";
+import { getAuthUser, ensureUserVmSlots } from "@/lib/auth/session";
 import { getDecryptedCredential } from "@/lib/crypto/credentials";
 import { appendSystemLog } from "@/lib/logs/logger";
 import { ComfyClient } from "@/lib/orchestrator/comfy-client";
@@ -13,16 +13,27 @@ const KAGGLE_ACTIVE_POLL_MS = 30_000;
 const lastKagglePollAt = new Map<string, number>();
 
 function pickBestKernelError(lines: string[], fallback?: string): string {
-  const priority = [...lines]
+  const clean = lines.map((l) => l.trim()).filter(Boolean);
+  if (clean.length === 0) return fallback || "Kaggle kernel exited before opening a tunnel.";
+
+  // If there's an actual exception line (e.g. "SyntaxError: ...", "RuntimeError: ...", "ImportError: ...")
+  const excLine = [...clean]
     .reverse()
-    .find((line) =>
-      /\[HEARTBEAT\]|\[ERROR\]|DeadKernelError|traceback|Name or service not known|RuntimeError/i.test(
-        line
-      )
+    .find((l) =>
+      /^[A-Za-z0-9_]+Error:|^[A-Za-z0-9_]+Exception:|Name or service not known|No space left on device|Killed/i.test(l)
+    );
+  if (excLine) return excLine.slice(0, 220);
+
+  // If there's a logged heartbeat or error line
+  const priority = [...clean]
+    .reverse()
+    .find((l) =>
+      /\[HEARTBEAT\]|\[ERROR\]|DeadKernelError/i.test(l)
     );
   if (priority) return priority.slice(0, 220);
-  if (lines.length > 0) return lines.slice(-2).join(" | ").slice(0, 220);
-  return fallback || "Kaggle kernel exited before opening a tunnel.";
+
+  // Fallback to the last line
+  return clean[clean.length - 1].slice(0, 220);
 }
 
 export async function GET(req: NextRequest) {
@@ -31,6 +42,8 @@ export async function GET(req: NextRequest) {
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+
+    await ensureUserVmSlots(user.userId);
 
     const forceProbe = req.nextUrl.searchParams.get("probe") === "true";
     const rows = await prisma.vmInstance.findMany({

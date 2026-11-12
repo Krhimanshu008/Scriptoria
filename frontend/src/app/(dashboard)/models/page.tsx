@@ -441,6 +441,8 @@ export default function ModelsPage() {
                   { target: "gpu1", status: "OFFLINE" },
                   { target: "gpu2", status: "OFFLINE" },
                   { target: "gpu3", status: "OFFLINE" },
+                  { target: "gpu4", status: "OFFLINE" },
+                  { target: "gpu5", status: "OFFLINE" },
                   { target: "gcgpu", status: "OFFLINE" },
                   { target: "gcgpu1", status: "OFFLINE" },
                 ]
