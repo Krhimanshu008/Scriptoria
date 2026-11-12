@@ -4,6 +4,7 @@ import { getAuthUser } from "@/lib/auth/session";
 import { getDecryptedCredential } from "@/lib/crypto/credentials";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
 import { KaggleOrchestrator, KaggleQuotaInfo } from "@/lib/orchestrator/kaggle-client";
+import { peekActiveTunnelUrl } from "@/lib/orchestrator/webhook-tunnel";
 
 export interface KaggleAccountSummary {
   accountAlias: string;
@@ -159,6 +160,7 @@ export async function GET(req: NextRequest) {
       kaggleAccounts,
       colabAccounts,
       googleOAuthAvailable: oauthConfigured,
+      activeTunnelUrl: peekActiveTunnelUrl(),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to load cluster accounts";

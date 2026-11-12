@@ -193,6 +193,21 @@ export async function fetchGDriveFileStream(userId: string, fileId: string): Pro
 
 export async function getGoogleAccountEmail(accessToken: string): Promise<string | null> {
   try {
+    // Works with pure Drive tokens (like rclone OAuth) without needing userinfo.email scope
+    const aboutRes = await fetch(
+      "https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)",
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        cache: "no-store",
+      }
+    );
+    if (aboutRes.ok) {
+      const aboutData = (await aboutRes.json()) as { user?: { emailAddress?: string } };
+      if (aboutData.user?.emailAddress) {
+        return aboutData.user.emailAddress;
+      }
+    }
+
     const res = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
       headers: { Authorization: `Bearer ${accessToken}` },
       cache: "no-store",
@@ -355,5 +370,64 @@ export async function upsertColabNotebookInDrive(params: {
     throw new Error("Google Drive upload succeeded without returning a file ID.");
   }
   return { fileId: created.id, updated: false };
+}
+
+/**
+ * Grants a secondary Google account writer permission on a Drive notebook without sending notification spam.
+ */
+export async function shareDriveFileWithUser(
+  accessToken: string,
+  fileId: string,
+  email: string
+): Promise<void> {
+  const cleanEmail = email.trim();
+  if (!cleanEmail) return;
+
+  const payload = JSON.stringify({
+    role: "writer",
+    type: "user",
+    emailAddress: cleanEmail,
+  });
+
+  const firstRes = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+      fileId
+    )}/permissions?sendNotificationEmail=false&supportsAllDrives=true`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: payload,
+      cache: "no-store",
+    }
+  );
+
+  if (firstRes.ok) return;
+
+  const errText = await firstRes.text().catch(() => firstRes.statusText);
+  // Some Drive ACL edges require default notification behavior when inviting an external user
+  if (firstRes.status === 400 && /notification/i.test(errText)) {
+    const retryRes = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+        fileId
+      )}/permissions?supportsAllDrives=true`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: payload,
+        cache: "no-store",
+      }
+    );
+    if (retryRes.ok) return;
+    const retryErr = await retryRes.text().catch(() => retryRes.statusText);
+    throw new Error(`Google Drive share failed (${retryRes.status}): ${retryErr}`);
+  }
+
+  throw new Error(`Google Drive share failed (${firstRes.status}): ${errText}`);
 }
 

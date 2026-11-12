@@ -7,13 +7,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Server,
   HardDriveDownload,
-  Sparkles,
   Images,
   KeyRound,
   PowerOff,
   LogOut,
   Loader2,
-  Cpu,
+  Sparkles,
   X,
 } from "lucide-react";
 import type { SessionUser } from "@/lib/auth/session";
@@ -23,9 +22,8 @@ import { formatStreamSummary } from "@/lib/format";
 import { toast } from "sonner";
 
 const NAV_ITEMS = [
-  { href: "/", label: "Cluster", icon: Cpu },
+  { href: "/", label: "Command Center", icon: Sparkles },
   { href: "/models", label: "Models", icon: HardDriveDownload },
-  { href: "/studio", label: "Studio", icon: Sparkles },
   { href: "/history", label: "History", icon: Images },
   { href: "/settings/vault", label: "Vault", icon: KeyRound },
 ];
@@ -60,22 +58,23 @@ export function DashboardShell({
       if (!res.ok) throw new Error("Failed to fetch VM status");
       return res.json();
     },
-    refetchInterval: 5000,
-    staleTime: 4000,
+    refetchInterval: (query) => {
+      const list = query.state.data?.vms ?? [];
+      return list.some((v) => v.status === "STARTING") ? 2500 : 5000;
+    },
+    staleTime: 2500,
   });
 
   const vms = data?.vms ?? [];
   const onlineVms = vms.filter((v) => v.status === "ONLINE" || v.status === "BUSY");
   const totalVram = onlineVms.reduce((acc, v) => acc + (v.vramTotalGb || 16), 0);
 
-  // Sync preferred online GPU automatically across all pages
   useEffect(() => {
     if (data?.vms?.length) {
       syncTargetWithVms(data.vms);
     }
   }, [data?.vms, syncTargetWithVms]);
 
-  // Background Rclone stream progress poller (persists across route switches)
   useEffect(() => {
     if (!activeStream?.active || activeStream.completed) return;
 
@@ -150,7 +149,7 @@ export function DashboardShell({
           setActiveStream(null);
         }
       } catch {
-        // Ignore transient network hiccups during polling
+        // Ignore transient polling errors
       }
     }, 1500);
 
@@ -169,7 +168,6 @@ export function DashboardShell({
     setActiveStream,
   ]);
 
-  // Background Studio generation job poller (persists across route switches)
   useEffect(() => {
     if (!pollingJobId) return;
 
@@ -246,35 +244,44 @@ export function DashboardShell({
   }
 
   return (
-    <div className="flex min-h-screen flex-col bg-zinc-950 text-zinc-100">
-      <header className="sticky top-0 z-40 border-b border-zinc-800/80 bg-zinc-950/90 backdrop-blur-md">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-6 py-3">
+    <div className="relative flex min-h-screen flex-col overflow-x-hidden bg-[#05070e] text-zinc-100">
+      {/* Ambient Glassmorphism Depth Orbs */}
+      <div className="pointer-events-none fixed inset-0 z-0 overflow-hidden">
+        <div className="absolute -left-24 -top-24 h-96 w-96 rounded-full bg-indigo-600/20 blur-[130px]" />
+        <div className="absolute right-[-6rem] top-16 h-[28rem] w-[28rem] rounded-full bg-cyan-500/15 blur-[140px]" />
+        <div className="absolute bottom-[-8rem] left-1/3 h-96 w-96 rounded-full bg-violet-600/15 blur-[140px]" />
+      </div>
+
+      <header className="sticky top-0 z-40 border-b border-white/10 bg-[#070b16]/65 backdrop-blur-2xl">
+        <div className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-4 px-5 py-2.5">
           {/* Brand + Nav */}
-          <div className="flex items-center gap-6">
+          <div className="flex items-center gap-5">
             <Link href="/" prefetch={true} className="flex items-center gap-2.5">
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 text-white shadow-lg shadow-indigo-500/20">
+              <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-tr from-indigo-500 to-cyan-400 text-white shadow-lg shadow-indigo-500/25">
                 <Server className="h-4 w-4" />
               </div>
               <div>
                 <div className="text-sm font-bold tracking-tight text-white">Scriptoria</div>
-                <div className="text-[10px] text-zinc-400">Next.js GPU Control Plane</div>
+                <div className="text-[10px] text-zinc-400">Glass GPU Studio</div>
               </div>
             </Link>
 
-            <nav className="flex items-center gap-1 rounded-xl border border-zinc-800 bg-zinc-900/70 p-1">
+            <nav className="flex items-center gap-1 rounded-xl border border-white/10 bg-white/[0.04] p-1 backdrop-blur-md">
               {NAV_ITEMS.map((item) => {
                 const Icon = item.icon;
                 const active =
-                  item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
+                  item.href === "/"
+                    ? pathname === "/" || pathname.startsWith("/studio")
+                    : pathname.startsWith(item.href);
                 return (
                   <Link
                     key={item.href}
                     href={item.href}
                     prefetch={true}
-                    className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                    className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition whitespace-nowrap ${
                       active
-                        ? "bg-indigo-600 text-white shadow"
-                        : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+                        ? "bg-gradient-to-r from-indigo-600/90 to-indigo-500/80 text-white shadow-md shadow-indigo-500/20"
+                        : "text-zinc-400 hover:bg-white/[0.06] hover:text-white"
                     }`}
                   >
                     <Icon className="h-3.5 w-3.5" />
@@ -286,24 +293,24 @@ export function DashboardShell({
           </div>
 
           {/* Cluster Counters + Actions */}
-          <div className="flex items-center gap-3">
-            <div className="hidden items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900/80 px-3 py-1.5 text-xs sm:flex">
-              <span className="text-zinc-400">
-                Online GPUs:{" "}
+          <div className="flex items-center gap-2.5">
+            <div className="glass-pill hidden items-center gap-3 rounded-xl px-3 py-1.5 text-xs sm:flex">
+              <span className="text-zinc-400 whitespace-nowrap">
+                Online:{" "}
                 <strong className="text-emerald-400">
                   {onlineVms.length} / {vms.length || 6}
                 </strong>
               </span>
-              <span className="h-3 w-px bg-zinc-700" />
-              <span className="text-zinc-400">
-                VRAM: <strong className="text-indigo-400">{totalVram.toFixed(0)} GB</strong>
+              <span className="h-3 w-px bg-white/15" />
+              <span className="text-zinc-400 whitespace-nowrap">
+                VRAM: <strong className="text-cyan-300">{totalVram.toFixed(0)} GB</strong>
               </span>
             </div>
 
             <button
               onClick={handleEmergencyStopAll}
               disabled={stoppingAll || onlineVms.length === 0}
-              className="flex items-center gap-1.5 rounded-xl border border-rose-500/30 bg-rose-950/30 px-3 py-1.5 text-xs font-semibold text-rose-400 transition hover:bg-rose-900/40 disabled:opacity-40"
+              className="flex items-center gap-1.5 rounded-xl border border-rose-500/30 bg-rose-500/15 px-3 py-1.5 text-xs font-semibold text-rose-300 backdrop-blur-md transition hover:bg-rose-500/25 disabled:opacity-40 whitespace-nowrap"
             >
               {stoppingAll ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -314,11 +321,11 @@ export function DashboardShell({
             </button>
 
             <div className="hidden items-center gap-2 text-xs text-zinc-400 md:flex">
-              <span className="max-w-[140px] truncate">{user.email}</span>
+              <span className="max-w-[130px] truncate">{user.email}</span>
               <button
                 onClick={handleLogout}
                 title="Sign out"
-                className="rounded-lg border border-zinc-800 bg-zinc-900 p-1.5 text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-100"
+                className="rounded-lg border border-white/10 bg-white/[0.04] p-1.5 text-zinc-400 transition hover:bg-white/10 hover:text-white"
               >
                 <LogOut className="h-3.5 w-3.5" />
               </button>
@@ -329,16 +336,16 @@ export function DashboardShell({
         {/* Global Rclone Stream Progress Banner */}
         {activeStream?.active && (
           <div
-            className={`border-t px-6 py-2 ${
+            className={`border-t px-5 py-2 backdrop-blur-xl ${
               activeStream.completed
-                ? "border-emerald-500/30 bg-emerald-950/30"
-                : "border-indigo-500/30 bg-indigo-950/30"
+                ? "border-emerald-400/30 bg-emerald-500/10"
+                : "border-indigo-400/30 bg-indigo-500/10"
             }`}
           >
             <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 text-xs">
               <div
                 className={`flex items-center gap-2 font-mono ${
-                  activeStream.completed ? "text-emerald-300" : "text-indigo-300"
+                  activeStream.completed ? "text-emerald-300" : "text-indigo-200"
                 }`}
               >
                 <HardDriveDownload className="h-4 w-4 animate-pulse" />
@@ -348,15 +355,15 @@ export function DashboardShell({
                 </span>
               </div>
               <div className="flex items-center gap-3">
-                <div className="h-2 w-40 overflow-hidden rounded-full bg-zinc-800">
+                <div className="h-2 w-40 overflow-hidden rounded-full bg-white/10">
                   <div
                     className={`h-full transition-all duration-300 ${
-                      activeStream.completed ? "bg-emerald-500" : "bg-indigo-500"
+                      activeStream.completed ? "bg-emerald-400" : "bg-indigo-400"
                     }`}
                     style={{ width: `${activeStream.percentage}%` }}
                   />
                 </div>
-                <span className="font-mono text-zinc-200">
+                <span className="font-mono text-zinc-100">
                   {activeStream.percentage}% · {activeStream.speedText}
                 </span>
                 <button
@@ -372,7 +379,7 @@ export function DashboardShell({
         )}
       </header>
 
-      <main className="mx-auto w-full max-w-7xl flex-1 p-6">{children}</main>
+      <main className="relative z-10 mx-auto w-full max-w-[1440px] flex-1 p-5">{children}</main>
     </div>
   );
 }

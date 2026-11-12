@@ -3,24 +3,12 @@
 import React, { Suspense, useEffect, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  RefreshCw,
-  Download,
-  ExternalLink,
-  Clock,
-  Cpu,
-  Globe,
-  Copy,
-  Check,
-  Power,
-  Skull,
-  UserCheck,
-  AlertCircle,
-} from "lucide-react";
+import { RefreshCw, Globe, Copy, Check, Download } from "lucide-react";
 import type { PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
 import type { KaggleAccountSummary, ColabAccountSummary } from "@/app/api/vm/accounts/route";
-import { GpuCard } from "@/components/gpu/GpuCard";
+import { AccountClusterCard } from "@/components/gpu/AccountClusterCard";
 import { LiveConsole } from "@/components/logs/LiveConsole";
+import { StudioWorkspace } from "@/components/studio/StudioWorkspace";
 import {
   Dialog,
   DialogContent,
@@ -33,21 +21,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 
-function formatHoursMinutes(seconds: number): string {
-  const mins = Math.max(0, Math.floor(seconds / 60));
-  const hrs = Math.floor(mins / 60);
-  const remMins = mins % 60;
-  return `${hrs}h ${remMins.toString().padStart(2, "0")}m`;
-}
-
-function ClusterPageContent() {
+function CommandCenterContent() {
   const queryClient = useQueryClient();
   const searchParams = useSearchParams();
   const router = useRouter();
 
   const [probing, setProbing] = useState(false);
-  const [groupLoading, setGroupLoading] = useState<string | null>(null);
-  const [colabDialog, setColabDialog] = useState<{ url: string; target: string } | null>(null);
   const [connectModalAlias, setConnectModalAlias] = useState<string | null>(null);
   const [manualEmail, setManualEmail] = useState("");
   const [driveUrlInput, setDriveUrlInput] = useState("");
@@ -64,7 +43,7 @@ function ClusterPageContent() {
       queryClient.invalidateQueries({ queryKey: ["vm-accounts"] });
       router.replace("/");
     } else if (err) {
-      toast.error(`Google account link failed: ${err}`);
+      toast.error(`Colab / Google error: ${err}`);
       router.replace("/");
     }
   }, [searchParams, queryClient, router]);
@@ -76,7 +55,7 @@ function ClusterPageContent() {
       if (!res.ok) throw new Error("Failed to fetch VM status");
       return res.json();
     },
-    refetchInterval: 5000,
+    staleTime: 2500,
   });
 
   const { data: accountsData, refetch: refetchAccounts } = useQuery<{
@@ -134,28 +113,9 @@ function ClusterPageContent() {
         const fresh = await vmRes.json();
         queryClient.setQueryData(["vm-status"], fresh);
       }
-      toast.success("Refreshed cluster health & Kaggle quota");
+      toast.success("Refreshed cluster health & Kaggle quotas");
     } finally {
       setProbing(false);
-    }
-  }
-
-  async function handleGroupToggle(groupKey: string, primaryTarget: string, confirmKill = false) {
-    if (confirmKill && !confirm(`Trigger immediate Zero-Quota kill for ${groupKey}?`)) return;
-    setGroupLoading(groupKey);
-    try {
-      const res = await fetch(`/api/vm/${primaryTarget}/toggle`, { method: "POST" });
-      const data = await res.json();
-      if (!res.ok) {
-        toast.error(data.error || `Failed to toggle ${groupKey}`);
-        return;
-      }
-      toast.success(data.message || `Updated ${groupKey}`);
-      queryClient.invalidateQueries({ queryKey: ["vm-status"] });
-    } catch {
-      toast.error(`Network error toggling ${groupKey}`);
-    } finally {
-      setGroupLoading(null);
     }
   }
 
@@ -169,7 +129,7 @@ function ClusterPageContent() {
       }
       await navigator.clipboard.writeText(data.pythonCode);
       setCopiedTarget(target);
-      toast.success(`Copied ${target} Python bootstrap cell! Paste into Colab and press Ctrl+F9.`);
+      toast.success(`Copied self-renewing cell for ${target}! Paste into Colab & press Ctrl+F9.`);
       setTimeout(() => setCopiedTarget(null), 3000);
     } catch {
       toast.error("Failed to copy setup script");
@@ -268,297 +228,132 @@ function ClusterPageContent() {
     }
   }
 
+  const modalColabTarget = connectModalAlias === "acc2" ? "gcgpu1" : "gcgpu";
   const callbackUrl =
     typeof window !== "undefined"
       ? `${window.location.origin}/api/auth/google/colab/callback`
       : "/api/auth/google/colab/callback";
 
   return (
-    <div className="space-y-8">
-      {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-bold tracking-tight text-white">GPU Cluster Overview</h1>
-          <p className="text-xs text-zinc-400">
-            Grouped by cloud account: Kaggle Dual-T4 pairs burn 1x weekly quota per session; Colab slots connect directly to your browser Google account.
-          </p>
+    <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[310px_minmax(0,1fr)]">
+      {/* LEFT STICKY GPU CLUSTER RAIL */}
+      <aside className="space-y-3 lg:sticky lg:top-[74px] lg:z-30">
+        <div className="flex items-center justify-between px-0.5">
+          <div>
+            <h1 className="text-sm font-bold tracking-tight text-white">GPU Cluster Rail</h1>
+            <p className="text-[10px] text-zinc-400">Hover card for VRAM, logs &amp; WebUI</p>
+          </div>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleForceProbe}
+            disabled={probing}
+            title="Refresh Health & Quotas"
+            className="glass-pill h-7 border-white/15 bg-white/[0.04] px-2.5 text-[11px] text-zinc-200 hover:bg-white/10"
+          >
+            <RefreshCw className={`mr-1 h-3 w-3 ${probing ? "animate-spin" : ""}`} />
+            Sync
+          </Button>
         </div>
 
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={handleForceProbe}
-          disabled={probing}
-          className="border-zinc-800 bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
-        >
-          <RefreshCw className={`mr-2 h-3.5 w-3.5 ${probing ? "animate-spin" : ""}`} />
-          Refresh Health &amp; Quotas
-        </Button>
+        {vmsLoading && vms.length === 0 ? (
+          <div className="space-y-3">
+            {[1, 2, 3, 4].map((idx) => (
+              <div key={idx} className="glass-panel h-28 animate-pulse rounded-2xl" />
+            ))}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {/* Unified Kaggle Account Pairs (GPU0+GPU1 & GPU2+GPU3) */}
+            {kaggleAccounts.map((acc) => {
+              const accVms = vms.filter(
+                (v) => v.provider === "kaggle" && v.accountAlias === acc.accountAlias
+              );
+              return (
+                <AccountClusterCard
+                  key={`kaggle-${acc.accountAlias}`}
+                  kind="kaggle"
+                  kaggleAccount={acc}
+                  vms={accVms}
+                  onRefresh={() => queryClient.invalidateQueries({ queryKey: ["vm-status"] })}
+                />
+              );
+            })}
+
+            {/* Colab Slots (GCGPU & GCGPU1) */}
+            {colabAccounts.map((colAcc) => {
+              const colVms = vms.filter(
+                (v) => v.provider === "colab" && v.accountAlias === colAcc.accountAlias
+              );
+              return (
+                <AccountClusterCard
+                  key={`colab-${colAcc.accountAlias}`}
+                  kind="colab"
+                  colabAccount={colAcc}
+                  vms={colVms}
+                  onRefresh={() => queryClient.invalidateQueries({ queryKey: ["vm-status"] })}
+                  onOpenColabSetup={() => openAccountConnectModal(colAcc)}
+                  onCopyCell={handleCopyColabScript}
+                  copiedTarget={copiedTarget}
+                />
+              );
+            })}
+          </div>
+        )}
+      </aside>
+
+      {/* RIGHT MAIN WORKSPACE: EMBEDDED STUDIO + COLLAPSIBLE CONSOLE */}
+      <div className="min-w-0 space-y-4">
+        <StudioWorkspace />
+        <LiveConsole />
       </div>
-
-      {/* SECTION 1: KAGGLE ACCOUNT GROUPS */}
-      <section className="space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-cyan-400">
-            <Cpu className="h-4 w-4" />
-            Kaggle Dual-T4 Account Pools (4× T4 GPUs)
-          </h2>
-        </div>
-
-        <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-          {kaggleAccounts.map((acc) => {
-            const accVms = vms.filter(
-              (v) => v.provider === "kaggle" && v.accountAlias === acc.accountAlias
-            );
-            const primaryTarget = acc.targets[0] || (acc.accountAlias === "acc2" ? "gpu2" : "gpu0");
-            const anyActive = accVms.some(
-              (v) => v.status === "ONLINE" || v.status === "BUSY" || v.status === "STARTING"
-            );
-
-            const totalSec = acc.quota?.totalAllowedSeconds ?? 108000;
-            const remainSec = acc.quota?.remainingSeconds ?? totalSec;
-            const usedSec = acc.quota?.usedSeconds ?? 0;
-            const remainPct = Math.min(100, Math.round((remainSec / Math.max(1, totalSec)) * 100));
-
-            return (
-              <div
-                key={acc.accountAlias}
-                className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5 space-y-4"
-              >
-                {/* Account Group Header */}
-                <div className="flex flex-wrap items-start justify-between gap-4 border-b border-zinc-800/80 pb-4">
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="rounded-md bg-cyan-500/15 px-2 py-0.5 font-mono text-xs font-bold uppercase text-cyan-300">
-                        Kaggle {acc.accountAlias}
-                      </span>
-                      <span className="font-mono text-sm font-semibold text-white">
-                        {acc.username || "Not Configured"}
-                      </span>
-                      <span className="rounded-full border border-zinc-700 bg-zinc-800/80 px-2 py-0.5 text-[10px] text-zinc-300">
-                        2× T4 · 1× Quota Meter
-                      </span>
-                    </div>
-
-                    {/* Remaining Weekly Quota Bar */}
-                    {acc.quota ? (
-                      <div className="mt-2 space-y-1.5 pt-1">
-                        <div className="flex items-center gap-3 text-xs">
-                          <span className="flex items-center gap-1 font-semibold text-emerald-400">
-                            <Clock className="h-3.5 w-3.5" />
-                            {formatHoursMinutes(remainSec)} remaining
-                          </span>
-                          <span className="text-zinc-500">
-                            ({formatHoursMinutes(usedSec)} used of {formatHoursMinutes(totalSec)})
-                          </span>
-                          {acc.quota.resetAt && (
-                            <span className="text-[11px] text-zinc-500">
-                              · Resets {new Date(acc.quota.resetAt).toLocaleDateString()}
-                            </span>
-                          )}
-                        </div>
-                        <div className="h-2 w-full max-w-md overflow-hidden rounded-full bg-zinc-800">
-                          <div
-                            className={`h-full transition-all duration-500 ${
-                              remainPct < 15
-                                ? "bg-rose-500"
-                                : remainPct < 35
-                                ? "bg-amber-500"
-                                : "bg-cyan-500"
-                            }`}
-                            style={{ width: `${remainPct}%` }}
-                          />
-                        </div>
-                      </div>
-                    ) : (
-                      <p className="text-xs text-zinc-500">
-                        {acc.quotaError
-                          ? `Quota check: ${acc.quotaError}`
-                          : acc.configured
-                          ? "Loading remaining quota..."
-                          : "Add credentials in Settings Vault to view remaining hours."}
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => handleGroupToggle(acc.accountAlias, primaryTarget, false)}
-                      disabled={groupLoading === acc.accountAlias || !acc.configured}
-                      className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition disabled:opacity-40 ${
-                        anyActive
-                          ? "border border-amber-500/30 bg-amber-600/20 text-amber-300 hover:bg-amber-600/30"
-                          : "bg-indigo-600 text-white hover:bg-indigo-500"
-                      }`}
-                    >
-                      <Power className="h-3.5 w-3.5" />
-                      {anyActive ? "Stop Pair" : "Boot Dual-T4"}
-                    </button>
-
-                    <button
-                      onClick={() => handleGroupToggle(acc.accountAlias, primaryTarget, true)}
-                      disabled={groupLoading === acc.accountAlias || !anyActive}
-                      title="Zero-Quota Panic Kill"
-                      className="rounded-xl border border-rose-500/30 bg-rose-950/30 p-2 text-rose-400 transition hover:bg-rose-900/50 disabled:opacity-40"
-                    >
-                      <Skull className="h-4 w-4" />
-                    </button>
-                  </div>
-                </div>
-
-                {/* Pair GPU Cards */}
-                {vmsLoading ? (
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                    <div className="h-72 animate-pulse rounded-2xl border border-zinc-800 bg-zinc-900/50" />
-                    <div className="h-72 animate-pulse rounded-2xl border border-zinc-800 bg-zinc-900/50" />
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                    {accVms.map((vm) => (
-                      <GpuCard
-                        key={vm.id}
-                        vm={vm}
-                        onRefresh={() => queryClient.invalidateQueries({ queryKey: ["vm-status"] })}
-                        onColabReady={(url, target) => setColabDialog({ url, target })}
-                      />
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </section>
-
-      {/* SECTION 2: GOOGLE COLAB ACCOUNT POOL */}
-      <section className="space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-amber-400">
-            <Globe className="h-4 w-4" />
-            Google Colab Account Pool (2× T4 Runtimes)
-          </h2>
-        </div>
-
-        <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-          {colabAccounts.map((colAcc) => {
-            const target = colAcc.targets[0] || (colAcc.accountAlias === "acc2" ? "gcgpu1" : "gcgpu");
-            const colVm = vms.find((v) => v.target === target);
-
-            return (
-              <div
-                key={colAcc.accountAlias}
-                className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5 space-y-4"
-              >
-                {/* Colab Account Group Header */}
-                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800/80 pb-4">
-                  <div className="space-y-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="rounded-md bg-amber-500/15 px-2 py-0.5 font-mono text-xs font-bold uppercase text-amber-300">
-                        Colab {colAcc.accountAlias}
-                      </span>
-                      {colAcc.connected ? (
-                        <span className="flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-0.5 text-xs font-medium text-emerald-300">
-                          <UserCheck className="h-3.5 w-3.5" />
-                          {colAcc.email}
-                        </span>
-                      ) : (
-                        <span className="flex items-center gap-1 rounded-full border border-zinc-700 bg-zinc-800 px-2.5 py-0.5 text-xs text-zinc-400">
-                          <AlertCircle className="h-3.5 w-3.5 text-amber-400" />
-                          No Google account linked
-                        </span>
-                      )}
-                      {colAcc.driveFileId && (
-                        <span className="rounded-full border border-indigo-500/30 bg-indigo-500/10 px-2 py-0.5 font-mono text-[10px] text-indigo-300">
-                          Drive File Synced
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-[11px] text-zinc-500">
-                      Self-renewing runner: Open Colab syncs &amp; opens your Drive notebook—clicking Run All auto-mints a fresh session ID.
-                    </p>
-                  </div>
-
-                  <button
-                    onClick={() => openAccountConnectModal(colAcc)}
-                    className="flex items-center gap-1.5 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-300 transition hover:bg-amber-500/20"
-                  >
-                    <Globe className="h-3.5 w-3.5" />
-                    {colAcc.connected ? "Switch Account" : "Connect Google Account"}
-                  </button>
-                </div>
-
-                {/* Quick Browser Launch Toolbar */}
-                <div className="flex flex-wrap gap-2">
-                  <a
-                    href={`/api/vm/colab/${encodeURIComponent(target)}/launch`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-amber-600/20 border border-amber-500/30 px-3 py-2 text-xs font-semibold text-amber-200 transition hover:bg-amber-600/30"
-                  >
-                    <ExternalLink className="h-3.5 w-3.5" />
-                    Open Colab{colAcc.email ? ` (${colAcc.email.split("@")[0]})` : ""}
-                  </a>
-
-                  <button
-                    onClick={() => handleCopyColabScript(target)}
-                    className="flex items-center justify-center gap-1.5 rounded-xl border border-zinc-700 bg-zinc-800 px-3 py-2 text-xs font-semibold text-zinc-200 transition hover:bg-zinc-700"
-                  >
-                    {copiedTarget === target ? (
-                      <Check className="h-3.5 w-3.5 text-emerald-400" />
-                    ) : (
-                      <Copy className="h-3.5 w-3.5" />
-                    )}
-                    Copy Setup Cell
-                  </button>
-
-                  <a
-                    href={`/api/vm/colab/${target}/notebook`}
-                    className="flex items-center justify-center gap-1.5 rounded-xl border border-zinc-700 bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-300 transition hover:bg-zinc-800"
-                  >
-                    <Download className="h-3.5 w-3.5" />
-                    .ipynb
-                  </a>
-                </div>
-
-                {/* Underlying GpuCard */}
-                {colVm && (
-                  <GpuCard
-                    vm={colVm}
-                    onRefresh={() => queryClient.invalidateQueries({ queryKey: ["vm-status"] })}
-                    onColabReady={(url, t) => setColabDialog({ url, target: t })}
-                  />
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </section>
-
-      <LiveConsole />
 
       {/* Connect Google Account Modal */}
       <Dialog
         open={Boolean(connectModalAlias)}
         onOpenChange={(open) => !open && setConnectModalAlias(null)}
       >
-        <DialogContent className="border-zinc-800 bg-zinc-950 text-zinc-100">
+        <DialogContent className="glass-popover border-white/15 text-zinc-100">
           <DialogHeader>
-            <DialogTitle>Connect Google Account for Colab ({connectModalAlias})</DialogTitle>
+            <DialogTitle>Colab Setup ({connectModalAlias})</DialogTitle>
             <DialogDescription className="text-zinc-400">
-              Select your Google account directly in the browser via OAuth, or link your Gmail address for instant AccountChooser launch.
+              Link your Google account (`drive.file` auto-sync), copy the self-renewing cell, or bind an existing Drive URL.
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-5 pt-2">
-            {/* Option 1: Browser OAuth Picker */}
-            <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
-              <div className="text-xs font-semibold text-zinc-200">
-                Option 1: Google Browser Account Picker (OAuth2)
+          <div className="space-y-4 pt-1">
+            {/* Quick Manual Actions */}
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => handleCopyColabScript(modalColabTarget)}
+                className="glass-pill flex flex-1 items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold text-zinc-100 hover:bg-white/10"
+              >
+                {copiedTarget === modalColabTarget ? (
+                  <Check className="h-3.5 w-3.5 text-emerald-400" />
+                ) : (
+                  <Copy className="h-3.5 w-3.5" />
+                )}
+                Copy Setup Cell
+              </button>
+              <a
+                href={`/api/vm/colab/${encodeURIComponent(modalColabTarget)}/notebook`}
+                className="glass-pill flex flex-1 items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold text-amber-200 hover:bg-white/10"
+              >
+                <Download className="h-3.5 w-3.5" />
+                Download .ipynb
+              </a>
+            </div>
+
+            <div className="glass-card space-y-3 rounded-xl p-4">
+              <div className="text-xs font-semibold text-zinc-100">
+                Option 1: Google Browser Account Picker (OAuth2 + Auto Drive Sync)
               </div>
               <p className="text-[11px] text-zinc-400">
-                Requires this callback URI whitelisted once in your Google Cloud Console OAuth Client:
+                Callback URI required once in Google Cloud Console:
               </p>
-              <code className="block break-all rounded-lg bg-zinc-950 px-2.5 py-1.5 font-mono text-[10px] text-indigo-300">
+              <code className="block break-all rounded-lg bg-black/50 px-2.5 py-1.5 font-mono text-[10px] text-cyan-300">
                 {callbackUrl}
               </code>
 
@@ -567,9 +362,9 @@ function ClusterPageContent() {
                   type="checkbox"
                   checked={includeColabScope}
                   onChange={(e) => setIncludeColabScope(e.target.checked)}
-                  className="rounded border-zinc-700 bg-zinc-900"
+                  className="rounded border-white/20 bg-white/10"
                 />
-                Request <code className="text-zinc-300">colaboratory</code> API scope (only if enabled in GCP project)
+                Request <code className="text-zinc-200">colaboratory</code> API scope (only if enabled in GCP)
               </label>
 
               <a
@@ -583,72 +378,58 @@ function ClusterPageContent() {
               </a>
             </div>
 
-            {/* Option 2: Quick Gmail Binding */}
-            <form
-              onSubmit={handleManualEmailLink}
-              className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/40 p-4"
-            >
-              <div className="text-xs font-semibold text-zinc-200">
+            <form onSubmit={handleManualEmailLink} className="glass-card space-y-2.5 rounded-xl p-4">
+              <div className="text-xs font-semibold text-zinc-100">
                 Option 2: Quick Gmail Link (Zero GCP Setup)
               </div>
-              <p className="text-[11px] text-zinc-400">
-                Save your Gmail address so &ldquo;Open Colab&rdquo; launches directly under that account via Google AccountChooser.
-              </p>
-              <div className="space-y-1.5">
-                <Label htmlFor="manual-colab-email" className="text-xs">
-                  Google Account Email
-                </Label>
-                <Input
-                  id="manual-colab-email"
-                  type="email"
-                  required
-                  value={manualEmail}
-                  onChange={(e) => setManualEmail(e.target.value)}
-                  placeholder="your-account@gmail.com"
-                />
-              </div>
+              <Label htmlFor="manual-colab-email" className="text-[11px] text-zinc-400">
+                Google Account Email
+              </Label>
+              <Input
+                id="manual-colab-email"
+                type="email"
+                required
+                value={manualEmail}
+                onChange={(e) => setManualEmail(e.target.value)}
+                placeholder="your-account@gmail.com"
+                className="glass-input border-white/10"
+              />
               <Button
                 type="submit"
                 variant="outline"
                 disabled={savingEmail}
-                className="w-full border-zinc-700 bg-zinc-900 text-xs text-zinc-200 hover:bg-zinc-800"
+                className="w-full border-white/15 bg-white/[0.05] text-xs text-zinc-100 hover:bg-white/10"
               >
                 {savingEmail ? "Saving..." : "Bind Gmail to Colab Slot"}
               </Button>
             </form>
 
-            {/* Option 3: Existing Drive Notebook Link & Runner Security */}
-            <form
-              onSubmit={handleSaveDriveFile}
-              className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/40 p-4"
-            >
+            <form onSubmit={handleSaveDriveFile} className="glass-card space-y-2.5 rounded-xl p-4">
               <div className="flex items-center justify-between">
-                <div className="text-xs font-semibold text-zinc-200">
-                  Saved Drive Notebook &amp; Session Security
+                <div className="text-xs font-semibold text-zinc-100">
+                  Saved Drive Notebook &amp; Security
                 </div>
                 <button
                   type="button"
                   onClick={handleRotateRunnerKey}
                   disabled={savingConfig}
-                  className="text-[11px] font-medium text-amber-400 hover:text-amber-300"
+                  className="text-[11px] font-medium text-amber-300 hover:text-amber-200"
                 >
                   Rotate Runner Key
                 </button>
               </div>
-              <p className="text-[11px] text-zinc-400">
-                Leave blank for auto-sync, or paste an existing Colab Drive URL so &ldquo;Open Colab&rdquo; updates and reopens that exact file.
-              </p>
               <Input
                 type="text"
                 value={driveUrlInput}
                 onChange={(e) => setDriveUrlInput(e.target.value)}
                 placeholder="https://colab.research.google.com/drive/1AbC..."
+                className="glass-input border-white/10"
               />
               <Button
                 type="submit"
                 variant="outline"
                 disabled={savingConfig}
-                className="w-full border-zinc-700 bg-zinc-900 text-xs text-zinc-200 hover:bg-zinc-800"
+                className="w-full border-white/15 bg-white/[0.05] text-xs text-zinc-100 hover:bg-white/10"
               >
                 {savingConfig ? "Updating..." : "Save Colab Notebook URL"}
               </Button>
@@ -656,50 +437,18 @@ function ClusterPageContent() {
           </div>
         </DialogContent>
       </Dialog>
-
-      {/* Colab Ready Dialog */}
-      <Dialog open={Boolean(colabDialog)} onOpenChange={(open) => !open && setColabDialog(null)}>
-        <DialogContent className="border-zinc-800 bg-zinc-950 text-zinc-100">
-          <DialogHeader>
-            <DialogTitle>Launch Google Colab Worker ({colabDialog?.target})</DialogTitle>
-            <DialogDescription className="text-zinc-400">
-              Download the `.ipynb` runner or copy the setup cell, open Google Colab, choose GPU T4, and run it.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="mt-4 flex flex-col gap-3 sm:flex-row">
-            {colabDialog && (
-              <>
-                <a
-                  href={colabDialog.url}
-                  className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500"
-                >
-                  <Download className="h-4 w-4" />
-                  Download .ipynb
-                </a>
-                <button
-                  onClick={() => handleCopyColabScript(colabDialog.target)}
-                  className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-2 text-xs font-semibold text-zinc-200 hover:bg-zinc-800"
-                >
-                  <Copy className="h-4 w-4" />
-                  Copy Setup Cell
-                </button>
-              </>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
 
-export default function ClusterPage() {
+export default function ClusterDashboardPage() {
   return (
     <Suspense
       fallback={
-        <div className="p-6 text-xs text-zinc-400">Loading cluster overview...</div>
+        <div className="py-12 text-center text-xs text-zinc-400">Loading command center...</div>
       }
     >
-      <ClusterPageContent />
+      <CommandCenterContent />
     </Suspense>
   );
 }

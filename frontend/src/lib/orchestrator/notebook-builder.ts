@@ -36,7 +36,7 @@ export function buildUnifiedNotebookPythonCode(cfg: NotebookBuildConfig): string
   const rcloneTransfers = isKaggle ? "2" : "1";
   const prewarmModels = cfg.prewarmModels ?? [];
 
-  return `import os, sys, re, time, json, shutil, zipfile, tarfile, subprocess, threading, urllib.request, urllib.parse, urllib.error
+  return `import os, sys, re, time, json, shutil, zipfile, tarfile, sysconfig, subprocess, threading, urllib.request, urllib.parse, urllib.error
 from collections import deque
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
@@ -60,6 +60,11 @@ LOG_LOCK = threading.Lock()
 PENDING_LOGS = []
 TUNNEL_URL = None
 CURRENT_STEP = 1
+EVER_CONNECTED = False
+COMFY_DIR = "/tmp/ComfyUI"
+FASTBOOT_SITE = "/tmp/sc_site_packages"
+PY_VER_TAG = f"{sys.version_info.major}{sys.version_info.minor}"
+FASTBOOT_REMOTE = f"{GDRIVE_BASE}/cache/fastboot_{PROVIDER}_py{PY_VER_TAG}_v1.tar.gz"
 
 def log_event(msg, category="SYSTEM", level="INFO"):
     line = f"[{category}] {msg}"
@@ -70,7 +75,7 @@ def log_event(msg, category="SYSTEM", level="INFO"):
         PENDING_LOGS.append(entry)
 
 def post_heartbeat(step, status="STARTING", telemetry=None):
-    global CURRENT_STEP
+    global CURRENT_STEP, EVER_CONNECTED
     CURRENT_STEP = step
     with LOG_LOCK:
         logs_batch = PENDING_LOGS[:]
@@ -88,11 +93,12 @@ def post_heartbeat(step, status="STARTING", telemetry=None):
         req = urllib.request.Request(
             f"{APP_URL}/api/vm/heartbeat",
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json", "User-Agent": "Scriptoria-VM/2.0"},
+            headers={"Content-Type": "application/json", "User-Agent": "Scriptoria-VM/3.0"},
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             resp.read()
+        EVER_CONNECTED = True
     except urllib.error.HTTPError as he:
         if he.code == 410:
             print("[HEARTBEAT] Session cancelled (410). Exiting to save quota.", flush=True)
@@ -118,18 +124,18 @@ sys.excepthook = _crash_hook
 
 os.makedirs(WORK_DIR, exist_ok=True)
 os.chdir(WORK_DIR)
-log_event(f"Booting Scriptoria {PROVIDER.upper()} worker ({ACCOUNT_ALIAS}, targets={TARGETS})...", category=PROVIDER.upper())
+t_boot_start = time.time()
+log_event(f"FastBoot starting {PROVIDER.upper()} worker ({ACCOUNT_ALIAS}, targets={TARGETS})...", category=PROVIDER.upper())
 post_heartbeat(2, "STARTING")
 
 # -------------------------------------------------------------
-# 1. Create /tmp directories for Model Streaming & Outputs
+# 1. Verify /tmp Disk Overlay & Prepare Model / Output Dirs
 # -------------------------------------------------------------
 CATEGORIES = [
     "checkpoints", "loras", "vae", "unet", "clip",
     "clip_vision", "controlnet", "ipadapter", "text_encoders", "upscale_models", "diffusion_models"
 ]
 
-# Verify /tmp is disk-backed overlay vs RAM-backed tmpfs (avoid OOM on mmap checkpoints)
 try:
     tmp_fs = subprocess.run(["stat", "-f", "-c", "%T", "/tmp"], capture_output=True, text=True).stdout.strip()
     if tmp_fs == "tmpfs":
@@ -149,165 +155,7 @@ if PROVIDER == "colab":
 for d in CATEGORIES:
     os.makedirs(f"/tmp/models/{d}", exist_ok=True)
 os.makedirs("/tmp/outputs", exist_ok=True)
-
-# -------------------------------------------------------------
-# 2. Configure Rclone & Refresh OAuth Access Token if Needed
-# -------------------------------------------------------------
-try:
-    gdrive_cfg = json.loads(GDRIVE_TOKEN_RAW)
-except Exception:
-    gdrive_cfg = {}
-
-client_id = gdrive_cfg.pop("client_id", "")
-client_secret = gdrive_cfg.pop("client_secret", "")
-refresh_token = gdrive_cfg.get("refresh_token", "")
-
-if refresh_token and client_id and client_secret:
-    try:
-        token_req_data = urllib.parse.urlencode({
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "refresh_token": refresh_token,
-            "grant_type": "refresh_token",
-        }).encode("utf-8")
-        req = urllib.request.Request("https://oauth2.googleapis.com/token", data=token_req_data, method="POST")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            res_json = json.loads(resp.read().decode("utf-8"))
-            if res_json.get("access_token"):
-                gdrive_cfg["access_token"] = res_json["access_token"]
-                gdrive_cfg.setdefault("token_type", "Bearer")
-                gdrive_cfg["expiry"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 3300))
-                log_event("Minted fresh Google Drive OAuth access token.", category="RCLONE", level="SUCCESS")
-    except Exception as e:
-        log_event(f"OAuth refresh notice: {e}", category="RCLONE", level="WARN")
-
-rclone_lines = ["[gdrive]", "type = drive", "scope = drive"]
-if client_id:
-    rclone_lines.append(f"client_id = {client_id}")
-if client_secret:
-    rclone_lines.append(f"client_secret = {client_secret}")
-rclone_lines.append(f"token = {json.dumps(gdrive_cfg)}")
-
-with open("/tmp/rclone.conf", "w", encoding="utf-8") as f:
-    f.write("\\n".join(rclone_lines) + "\\n")
-
-if not os.path.exists("/usr/local/bin/rclone"):
-    log_event("Installing Rclone binary...", category="RCLONE")
-    subprocess.run(["curl", "-sSLf", "https://downloads.rclone.org/rclone-current-linux-amd64.zip", "-o", "/tmp/rclone.zip"], check=True)
-    with zipfile.ZipFile("/tmp/rclone.zip", "r") as zf:
-        for member in zf.namelist():
-            if member.endswith("/rclone"):
-                with zf.open(member) as src, open("/usr/local/bin/rclone", "wb") as dst:
-                    dst.write(src.read())
-                break
-    os.chmod("/usr/local/bin/rclone", 0o755)
-
-rclone_log = open("/tmp/rclone.log", "w")
-subprocess.Popen([
-    "/usr/local/bin/rclone", "rcd",
-    "--config", "/tmp/rclone.conf",
-    "--rc-addr", "127.0.0.1:5572",
-    "--rc-no-auth",
-    "--rc-job-expire-duration", "30m",
-    "--rc-job-expire-interval", "5m",
-    "--drive-disable-http2=true",
-    "--disable-http2",
-    "--multi-thread-cutoff", "64M",
-    "--multi-thread-chunk-size", "128M",
-    "--multi-thread-streams", "${rcloneStreams}",
-    "--multi-thread-write-buffer-size", "1M",
-    "--buffer-size", "${rcloneBuffer}",
-    "--transfers", "${rcloneTransfers}",
-    "--checkers", "4",
-    "--tpslimit", "12",
-    "--tpslimit-burst", "24",
-    "--drive-pacer-min-sleep", "10ms",
-    "--drive-pacer-burst", "100",
-    "--timeout", "5m",
-    "--contimeout", "30s",
-    "--low-level-retries", "10",
-    "--retries", "3"
-], stdout=rclone_log, stderr=rclone_log)
-
-rclone_ready = False
-for _ in range(30):
-    try:
-        req = urllib.request.Request("http://127.0.0.1:5572/rc/noop", data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=2) as r:
-            if r.status == 200:
-                rclone_ready = True
-                break
-    except Exception:
-        time.sleep(0.2)
-
-if rclone_ready:
-    log_event("Rclone RC daemon listening on 127.0.0.1:5572 (HTTP/1.1 multi-thread)", category="RCLONE", level="SUCCESS")
-    for pw in PREWARM_MODELS:
-        try:
-            pw_cat = pw.get("category", "checkpoints")
-            pw_file = pw.get("filename", "")
-            if pw_file:
-                pw_payload = json.dumps({
-                    "srcFs": f"gdrive:{GDRIVE_BASE}/models/{pw_cat}",
-                    "srcRemote": pw_file,
-                    "dstFs": f"/tmp/models/{pw_cat}",
-                    "dstRemote": pw_file,
-                    "_async": True,
-                    "_config": {
-                        "SizeOnly": True,
-                        "Inplace": False,
-                        "MultiThreadCutoff": "64M",
-                        "MultiThreadChunkSize": "128M",
-                        "MultiThreadStreams": ${rcloneStreams},
-                        "MultiThreadWriteBufferSize": "1M",
-                        "BufferSize": "${rcloneBuffer}",
-                        "DisableHTTP2": True,
-                    },
-                }).encode("utf-8")
-                pw_req = urllib.request.Request("http://127.0.0.1:5572/operations/copyfile", data=pw_payload, headers={"Content-Type": "application/json"}, method="POST")
-                urllib.request.urlopen(pw_req, timeout=5)
-                log_event(f"Pre-warming {pw_file} -> /tmp/models/{pw_cat} while ComfyUI boots...", category="RCLONE")
-        except Exception as pw_err:
-            log_event(f"Pre-warm skip: {pw_err}", category="RCLONE", level="WARN")
-else:
-    log_event("Rclone RC readiness check timed out", category="RCLONE", level="WARN")
-
-# -------------------------------------------------------------
-# 3. Install ComfyUI, Custom Nodes & Extra Model Paths
-# -------------------------------------------------------------
-comfy_dir = os.path.join(WORK_DIR, "ComfyUI")
-if not os.path.exists(comfy_dir):
-    log_event("Cloning ComfyUI & installing dependencies...", category="COMFYUI")
-    subprocess.run(["git", "clone", "--depth", "1", "https://github.com/comfyanonymous/ComfyUI.git", comfy_dir], check=True)
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", os.path.join(comfy_dir, "requirements.txt")], check=True)
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "httpx", "timm", "einops", "transformers", "aiohttp"], check=False)
-
-nodes_dir = os.path.join(comfy_dir, "custom_nodes")
-os.makedirs(nodes_dir, exist_ok=True)
-CUSTOM_NODES = {
-    "ComfyUI_IPAdapter_plus": "https://github.com/cubiq/ComfyUI_IPAdapter_plus.git",
-    "ComfyUI-Florence2": "https://github.com/kijai/ComfyUI-Florence2.git",
-}
-for n_name, n_url in CUSTOM_NODES.items():
-    n_dst = os.path.join(nodes_dir, n_name)
-    if not os.path.exists(n_dst):
-        subprocess.run(["git", "clone", "--depth", "1", n_url, n_dst], check=False)
-        n_req = os.path.join(n_dst, "requirements.txt")
-        if os.path.exists(n_req):
-            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", n_req], check=False)
-
-if ENABLE_OFFLINE_SCAN and os.path.exists("/kaggle/input"):
-    for root, _, files in os.walk("/kaggle/input"):
-        for fname in files:
-            if fname.endswith((".safetensors", ".pth", ".gguf")):
-                for cat in CATEGORIES:
-                    if cat in root:
-                        dst = f"/tmp/models/{cat}/{fname}"
-                        if not os.path.exists(dst):
-                            try:
-                                os.symlink(os.path.join(root, fname), dst)
-                            except Exception:
-                                pass
+os.makedirs(FASTBOOT_SITE, exist_ok=True)
 
 with open("/tmp/extra_model_paths.yaml", "w", encoding="utf-8") as f:
     f.write("""scriptoria_tmp:
@@ -325,46 +173,19 @@ with open("/tmp/extra_model_paths.yaml", "w", encoding="utf-8") as f:
     diffusion_models: diffusion_models/
 """)
 
-post_heartbeat(3, "STARTING")
-
-# -------------------------------------------------------------
-# 4. Boot ComfyUI Subprocess(es) with Strict CUDA Isolation
-# -------------------------------------------------------------
-try:
-    import torch
-    gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 1
-except Exception:
-    gpu_count = 1
-
-active_ports = PORTS[:max(1, gpu_count)] if PROVIDER == "kaggle" else PORTS[:1]
-for idx, port in enumerate(active_ports):
-    env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = str(idx)
-    c_log = open(f"/tmp/comfy_{port}.log", "w")
-    subprocess.Popen([
-        sys.executable, os.path.join(comfy_dir, "main.py"),
-        "--listen", "127.0.0.1",
-        "--port", str(port),
-        "--extra-model-paths-config", "/tmp/extra_model_paths.yaml",
-        "--output-directory", "/tmp/outputs",
-        "--enable-cors-header",
-        "--preview-method", "auto"
-    ], cwd=comfy_dir, env=env, stdout=c_log, stderr=c_log)
-    log_event(f"Launched ComfyUI on CUDA:{idx} -> 127.0.0.1:{port}", category="COMFYUI")
-
-# -------------------------------------------------------------
-# 5. In-Band Control Sidecar (Port 9999)
-# -------------------------------------------------------------
-def rc_post(action, payload):
+def rc_post(action, payload, timeout=60):
     req = urllib.request.Request(
         f"http://127.0.0.1:5572/{action}",
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=60) as resp:
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
+# -------------------------------------------------------------
+# 2. Start Sidecar (:9999) Immediately + Prepare Rclone / Caddy Config
+# -------------------------------------------------------------
 class SidecarHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         return
@@ -478,7 +299,7 @@ class SidecarHandler(BaseHTTPRequestHandler):
             wf_data = body.get("workflow")
             if wf_data is None:
                 self.send_response(400); self.end_headers(); return
-            wf_dir = os.path.join(comfy_dir, "user", "default", "workflows")
+            wf_dir = os.path.join(COMFY_DIR, "user", "default", "workflows")
             os.makedirs(wf_dir, exist_ok=True)
             wf_path = os.path.join(wf_dir, fname)
             with open(wf_path, "w", encoding="utf-8") as wf:
@@ -525,15 +346,42 @@ class SidecarHandler(BaseHTTPRequestHandler):
         self.send_response(404); self.end_headers()
 
 threading.Thread(target=lambda: ThreadingHTTPServer(("127.0.0.1", 9999), SidecarHandler).serve_forever(), daemon=True).start()
-log_event("Sidecar HTTP control server listening on 127.0.0.1:9999", category="SYSTEM")
 
-# -------------------------------------------------------------
-# 6. Start Caddy Port Multiplexer on Port 8000
-# -------------------------------------------------------------
-if not os.path.exists("/tmp/caddy"):
-    log_event("Downloading Caddy reverse proxy...", category="NETWORK")
-    subprocess.run(["curl", "-sSLf", "https://caddyserver.com/api/download?os=linux&arch=amd64", "-o", "/tmp/caddy"], check=True)
-    os.chmod("/tmp/caddy", 0o755)
+try:
+    gdrive_cfg = json.loads(GDRIVE_TOKEN_RAW)
+except Exception:
+    gdrive_cfg = {}
+
+client_id = gdrive_cfg.pop("client_id", "")
+client_secret = gdrive_cfg.pop("client_secret", "")
+refresh_token = gdrive_cfg.get("refresh_token", "")
+
+if refresh_token and client_id and client_secret:
+    try:
+        token_req_data = urllib.parse.urlencode({
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token",
+        }).encode("utf-8")
+        req = urllib.request.Request("https://oauth2.googleapis.com/token", data=token_req_data, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            res_json = json.loads(resp.read().decode("utf-8"))
+            if res_json.get("access_token"):
+                gdrive_cfg["access_token"] = res_json["access_token"]
+                gdrive_cfg.setdefault("token_type", "Bearer")
+                gdrive_cfg["expiry"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 3300))
+    except Exception as e:
+        log_event(f"OAuth refresh notice: {e}", category="RCLONE", level="WARN")
+
+rclone_lines = ["[gdrive]", "type = drive", "scope = drive"]
+if client_id:
+    rclone_lines.append(f"client_id = {client_id}")
+if client_secret:
+    rclone_lines.append(f"client_secret = {client_secret}")
+rclone_lines.append(f"token = {json.dumps(gdrive_cfg)}")
+with open("/tmp/rclone.conf", "w", encoding="utf-8") as f:
+    f.write("\\n".join(rclone_lines) + "\\n")
 
 with open("/tmp/Caddyfile", "w", encoding="utf-8") as f:
     f.write(f"""(sc_dispatch) {{
@@ -591,37 +439,266 @@ with open("/tmp/Caddyfile", "w", encoding="utf-8") as f:
 }}
 """)
 
-caddy_log = open("/tmp/caddy.log", "w")
-subprocess.Popen(["/tmp/caddy", "run", "--config", "/tmp/Caddyfile"], stdout=caddy_log, stderr=caddy_log)
+# -------------------------------------------------------------
+# 3. Parallel Stage: Rclone + Caddy + Cloudflared + uv Binary
+# -------------------------------------------------------------
+def setup_rclone():
+    if not os.path.exists("/usr/local/bin/rclone"):
+        subprocess.run(["curl", "-sSLf", "https://downloads.rclone.org/rclone-current-linux-amd64.zip", "-o", "/tmp/rclone.zip"], check=True)
+        with zipfile.ZipFile("/tmp/rclone.zip", "r") as zf:
+            for member in zf.namelist():
+                if member.endswith("/rclone"):
+                    with zf.open(member) as src, open("/usr/local/bin/rclone", "wb") as dst:
+                        dst.write(src.read())
+                    break
+        os.chmod("/usr/local/bin/rclone", 0o755)
+        try:
+            os.remove("/tmp/rclone.zip")
+        except Exception:
+            pass
+
+    rclone_log = open("/tmp/rclone.log", "w")
+    subprocess.Popen([
+        "/usr/local/bin/rclone", "rcd",
+        "--config", "/tmp/rclone.conf",
+        "--rc-addr", "127.0.0.1:5572",
+        "--rc-no-auth",
+        "--rc-job-expire-duration", "30m",
+        "--rc-job-expire-interval", "5m",
+        "--drive-disable-http2=true",
+        "--disable-http2",
+        "--multi-thread-cutoff", "64M",
+        "--multi-thread-chunk-size", "128M",
+        "--multi-thread-streams", "${rcloneStreams}",
+        "--multi-thread-write-buffer-size", "1M",
+        "--buffer-size", "${rcloneBuffer}",
+        "--transfers", "${rcloneTransfers}",
+        "--checkers", "4",
+        "--tpslimit", "12",
+        "--tpslimit-burst", "24",
+        "--drive-pacer-min-sleep", "10ms",
+        "--drive-pacer-burst", "100",
+        "--timeout", "5m",
+        "--contimeout", "30s",
+        "--low-level-retries", "10",
+        "--retries", "3"
+    ], stdout=rclone_log, stderr=rclone_log)
+
+    for _ in range(30):
+        try:
+            rc_post("rc/noop", {}, timeout=2)
+            log_event("Rclone RC (:5572) ready (HTTP/1.1 multi-thread)", category="RCLONE", level="SUCCESS")
+            for pw in PREWARM_MODELS:
+                pw_cat = pw.get("category", "checkpoints")
+                pw_file = pw.get("filename", "")
+                if pw_file:
+                    try:
+                        rc_post("operations/copyfile", {
+                            "srcFs": f"gdrive:{GDRIVE_BASE}/models/{pw_cat}",
+                            "srcRemote": pw_file,
+                            "dstFs": f"/tmp/models/{pw_cat}",
+                            "dstRemote": pw_file,
+                            "_async": True,
+                            "_config": {
+                                "SizeOnly": True, "Inplace": False,
+                                "MultiThreadCutoff": "64M", "MultiThreadChunkSize": "128M",
+                                "MultiThreadStreams": ${rcloneStreams}, "MultiThreadWriteBufferSize": "1M",
+                                "BufferSize": "${rcloneBuffer}", "DisableHTTP2": True,
+                            },
+                        }, timeout=5)
+                        log_event(f"Pre-warming {pw_file} while ComfyUI boots...", category="RCLONE")
+                    except Exception:
+                        pass
+            return True
+        except Exception:
+            time.sleep(0.2)
+    return False
+
+def setup_caddy():
+    if not os.path.exists("/tmp/caddy"):
+        subprocess.run(["curl", "-sSLf", "https://caddyserver.com/api/download?os=linux&arch=amd64", "-o", "/tmp/caddy"], check=True)
+        os.chmod("/tmp/caddy", 0o755)
+    caddy_log = open("/tmp/caddy.log", "w")
+    subprocess.Popen(["/tmp/caddy", "run", "--config", "/tmp/Caddyfile"], stdout=caddy_log, stderr=caddy_log)
+
+def setup_cloudflared():
+    global TUNNEL_URL
+    if not os.path.exists("/tmp/cloudflared"):
+        subprocess.run(["curl", "-sSLf", "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64", "-o", "/tmp/cloudflared"], check=True)
+        os.chmod("/tmp/cloudflared", 0o755)
+    with open("/tmp/cf.log", "w") as out:
+        subprocess.Popen(["/tmp/cloudflared", "tunnel", "--url", "http://127.0.0.1:8000", "--no-autoupdate"], stdout=out, stderr=subprocess.STDOUT)
+    for _ in range(45):
+        time.sleep(1)
+        if os.path.exists("/tmp/cf.log"):
+            content = open("/tmp/cf.log", "r", errors="ignore").read()
+            m = re.search(r"https://[a-zA-Z0-9-]+\\.trycloudflare\\.com", content)
+            if m:
+                TUNNEL_URL = m.group(0)
+                log_event(f"Route-less Quick Tunnel live in {round(time.time() - t_boot_start, 1)}s: {TUNNEL_URL}", category="NETWORK", level="SUCCESS")
+                post_heartbeat(4, "STARTING")
+                return TUNNEL_URL
+    return None
+
+def setup_uv():
+    if not os.path.exists("/tmp/uv"):
+        try:
+            subprocess.run(["curl", "-sSLf", "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-unknown-linux-gnu.tar.gz", "-o", "/tmp/uv.tar.gz"], check=True)
+            subprocess.run(["tar", "-xzf", "/tmp/uv.tar.gz", "-C", "/tmp", "--strip-components=1"], check=True)
+            os.chmod("/tmp/uv", 0o755)
+            os.remove("/tmp/uv.tar.gz")
+        except Exception:
+            pass
+
+threading.Thread(target=setup_caddy, daemon=True).start()
+threading.Thread(target=setup_cloudflared, daemon=True).start()
+uv_thread = threading.Thread(target=setup_uv, daemon=True)
+uv_thread.start()
+rclone_ok = setup_rclone()
 
 # -------------------------------------------------------------
-# 7. Start 1 Route-less Cloudflare Tunnel on Port 8000
+# 4. FastBoot GDrive Cache Hit OR Parallel ComfyUI Clone + uv Delta
 # -------------------------------------------------------------
-if not os.path.exists("/tmp/cloudflared"):
-    log_event("Downloading cloudflared binary...", category="NETWORK")
-    subprocess.run(["curl", "-sSLf", "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64", "-o", "/tmp/cloudflared"], check=True)
-    os.chmod("/tmp/cloudflared", 0o755)
+should_upload_cache = False
+if not os.path.exists(os.path.join(COMFY_DIR, "main.py")):
+    cache_restored = False
+    if rclone_ok:
+        try:
+            st = rc_post("operations/stat", {"fs": f"gdrive:{FASTBOOT_REMOTE.rsplit('/', 1)[0]}", "remote": FASTBOOT_REMOTE.rsplit("/", 1)[1]}, timeout=8)
+            if (st.get("item") or {}).get("Size", 0) > 100000:
+                log_event(f"FastBoot cache HIT! Streaming {FASTBOOT_REMOTE.rsplit('/', 1)[1]} from Google Drive...", category="COMFYUI", level="SUCCESS")
+                rc_post("operations/copyfile", {
+                    "srcFs": f"gdrive:{FASTBOOT_REMOTE.rsplit('/', 1)[0]}",
+                    "srcRemote": FASTBOOT_REMOTE.rsplit("/", 1)[1],
+                    "dstFs": "/tmp",
+                    "dstRemote": "fastboot.tar.gz",
+                    "_config": {
+                        "MultiThreadCutoff": "32M", "MultiThreadChunkSize": "64M",
+                        "MultiThreadStreams": 8, "DisableHTTP2": True,
+                    },
+                }, timeout=120)
+                subprocess.run(["tar", "-xzf", "/tmp/fastboot.tar.gz", "-C", "/tmp"], check=True)
+                os.remove("/tmp/fastboot.tar.gz")
+                if os.path.exists(os.path.join(COMFY_DIR, "main.py")):
+                    cache_restored = True
+                    log_event(f"Extracted FastBoot ComfyUI cache in {round(time.time() - t_boot_start, 1)}s!", category="COMFYUI", level="SUCCESS")
+        except Exception as ce:
+            log_event(f"FastBoot cache miss ({ce}); running fresh uv install...", category="COMFYUI")
 
-with open("/tmp/cf.log", "w") as out:
-    subprocess.Popen(["/tmp/cloudflared", "tunnel", "--url", "http://127.0.0.1:8000", "--no-autoupdate"], stdout=out, stderr=subprocess.STDOUT)
+    if not cache_restored:
+        log_event("Cloning ComfyUI (shallow) & installing delta packages via uv (no custom nodes)...", category="COMFYUI")
+        subprocess.run(["git", "clone", "--depth", "1", "--single-branch", "https://github.com/comfyanonymous/ComfyUI.git", COMFY_DIR], check=True)
+        req_file = os.path.join(COMFY_DIR, "requirements.txt")
+        filtered_reqs = "/tmp/comfy_reqs_delta.txt"
+        skip_pkgs = {"torch", "torchvision", "torchaudio"}
+        with open(req_file, "r", encoding="utf-8") as rf, open(filtered_reqs, "w", encoding="utf-8") as wf:
+            for line in rf:
+                clean = line.strip()
+                if not clean or clean.startswith("#"):
+                    continue
+                pkg = re.split(r"[=<>!~;\\s\\[]", clean)[0].lower().replace("_", "-")
+                if pkg not in skip_pkgs:
+                    wf.write(clean + "\\n")
 
-for _ in range(45):
-    time.sleep(1)
-    if os.path.exists("/tmp/cf.log"):
-        content = open("/tmp/cf.log", "r", errors="ignore").read()
-        m = re.search(r"https://[a-zA-Z0-9-]+\\.trycloudflare\\.com", content)
-        if m:
-            TUNNEL_URL = m.group(0)
-            break
+        site_dirs = list({sysconfig.get_paths()["purelib"], sysconfig.get_paths()["platlib"]})
+        before_snap = {sd: (set(os.listdir(sd)) if os.path.isdir(sd) else set()) for sd in site_dirs}
+        uv_thread.join(timeout=15)
+        if os.path.exists("/tmp/uv"):
+            log_event("Installing ComfyUI delta packages using /tmp/uv...", category="COMFYUI")
+            uv_res = subprocess.run(["/tmp/uv", "pip", "install", "--system", "--no-cache", "--quiet", "-r", filtered_reqs])
+            if uv_res.returncode != 0:
+                log_event(f"/tmp/uv exited with {uv_res.returncode}; falling back to pip...", category="COMFYUI", level="WARN")
+                subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", filtered_reqs], check=True)
+        else:
+            log_event("/tmp/uv unavailable; using pip installer...", category="COMFYUI", level="WARN")
+            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", filtered_reqs], check=True)
 
-if TUNNEL_URL:
-    log_event(f"Route-less Quick Tunnel live: {TUNNEL_URL}", category="NETWORK", level="SUCCESS")
-    post_heartbeat(4, "STARTING")
-else:
-    log_event("Failed to extract trycloudflare.com tunnel URL", category="ERROR", level="ERROR")
+        # Save newly added site-packages delta for future FastBoot Drive snapshot
+        for sd in site_dirs:
+            if os.path.isdir(sd):
+                for entry in (set(os.listdir(sd)) - before_snap.get(sd, set())):
+                    src_p = os.path.join(sd, entry)
+                    dst_p = os.path.join(FASTBOOT_SITE, entry)
+                    try:
+                        if os.path.isdir(src_p):
+                            shutil.copytree(src_p, dst_p, dirs_exist_ok=True)
+                        else:
+                            shutil.copy2(src_p, dst_p)
+                    except Exception:
+                        pass
+        should_upload_cache = True
+
+if ENABLE_OFFLINE_SCAN and os.path.exists("/kaggle/input"):
+    for root, _, files in os.walk("/kaggle/input"):
+        for fname in files:
+            if fname.endswith((".safetensors", ".pth", ".gguf")):
+                for cat in CATEGORIES:
+                    if cat in root:
+                        dst = f"/tmp/models/{cat}/{fname}"
+                        if not os.path.exists(dst):
+                            try:
+                                os.symlink(os.path.join(root, fname), dst)
+                            except Exception:
+                                pass
+
+post_heartbeat(3, "STARTING")
 
 # -------------------------------------------------------------
-# 8. Wait for ComfyUI Readiness & Run Heartbeat + Idle Watchdog
+# 5. Boot ComfyUI Subprocess(es) with Strict CUDA Isolation
+# -------------------------------------------------------------
+try:
+    import torch
+    gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 1
+except Exception:
+    gpu_count = 1
+
+active_ports = PORTS[:max(1, gpu_count)] if PROVIDER == "kaggle" else PORTS[:1]
+for idx, port in enumerate(active_ports):
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = str(idx)
+    if os.path.isdir(FASTBOOT_SITE):
+        prev_pp = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = f"{FASTBOOT_SITE}:{prev_pp}" if prev_pp else FASTBOOT_SITE
+    c_log = open(f"/tmp/comfy_{port}.log", "w")
+    subprocess.Popen([
+        sys.executable, os.path.join(COMFY_DIR, "main.py"),
+        "--listen", "127.0.0.1",
+        "--port", str(port),
+        "--extra-model-paths-config", "/tmp/extra_model_paths.yaml",
+        "--output-directory", "/tmp/outputs",
+        "--enable-cors-header",
+        "--preview-method", "auto"
+    ], cwd=COMFY_DIR, env=env, stdout=c_log, stderr=c_log)
+    log_event(f"Launched ComfyUI on CUDA:{idx} -> 127.0.0.1:{port}", category="COMFYUI")
+
+if should_upload_cache and rclone_ok:
+    def _upload_fastboot_snapshot():
+        try:
+            log_event("Packing FastBoot cache snapshot to Google Drive in background...", category="RCLONE")
+            cache_dir_remote, cache_file_remote = FASTBOOT_REMOTE.rsplit("/", 1)
+            try:
+                rc_post("operations/mkdir", {"fs": "gdrive:", "remote": cache_dir_remote})
+            except Exception:
+                pass
+            tar_res = subprocess.run([
+                "tar", "--warning=no-file-changed", "--ignore-failed-read",
+                "--exclude=*.git*", "--exclude=*__pycache__*", "-czf",
+                "/tmp/fastboot_pkg.tar.gz", "-C", "/tmp", "ComfyUI", "sc_site_packages"
+            ], check=False)
+            if tar_res.returncode not in (0, 1):
+                raise RuntimeError(f"tar exited with status {tar_res.returncode}")
+            rc_post("operations/copyfile", {
+                "srcFs": "/tmp", "srcRemote": "fastboot_pkg.tar.gz",
+                "dstFs": f"gdrive:{cache_dir_remote}", "dstRemote": cache_file_remote,
+            }, timeout=120)
+            os.remove("/tmp/fastboot_pkg.tar.gz")
+            log_event(f"Saved FastBoot cache ({cache_file_remote}) to Drive for rapid next boot!", category="RCLONE", level="SUCCESS")
+        except Exception as ue:
+            log_event(f"FastBoot cache upload skipped: {ue}", category="RCLONE", level="WARN")
+    threading.Thread(target=_upload_fastboot_snapshot, daemon=True).start()
+
+# -------------------------------------------------------------
+# 6. Wait for Tunnel + ComfyUI Readiness & Run Heartbeat Loop
 # -------------------------------------------------------------
 def probe_comfy_stats():
     stats = {}
@@ -647,19 +724,27 @@ while True:
     telem = probe_comfy_stats()
     all_ready = bool(TUNNEL_URL) and any(v.get("ready") for v in telem.values())
     if all_ready and CURRENT_STEP < 5:
-        log_event("ComfyUI ready & registered via Caddy multiplexer!", category="COMFYUI", level="SUCCESS")
+        log_event(f"ComfyUI ONLINE in {round(time.time() - t_boot_start, 1)}s!", category="COMFYUI", level="SUCCESS")
     post_heartbeat(5 if all_ready else 4, "ONLINE" if all_ready else "STARTING", telem)
+
+    if not EVER_CONNECTED and (time.time() - t_boot_start) > 120:
+        log_event(f"Zero heartbeats reached {APP_URL} after 120s. Stopping cleanly to save GPU quota.", category="ERROR", level="ERROR")
+        for pat in ("ComfyUI/main.py", "/tmp/caddy", "/tmp/cloudflared", "/usr/local/bin/rclone"):
+            subprocess.run(["pkill", "-f", pat], check=False)
+        break
 
     if IDLE_TIMEOUT_SEC > 0 and (time.time() - LAST_ACTIVE > IDLE_TIMEOUT_SEC):
         log_event("Idle watchdog timeout reached. Shutting down to save quota.", category="ACTION", level="WARN")
         post_heartbeat(0, "OFFLINE", {})
+        for pat in ("ComfyUI/main.py", "/tmp/caddy", "/tmp/cloudflared", "/usr/local/bin/rclone"):
+            subprocess.run(["pkill", "-f", pat], check=False)
         if PROVIDER == "colab":
             try:
                 from google.colab import runtime
                 runtime.unassign()
             except Exception:
                 pass
-        os._exit(0)
+        break
     time.sleep(20)
 `;
 }

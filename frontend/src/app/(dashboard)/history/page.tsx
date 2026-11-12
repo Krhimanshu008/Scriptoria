@@ -57,7 +57,7 @@ export default function HistoryPage() {
     remixFromHistory(item);
     toast.success("Loaded prompt & parameters into Studio");
     setSelected(null);
-    router.push("/studio");
+    router.push("/");
   }
 
   return (
@@ -87,8 +87,8 @@ export default function HistoryPage() {
           <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading permanent gallery...
         </div>
       ) : items.length === 0 ? (
-        <div className="flex flex-col items-center justify-center rounded-2xl border border-zinc-800 bg-zinc-950 py-20 text-xs text-zinc-500">
-          <Images className="mb-3 h-10 w-10 text-zinc-700" />
+        <div className="glass-panel flex flex-col items-center justify-center rounded-2xl py-20 text-xs text-zinc-500">
+          <Images className="mb-3 h-10 w-10 text-zinc-600" />
           <p>No completed generations yet. Dispatch a prompt from Studio to populate your gallery.</p>
         </div>
       ) : (
@@ -100,7 +100,7 @@ export default function HistoryPage() {
               <div
                 key={item.id}
                 onClick={() => setSelected(item)}
-                className="group cursor-pointer overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950 transition hover:border-indigo-500/50"
+                className="glass-card group cursor-pointer overflow-hidden rounded-2xl transition hover:border-indigo-400/50 hover:bg-white/[0.06]"
               >
                 <div className="aspect-square overflow-hidden bg-zinc-900">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -124,7 +124,7 @@ export default function HistoryPage() {
       )}
 
       <Dialog open={Boolean(selected)} onOpenChange={(open) => !open && setSelected(null)}>
-        <DialogContent className="max-w-3xl border-zinc-800 bg-zinc-950 text-zinc-100">
+        <DialogContent className="glass-popover max-w-3xl border-white/15 text-zinc-100">
           {selected && (
             <>
               <DialogHeader>

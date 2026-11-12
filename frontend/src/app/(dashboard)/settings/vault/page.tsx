@@ -130,7 +130,7 @@ export default function VaultPage() {
       </div>
 
       {/* Stored Credentials Table */}
-      <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-5">
+      <div className="glass-panel rounded-2xl p-5">
         <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-zinc-200">
           <ShieldCheck className="h-4 w-4 text-emerald-400" />
           <span>Configured Encrypted Keys</span>
@@ -141,7 +141,7 @@ export default function VaultPage() {
             No credentials configured yet. Add your Kaggle and Google Drive tokens below.
           </p>
         ) : (
-          <div className="divide-y divide-zinc-800">
+          <div className="divide-y divide-white/10">
             {credentials.map((c) => (
               <div key={c.id} className="flex items-center justify-between py-3 text-xs">
                 <div>
@@ -183,7 +183,7 @@ export default function VaultPage() {
         {/* Kaggle Form */}
         <form
           onSubmit={handleSaveKaggle}
-          className="space-y-4 rounded-2xl border border-zinc-800 bg-zinc-950 p-5"
+          className="glass-panel space-y-4 rounded-2xl p-5"
         >
           <div className="flex items-center gap-2 text-sm font-semibold text-white">
             <KeyRound className="h-4 w-4 text-cyan-400" />
@@ -195,10 +195,10 @@ export default function VaultPage() {
             <select
               value={kaggleAlias}
               onChange={(e) => setKaggleAlias(e.target.value)}
-              className="w-full rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 text-xs text-zinc-100"
+              className="glass-input w-full rounded-xl px-3 py-2 text-xs text-zinc-100"
             >
-              <option value="acc1">acc1 (gpu0 &amp; gpu1)</option>
-              <option value="acc2">acc2 (gpu2 &amp; gpu3)</option>
+              <option value="acc1" className="bg-zinc-900">acc1 (gpu0 &amp; gpu1)</option>
+              <option value="acc2" className="bg-zinc-900">acc2 (gpu2 &amp; gpu3)</option>
             </select>
           </div>
 
@@ -236,7 +236,7 @@ export default function VaultPage() {
         {/* Google Drive Form */}
         <form
           onSubmit={handleSaveGdrive}
-          className="space-y-4 rounded-2xl border border-zinc-800 bg-zinc-950 p-5"
+          className="glass-panel space-y-4 rounded-2xl p-5"
         >
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-sm font-semibold text-white">

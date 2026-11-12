@@ -66,6 +66,7 @@ export async function POST(
         authType: "drive_file_id",
         metadata: {
           driveFileId: fileId,
+          manualBind: true,
           updatedAt: new Date().toISOString(),
         },
       });

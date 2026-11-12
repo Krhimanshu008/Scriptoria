@@ -2,13 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getAuthUser, signVmRegistrationToken } from "@/lib/auth/session";
 import { generateVmSecret } from "@/lib/crypto/vault";
-import { getDecryptedCredential } from "@/lib/crypto/credentials";
+import { getDecryptedCredential, saveUserCredential } from "@/lib/crypto/credentials";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
 import { buildUnifiedNotebookPythonCode } from "@/lib/orchestrator/notebook-builder";
 import { KaggleOrchestrator } from "@/lib/orchestrator/kaggle-client";
 import { VmGateway } from "@/lib/orchestrator/vm-gateway";
+import { resolveReachableWebhookBaseUrl } from "@/lib/orchestrator/webhook-tunnel";
 import {
-  resolveWebhookBaseUrl,
   sanitizeVmForClient,
   sortVmsByCanonicalTarget,
 } from "@/lib/orchestrator/vm-helpers";
@@ -42,6 +42,26 @@ export async function POST(
     if (vm.status === "ONLINE" || vm.status === "BUSY" || vm.status === "STARTING") {
       if (vm.publicUrl) {
         await VmGateway.killVm(vm);
+      } else if (vm.provider === "kaggle") {
+        try {
+          const [kaggleCred, kaggleMeta] = await Promise.all([
+            getDecryptedCredential(user.userId, "kaggle", vm.accountAlias),
+            getDecryptedCredential(user.userId, "kaggle-meta", vm.accountAlias),
+          ]);
+          const sessionId = Number(kaggleMeta?.secret || 0);
+          if (kaggleCred?.username && sessionId > 0) {
+            await KaggleOrchestrator.cancelKernelSession(
+              {
+                username: kaggleCred.username,
+                key: kaggleCred.secret,
+                authType: kaggleCred.authType === "bearer" ? "bearer" : "basic",
+              },
+              sessionId
+            );
+          }
+        } catch {
+          // ignore best-effort session cancel
+        }
       }
 
       await prisma.vmInstance.updateMany({
@@ -93,7 +113,21 @@ export async function POST(
       vmSecret,
     });
 
-    const appWebhookUrl = resolveWebhookBaseUrl(req);
+    const webhook = await resolveReachableWebhookBaseUrl(req);
+    if (webhook.mode === "unreachable") {
+      await appendSystemLog({
+        userId: user.userId,
+        vmInstanceId: vm.id,
+        category: "ERROR",
+        level: "ERROR",
+        message: webhook.reason || "No reachable public webhook URL for cloud VM heartbeat.",
+      });
+      return NextResponse.json(
+        { error: webhook.reason || "No reachable public callback URL found for cloud VMs." },
+        { status: 400 }
+      );
+    }
+    const appWebhookUrl = webhook.url;
 
     if (vm.provider === "kaggle") {
       const kaggleCred = await getDecryptedCredential(user.userId, "kaggle", vm.accountAlias);
@@ -139,12 +173,26 @@ export async function POST(
           datasetDataSources: [],
         });
 
+        if (pushRes.kernelSessionId) {
+          await saveUserCredential(user.userId, {
+            provider: "kaggle-meta",
+            accountAlias: vm.accountAlias,
+            username: kaggleCred.username,
+            rawSecret: String(pushRes.kernelSessionId),
+            authType: "session_id",
+            metadata: {
+              kernelSessionId: pushRes.kernelSessionId,
+              pushedAt: new Date().toISOString(),
+            },
+          });
+        }
+
         await appendSystemLog({
           userId: user.userId,
           vmInstanceId: vm.id,
           category: "KAGGLE",
           level: "SUCCESS",
-          message: `Pushed Kaggle Dual-T4 kernel (${vm.accountAlias}) for ${groupTargets.join(" & ")} -> ${pushRes.url}`,
+          message: `Pushed Kaggle Dual-T4 kernel (${vm.accountAlias}, callback=${webhook.mode}) for ${groupTargets.join(" & ")} -> ${pushRes.url}`,
         });
 
         const refreshed = await prisma.vmInstance.findMany({

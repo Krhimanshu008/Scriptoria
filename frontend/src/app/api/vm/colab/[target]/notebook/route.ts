@@ -10,7 +10,7 @@ import {
   buildUnifiedNotebookPythonCode,
 } from "@/lib/orchestrator/notebook-builder";
 import { getOrCreateColabRunnerToken } from "@/lib/orchestrator/colab-runner";
-import { resolveWebhookBaseUrl } from "@/lib/orchestrator/vm-helpers";
+import { resolveReachableWebhookBaseUrl } from "@/lib/orchestrator/webhook-tunnel";
 
 export async function GET(
   req: NextRequest,
@@ -33,7 +33,14 @@ export async function GET(
 
     const format = req.nextUrl.searchParams.get("format");
     const standalone = req.nextUrl.searchParams.get("standalone") === "true";
-    const appWebhookUrl = resolveWebhookBaseUrl(req);
+    const webhook = await resolveReachableWebhookBaseUrl(req);
+    if (webhook.mode === "unreachable") {
+      return NextResponse.json(
+        { error: webhook.reason || "No reachable public callback URL for Colab notebook." },
+        { status: 400 }
+      );
+    }
+    const appWebhookUrl = webhook.url;
 
     // Default: thin self-renewing launcher cell (re-usable forever, no stale 410 errors!)
     if (!standalone) {

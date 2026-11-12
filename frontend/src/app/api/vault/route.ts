@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getAuthUser } from "@/lib/auth/session";
-import { saveUserCredential } from "@/lib/crypto/credentials";
+import { getDecryptedCredential, saveUserCredential } from "@/lib/crypto/credentials";
+import { invalidateColabMetaIfEmailChanged } from "@/lib/orchestrator/colab-runner";
 import { appendSystemLog } from "@/lib/logs/logger";
 
 export async function GET(req: NextRequest) {
@@ -90,6 +91,11 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    const prevColab =
+      provider === "colab"
+        ? await getDecryptedCredential(user.userId, "colab", accountAlias).catch(() => null)
+        : null;
+
     const saved = await saveUserCredential(user.userId, {
       provider,
       accountAlias,
@@ -97,6 +103,15 @@ export async function POST(req: NextRequest) {
       rawSecret,
       metadata,
     });
+
+    if (provider === "colab") {
+      await invalidateColabMetaIfEmailChanged(
+        user.userId,
+        accountAlias,
+        prevColab?.username,
+        username
+      );
+    }
 
     await appendSystemLog({
       userId: user.userId,

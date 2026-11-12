@@ -1,10 +1,27 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getAuthUser } from "@/lib/auth/session";
+import { getDecryptedCredential } from "@/lib/crypto/credentials";
+import { appendSystemLog } from "@/lib/logs/logger";
 import { ComfyClient } from "@/lib/orchestrator/comfy-client";
+import { KaggleOrchestrator } from "@/lib/orchestrator/kaggle-client";
 import { sanitizeVmForClient, sortVmsByCanonicalTarget } from "@/lib/orchestrator/vm-helpers";
 
 const HEARTBEAT_STALE_MS = 90_000;
+const KAGGLE_BOOT_POLL_INTERVAL_MS = 15_000;
+
+function pickBestKernelError(lines: string[], fallback?: string): string {
+  const priority = [...lines]
+    .reverse()
+    .find((line) =>
+      /\[HEARTBEAT\]|\[ERROR\]|DeadKernelError|traceback|Name or service not known|RuntimeError/i.test(
+        line
+      )
+    );
+  if (priority) return priority.slice(0, 220);
+  if (lines.length > 0) return lines.slice(-2).join(" | ").slice(0, 220);
+  return fallback || "Kaggle kernel exited before opening a tunnel.";
+}
 
 export async function GET(req: NextRequest) {
   try {
@@ -67,6 +84,99 @@ export async function GET(req: NextRequest) {
       })
     );
 
+    // Rate-limited Kaggle boot polling: catch failed kernels or silent heartbeat blocks instead of hanging on 1/5
+    const startingKaggleAliases = new Set<string>();
+    for (const vm of updatedRows) {
+      if (vm.provider !== "kaggle" || vm.status !== "STARTING") continue;
+      const lastActivityMs = Math.max(vm.updatedAt.getTime(), vm.lastHeartbeat?.getTime() || 0);
+      if (forceProbe || now - lastActivityMs >= KAGGLE_BOOT_POLL_INTERVAL_MS) {
+        startingKaggleAliases.add(vm.accountAlias);
+      }
+    }
+
+    if (startingKaggleAliases.size > 0) {
+      await Promise.all(
+        Array.from(startingKaggleAliases).map(async (alias) => {
+          const groupRows = updatedRows.filter(
+            (r) => r.provider === "kaggle" && r.accountAlias === alias && r.status === "STARTING"
+          );
+          if (groupRows.length === 0) return;
+
+          const kc = await getDecryptedCredential(user.userId, "kaggle", alias);
+          if (!kc?.username || !kc.secret) return;
+
+          const creds = {
+            username: kc.username,
+            key: kc.secret,
+            authType: (kc.authType === "bearer" ? "bearer" : "basic") as "bearer" | "basic",
+          };
+
+          try {
+            const st = await KaggleOrchestrator.getKernelStatus(creds, "kaggle-dual-gpu-runner");
+            const kStatus = String(st.status || "").toLowerCase();
+
+            if (kStatus === "error" || kStatus === "cancelacknowledged" || kStatus === "complete") {
+              const logLines = await KaggleOrchestrator.getKernelOutput(
+                creds,
+                "kaggle-dual-gpu-runner"
+              );
+              const detail =
+                kStatus === "cancelacknowledged"
+                  ? "Cancelled on Kaggle."
+                  : pickBestKernelError(logLines, st.failureMessage);
+              const nextStatus = kStatus === "cancelacknowledged" ? "OFFLINE" : "ERROR";
+
+              await prisma.vmInstance.updateMany({
+                where: {
+                  userId: user.userId,
+                  provider: "kaggle",
+                  accountAlias: alias,
+                  status: "STARTING",
+                },
+                data: {
+                  status: nextStatus,
+                  stepProgress: 0,
+                  publicUrl: "",
+                  lastError: nextStatus === "ERROR" ? detail : null,
+                },
+              });
+
+              await appendSystemLog({
+                userId: user.userId,
+                vmInstanceId: groupRows[0].id,
+                category: nextStatus === "ERROR" ? "ERROR" : "ACTION",
+                level: nextStatus === "ERROR" ? "ERROR" : "WARN",
+                message: `Kaggle (${alias}) ${kStatus}: ${detail}`,
+              });
+            } else {
+              const hint =
+                kStatus === "running"
+                  ? "Running on Kaggle GPU — awaiting first heartbeat callback..."
+                  : kStatus === "queued"
+                  ? "Queued on Kaggle GPU..."
+                  : null;
+              await prisma.vmInstance.updateMany({
+                where: {
+                  userId: user.userId,
+                  provider: "kaggle",
+                  accountAlias: alias,
+                  status: "STARTING",
+                },
+                data: { lastError: hint },
+              });
+            }
+          } catch {
+            // Ignore transient Kaggle status API blips
+          }
+        })
+      );
+
+      const finalRows = await prisma.vmInstance.findMany({ where: { userId: user.userId } });
+      return NextResponse.json({
+        vms: sortVmsByCanonicalTarget(finalRows).map(sanitizeVmForClient),
+      });
+    }
+
     const sorted = sortVmsByCanonicalTarget(updatedRows).map(sanitizeVmForClient);
     return NextResponse.json({ vms: sorted });
   } catch (error) {
@@ -74,4 +184,3 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
-

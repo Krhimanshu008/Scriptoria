@@ -1,5 +1,4 @@
 import { VmInstance } from "@prisma/client";
-import { NextRequest } from "next/server";
 
 export interface PublicVmInstance {
   id: string;
@@ -60,15 +59,5 @@ export function sanitizeVmForClient(vm: VmInstance): PublicVmInstance {
     lastError: vm.lastError,
     uptimeSeconds,
   };
-}
-
-export function resolveWebhookBaseUrl(req: NextRequest): string {
-  const configured = (process.env.NEXT_PUBLIC_APP_URL || "").trim().replace(/\/$/, "");
-  if (configured && !configured.includes("localhost") && !configured.includes("127.0.0.1")) {
-    return configured;
-  }
-  const origin = req.nextUrl.origin.replace(/\/$/, "");
-  if (configured) return configured;
-  return origin;
 }
 

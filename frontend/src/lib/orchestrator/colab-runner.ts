@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { prisma } from "@/lib/db/prisma";
 import { getDecryptedCredential, saveUserCredential } from "@/lib/crypto/credentials";
 import { generateVmSecret } from "@/lib/crypto/vault";
 
@@ -74,5 +75,30 @@ export function extractGoogleDriveFileId(input: string): string | null {
 
   if (/^[a-zA-Z0-9_-]{15,}$/.test(trimmed)) return trimmed;
   return null;
+}
+
+/**
+ * Clears cached Drive file binding for a Colab slot when its linked Google email changes
+ * (unless the user explicitly pinned a custom Drive URL via manualBind).
+ */
+export async function invalidateColabMetaIfEmailChanged(
+  userId: string,
+  accountAlias: string,
+  previousEmail: string | null | undefined,
+  nextEmail: string | null | undefined
+): Promise<void> {
+  if (!nextEmail) return;
+  if (previousEmail && previousEmail.toLowerCase() === nextEmail.toLowerCase()) return;
+
+  const target = accountAlias === "acc2" ? "gcgpu1" : "gcgpu";
+  const existingMeta = await getDecryptedCredential(userId, "colab-meta", target);
+  if (!existingMeta) return;
+
+  const isManual = Boolean(existingMeta.metadata?.manualBind);
+  if (!isManual) {
+    await prisma.credential.deleteMany({
+      where: { userId, provider: "colab-meta", accountAlias: target },
+    });
+  }
 }
 

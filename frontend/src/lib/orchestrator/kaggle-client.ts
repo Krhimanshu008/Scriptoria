@@ -77,7 +77,9 @@ export class KaggleOrchestrator {
    * Synchronously pushes and triggers the Kaggle kernel via SaveKernel REST API.
    * Must be awaited inside serverless handlers so Vercel doesn't freeze mid-flight.
    */
-  public static async pushKernel(params: PushKernelParams): Promise<{ status: string; url: string }> {
+  public static async pushKernel(
+    params: PushKernelParams
+  ): Promise<{ status: string; url: string; kernelSessionId?: number }> {
     const { credentials, kernelSlug, pythonCode, datasetDataSources = [] } = params;
     const notebookJson = this.wrapPythonAsNotebookJson(pythonCode);
     const fullSlug = `${credentials.username}/${kernelSlug}`;
@@ -116,6 +118,7 @@ export class KaggleOrchestrator {
       error?: string;
       versionNumber?: number;
       kernelId?: number;
+      kernelSessionId?: number;
     };
     if (data.error) {
       throw new Error(`Kaggle SaveKernel error: ${data.error}`);
@@ -123,7 +126,83 @@ export class KaggleOrchestrator {
     return {
       status: "QUEUED",
       url: data.url || `https://www.kaggle.com/code/${fullSlug}`,
+      kernelSessionId: typeof data.kernelSessionId === "number" ? data.kernelSessionId : undefined,
     };
+  }
+
+  /**
+   * Attempts to cancel an active Kaggle kernel session via REST API.
+   */
+  public static async cancelKernelSession(
+    credentials: KaggleCredentials,
+    kernelSessionId: number
+  ): Promise<{ ok: boolean; errorMessage?: string }> {
+    try {
+      const res = await fetch(
+        `${this.KAGGLE_BASE_URL}/kernels.KernelsApiService/CancelKernelSession`,
+        {
+          method: "POST",
+          headers: this.getHeaders(credentials),
+          body: JSON.stringify({ kernelSessionId }),
+        }
+      );
+      if (!res.ok) {
+        const txt = await res.text().catch(() => res.statusText);
+        return { ok: false, errorMessage: `HTTP ${res.status}: ${txt}` };
+      }
+      const data = (await res.json().catch(() => ({}))) as { errorMessage?: string };
+      return {
+        ok: !data.errorMessage,
+        errorMessage: data.errorMessage || undefined,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        errorMessage: err instanceof Error ? err.message : "Cancel request failed",
+      };
+    }
+  }
+
+  /**
+   * Reads redacted stdout/stderr kernel log lines from Kaggle `/kernels/output`.
+   */
+  public static async getKernelOutput(
+    credentials: KaggleCredentials,
+    kernelSlug: string
+  ): Promise<string[]> {
+    const url = `${this.KAGGLE_BASE_URL}/kernels/output?userName=${encodeURIComponent(
+      credentials.username
+    )}&kernelSlug=${encodeURIComponent(kernelSlug)}`;
+
+    const res = await fetch(url, {
+      method: "GET",
+      headers: this.getHeaders(credentials),
+      cache: "no-store",
+    });
+
+    if (!res.ok) {
+      return [];
+    }
+
+    const data = (await res.json().catch(() => ({}))) as { logNullable?: string };
+    if (!data.logNullable) return [];
+
+    try {
+      const entries = JSON.parse(data.logNullable) as Array<{
+        stream_name?: string;
+        time?: number;
+        data?: string;
+      }>;
+      return entries
+        .map((e) => String(e.data || "").trim())
+        .filter(
+          (line) =>
+            line.length > 0 &&
+            !/token|secret|client_id|refresh_token|REG_JWT|VM_SECRET/i.test(line)
+        );
+    } catch {
+      return [];
+    }
   }
 
   /**

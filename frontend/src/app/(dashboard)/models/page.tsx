@@ -275,8 +275,8 @@ export default function ModelsPage() {
       )}
 
       {/* Loaded Models Inside Active VM (/tmp/models) */}
-      <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-5">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 pb-3 text-xs">
+      <div className="glass-panel rounded-2xl p-5">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3 border-b border-white/10 pb-3 text-xs">
           <div className="flex items-center gap-2 font-semibold text-zinc-200">
             <HardDrive className="h-4 w-4 text-emerald-400" />
             <span>Loaded on {target.toUpperCase()} (`/tmp/models`)</span>
@@ -342,8 +342,8 @@ export default function ModelsPage() {
       </div>
 
       {/* Drive File List */}
-      <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-5">
-        <div className="mb-4 flex items-center justify-between border-b border-zinc-800 pb-3 text-xs text-zinc-400">
+      <div className="glass-panel rounded-2xl p-5">
+        <div className="mb-4 flex items-center justify-between border-b border-white/10 pb-3 text-xs text-zinc-400">
           <div className="flex items-center gap-2">
             <FolderOpen className="h-4 w-4 text-indigo-400" />
             <span className="font-mono">

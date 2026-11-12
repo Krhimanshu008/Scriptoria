@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import { getAuthUser } from "@/lib/auth/session";
 import { getDecryptedCredential, saveUserCredential } from "@/lib/crypto/credentials";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
+import { invalidateColabMetaIfEmailChanged } from "@/lib/orchestrator/colab-runner";
 import { appendSystemLog } from "@/lib/logs/logger";
 
 interface ColabOAuthState {
@@ -127,6 +128,13 @@ export async function GET(req: NextRequest) {
         connectedAt: new Date().toISOString(),
       },
     });
+
+    await invalidateColabMetaIfEmailChanged(
+      user.userId,
+      decoded.alias,
+      existingColab?.username,
+      profile.email
+    );
 
     await appendSystemLog({
       userId: user.userId,

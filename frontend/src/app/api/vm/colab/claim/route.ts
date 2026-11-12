@@ -5,7 +5,7 @@ import { generateVmSecret } from "@/lib/crypto/vault";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
 import { buildUnifiedNotebookPythonCode } from "@/lib/orchestrator/notebook-builder";
 import { verifyColabRunnerToken } from "@/lib/orchestrator/colab-runner";
-import { resolveWebhookBaseUrl } from "@/lib/orchestrator/vm-helpers";
+import { resolveReachableWebhookBaseUrl } from "@/lib/orchestrator/webhook-tunnel";
 import { appendSystemLog } from "@/lib/logs/logger";
 
 export async function POST(req: NextRequest) {
@@ -52,7 +52,8 @@ export async function POST(req: NextRequest) {
       vmSecret,
     });
 
-    const appWebhookUrl = resolveWebhookBaseUrl(req);
+    const webhook = await resolveReachableWebhookBaseUrl(req);
+    const appWebhookUrl = webhook.url;
     const pythonCode = buildUnifiedNotebookPythonCode({
       provider: "colab",
       appWebhookUrl,
