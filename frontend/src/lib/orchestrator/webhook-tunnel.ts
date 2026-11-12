@@ -128,14 +128,14 @@ function stopLocalTunnel(state: TunnelGlobalState) {
 async function waitForPublicDnsPropagation(baseUrl: string): Promise<void> {
   try {
     const hostname = new URL(baseUrl).hostname;
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 10; i++) {
       try {
         const doh = await fetch(
           `https://1.1.1.1/dns-query?name=${encodeURIComponent(hostname)}&type=A`,
           {
             headers: { Accept: "application/dns-json" },
             cache: "no-store",
-            signal: AbortSignal.timeout(2000),
+            signal: AbortSignal.timeout(1200),
           }
         );
         if (doh.ok) {
@@ -147,7 +147,7 @@ async function waitForPublicDnsPropagation(baseUrl: string): Promise<void> {
       } catch {
         // ignore transient DoH query blip
       }
-      await new Promise((r) => setTimeout(r, 700));
+      await new Promise((r) => setTimeout(r, 350));
     }
   } catch {
     // ignore URL parse issues
@@ -227,11 +227,11 @@ export async function ensureLocalQuickTunnel(localPort = 3000): Promise<string |
         if (match?.[0] && !capturedUrl) {
           capturedUrl = match[0];
           state.url = capturedUrl;
-          // Give cloudflared up to 4s to finish edge connection registration if not logged yet
+          // Give cloudflared up to 2.5s to finish edge connection registration if not logged yet
           if (registered) {
             done(capturedUrl);
           } else {
-            regFallbackTimer = setTimeout(() => done(capturedUrl), 4000);
+            regFallbackTimer = setTimeout(() => done(capturedUrl), 2500);
           }
         }
         if (/Registered tunnel connection/i.test(txt)) {
@@ -254,7 +254,7 @@ export async function ensureLocalQuickTunnel(localPort = 3000): Promise<string |
         done(null);
       });
 
-      const timer = setTimeout(() => done(capturedUrl), 18_000);
+      const timer = setTimeout(() => done(capturedUrl), 15_000);
     });
 
     if (!foundUrl) return null;
@@ -274,6 +274,26 @@ export async function ensureLocalQuickTunnel(localPort = 3000): Promise<string |
 export function peekActiveTunnelUrl(): string | null {
   const state = getTunnelState();
   return state.proc && !state.proc.killed ? state.url : null;
+}
+
+/**
+ * Starts a local cloudflared quick tunnel in the background when running locally
+ * so Boot / Open Colab requests don't pay the full tunnel startup & DNS wait inline.
+ */
+export function prewarmLocalTunnelIfNeeded(req: NextRequest): void {
+  if (process.env.VERCEL === "1" || process.env.DISABLE_AUTO_TUNNEL === "true") {
+    return;
+  }
+  if (peekActiveTunnelUrl()) return;
+  if (getRequestPublicOrigin(req)) return;
+
+  const configured = (process.env.NEXT_PUBLIC_APP_URL || "").trim().replace(/\/$/, "");
+  if (configured && !isLocalOrPrivateUrl(configured)) {
+    return;
+  }
+
+  const localPort = Number(req.nextUrl.port || (req.nextUrl.protocol === "https:" ? 443 : 3000));
+  void ensureLocalQuickTunnel(Number.isFinite(localPort) ? localPort : 3000).catch(() => null);
 }
 
 /**

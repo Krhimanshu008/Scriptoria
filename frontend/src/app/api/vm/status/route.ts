@@ -8,7 +8,9 @@ import { KaggleOrchestrator } from "@/lib/orchestrator/kaggle-client";
 import { sanitizeVmForClient, sortVmsByCanonicalTarget } from "@/lib/orchestrator/vm-helpers";
 
 const HEARTBEAT_STALE_MS = 90_000;
-const KAGGLE_BOOT_POLL_INTERVAL_MS = 15_000;
+const KAGGLE_PRE_HEARTBEAT_POLL_MS = 8_000;
+const KAGGLE_ACTIVE_POLL_MS = 30_000;
+const lastKagglePollAt = new Map<string, number>();
 
 function pickBestKernelError(lines: string[], fallback?: string): string {
   const priority = [...lines]
@@ -84,13 +86,17 @@ export async function GET(req: NextRequest) {
       })
     );
 
-    // Rate-limited Kaggle boot polling: catch failed kernels or silent heartbeat blocks instead of hanging on 1/5
+    // Rate-limited Kaggle boot polling: catch failed kernels or silent heartbeat blocks quickly
     const startingKaggleAliases = new Set<string>();
     for (const vm of updatedRows) {
       if (vm.provider !== "kaggle" || vm.status !== "STARTING") continue;
-      const lastActivityMs = Math.max(vm.updatedAt.getTime(), vm.lastHeartbeat?.getTime() || 0);
-      if (forceProbe || now - lastActivityMs >= KAGGLE_BOOT_POLL_INTERVAL_MS) {
+      const pollKey = `${user.userId}:${vm.accountAlias}`;
+      const lastPolledMs = lastKagglePollAt.get(pollKey) || 0;
+      const lastActivityMs = Math.max(vm.updatedAt.getTime(), vm.lastHeartbeat?.getTime() || 0, lastPolledMs);
+      const pollInterval = vm.stepProgress <= 1 ? KAGGLE_PRE_HEARTBEAT_POLL_MS : KAGGLE_ACTIVE_POLL_MS;
+      if (forceProbe || now - lastActivityMs >= pollInterval) {
         startingKaggleAliases.add(vm.accountAlias);
+        lastKagglePollAt.set(pollKey, now);
       }
     }
 
@@ -149,21 +155,27 @@ export async function GET(req: NextRequest) {
                 message: `Kaggle (${alias}) ${kStatus}: ${detail}`,
               });
             } else {
-              const hint =
-                kStatus === "running"
-                  ? "Running on Kaggle GPU — awaiting first heartbeat callback..."
-                  : kStatus === "queued"
-                  ? "Queued on Kaggle GPU..."
-                  : null;
-              await prisma.vmInstance.updateMany({
-                where: {
-                  userId: user.userId,
-                  provider: "kaggle",
-                  accountAlias: alias,
-                  status: "STARTING",
-                },
-                data: { lastError: hint },
-              });
+              const allPreHeartbeat = groupRows.every((r) => r.stepProgress <= 1);
+              if (allPreHeartbeat) {
+                const hint =
+                  kStatus === "running"
+                    ? "Running on Kaggle GPU — awaiting first heartbeat callback..."
+                    : kStatus === "queued"
+                    ? "Queued on Kaggle GPU..."
+                    : null;
+                if (groupRows.some((r) => r.lastError !== hint)) {
+                  await prisma.vmInstance.updateMany({
+                    where: {
+                      userId: user.userId,
+                      provider: "kaggle",
+                      accountAlias: alias,
+                      status: "STARTING",
+                      stepProgress: { lte: 1 },
+                    },
+                    data: { lastError: hint },
+                  });
+                }
+              }
             }
           } catch {
             // Ignore transient Kaggle status API blips

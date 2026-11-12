@@ -4,7 +4,10 @@ import { getAuthUser } from "@/lib/auth/session";
 import { getDecryptedCredential } from "@/lib/crypto/credentials";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
 import { KaggleOrchestrator, KaggleQuotaInfo } from "@/lib/orchestrator/kaggle-client";
-import { peekActiveTunnelUrl } from "@/lib/orchestrator/webhook-tunnel";
+import {
+  peekActiveTunnelUrl,
+  prewarmLocalTunnelIfNeeded,
+} from "@/lib/orchestrator/webhook-tunnel";
 
 export interface KaggleAccountSummary {
   accountAlias: string;
@@ -33,6 +36,8 @@ export async function GET(req: NextRequest) {
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+
+    prewarmLocalTunnelIfNeeded(req);
 
     const [vms, colabRelatedCreds, gdriveCred] = await Promise.all([
       prisma.vmInstance.findMany({ where: { userId: user.userId } }),
