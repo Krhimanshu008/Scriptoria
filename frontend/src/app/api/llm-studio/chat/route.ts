@@ -100,6 +100,7 @@ export async function POST(req: NextRequest) {
         max_tokens: maxTokens,
         stream: true,
         stream_options: { include_usage: true },
+        cache_prompt: true,
         chat_template_kwargs: {
           enable_thinking: reasoningEffort !== "none",
         },

@@ -1128,13 +1128,16 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"):
                 mm_local = hf_hub_download(repo_id=LLM_MODEL_REPO, filename=chosen_mm, local_dir="/tmp/models/llm")
 
         dr_local = None
-        try:
-            DRAFT_REPO = "incoai/Qwen3.8-27B-DFlash2-GGUF"
-            draft_fname = "Qwen3.8-27B-DFlash2-Q4_K_M.gguf"
-            log_event(f"Downloading {draft_fname} (DFlash2 7-token speculative drafter)...", category="SYSTEM")
-            dr_local = hf_hub_download(repo_id=DRAFT_REPO, filename=draft_fname, local_dir="/tmp/models/llm")
-        except Exception as dfe:
-            log_event(f"DFlash2 draft download skipped ({dfe}); continuing with plain decode", category="SYSTEM", level="WARN")
+        for dr_repo in ["z-lab/Qwen3.8-27B-DFlash2-GGUF", "Akicou/Qwen3.8-27B-DFlash2-GGUF", "incoai/Qwen3.8-27B-DFlash2-GGUF"]:
+            try:
+                draft_fname = "Qwen3.8-27B-DFlash2-Q4_K_M.gguf"
+                log_event(f"Downloading {draft_fname} from {dr_repo} (DFlash2 drafter)...", category="SYSTEM")
+                cand_dr = hf_hub_download(repo_id=dr_repo, filename=draft_fname, local_dir="/tmp/models/llm")
+                if cand_dr and os.path.exists(cand_dr):
+                    dr_local = cand_dr
+                    break
+            except Exception as dfe:
+                log_event(f"Draft repo {dr_repo} skipped ({dfe}); trying next...", category="SYSTEM")
 
         return m_local, mm_local, dr_local, True
 
@@ -1160,18 +1163,27 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"):
     ll_env["LD_LIBRARY_PATH"] = f"/tmp/llama_bin:{ll_env.get('LD_LIBRARY_PATH', '')}"
     ll_cmd = [
         llama_bin, "-m", model_gguf, "--host", "127.0.0.1", "--port", "8190",
-        "-ngl", "999", "--split-mode", "layer", "--tensor-split", "1,1",
+        "-ngl", "999", "-ngld", "99",
+        "-dev", "CUDA0,CUDA1", "-devd", "CUDA1",
+        "--split-mode", "layer",
+        "--tensor-split", "55,45" if PROFILE_ID == "LLM_QWEN_VLM" else "50,50",
+        "--fit", "off",
+        "--flash-attn", "on",
         "--ctx-size", "16384" if PROFILE_ID == "LLM_QWEN_VLM" else "32768",
         "-ctk", "q8_0", "-ctv", "q8_0",
-        "--batch-size", "512", "--ubatch-size", "128" if PROFILE_ID == "LLM_QWEN_VLM" else "64",
-        "--parallel", "1", "--flash-attn", "on", "--jinja",
+        "-ctkd", "q8_0", "-ctvd", "q8_0",
+        "--batch-size", "512",
+        "--ubatch-size", "128" if PROFILE_ID == "LLM_QWEN_VLM" else "64",
+        "--parallel", "1",
+        "--kv-unified",
+        "--jinja",
     ]
     if draft_gguf and os.path.exists(draft_gguf):
-        ll_cmd.extend(["-md", draft_gguf, "--spec-type", "draft-dflash", "--spec-draft-n-max", "7"])
-        log_event(f"Speculative decoding ACTIVE: {os.path.basename(draft_gguf)} (7-token draft)", category="SYSTEM", level="SUCCESS")
+        ll_cmd.extend(["-md", draft_gguf, "--spec-type", "draft-dflash", "--spec-draft-n-max", "5"])
+        log_event(f"Speculative decoding ACTIVE on CUDA1: {os.path.basename(draft_gguf)} (5-token draft)", category="SYSTEM", level="SUCCESS")
     if mmproj_gguf and PROFILE_ID == "LLM_QWEN_VLM":
         ll_cmd.extend(["--mmproj", mmproj_gguf])
-        log_event(f"Multimodal vision ACTIVE: {os.path.basename(mmproj_gguf)}", category="SYSTEM", level="SUCCESS")
+        log_event(f"Multimodal vision ACTIVE on CUDA1: {os.path.basename(mmproj_gguf)}", category="SYSTEM", level="SUCCESS")
     ll_log = open("/tmp/llama_server.log", "w")
     ll_proc = subprocess.Popen(ll_cmd, env=ll_env, stdout=ll_log, stderr=ll_log)
     mode_label = "Vision + LLM" if PROFILE_ID == "LLM_QWEN_VLM" else "Ultra Text Turbo"
