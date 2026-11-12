@@ -191,3 +191,169 @@ export async function fetchGDriveFileStream(userId: string, fileId: string): Pro
   });
 }
 
+export async function getGoogleAccountEmail(accessToken: string): Promise<string | null> {
+  try {
+    const res = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { email?: string };
+    return data.email || null;
+  } catch {
+    return null;
+  }
+}
+
+async function ensureFolderIdByPath(
+  accessToken: string,
+  pathSegments: string[]
+): Promise<string | null> {
+  let parentId = "root";
+  for (const segment of pathSegments) {
+    const escaped = segment.replace(/'/g, "\\'");
+    const q = `'${parentId}' in parents and name='${escaped}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+    const findUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id)&pageSize=1`;
+    const findRes = await fetch(findUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      cache: "no-store",
+    });
+    if (!findRes.ok) return null;
+    const found = (await findRes.json()) as { files?: Array<{ id: string }> };
+    if (found.files && found.files.length > 0) {
+      parentId = found.files[0].id;
+      continue;
+    }
+
+    const createRes = await fetch("https://www.googleapis.com/drive/v3/files?fields=id", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        name: segment,
+        mimeType: "application/vnd.google-apps.folder",
+        parents: [parentId],
+      }),
+      cache: "no-store",
+    });
+    if (!createRes.ok) return null;
+    const created = (await createRes.json()) as { id?: string };
+    if (!created.id) return null;
+    parentId = created.id;
+  }
+  return parentId;
+}
+
+/**
+ * Creates or updates a Colab .ipynb notebook in Google Drive using either
+ * `drive` or `drive.file` OAuth scope, preserving fileId across runs.
+ */
+export async function upsertColabNotebookInDrive(params: {
+  accessToken: string;
+  filename: string;
+  notebookJson: Record<string, unknown>;
+  existingFileId?: string | null;
+  folderSegments?: string[];
+  hasFullDriveScope?: boolean;
+}): Promise<{ fileId: string; updated: boolean }> {
+  const { accessToken, filename, notebookJson, existingFileId, folderSegments, hasFullDriveScope } =
+    params;
+  const contentStr = JSON.stringify(notebookJson, null, 2);
+
+  if (existingFileId) {
+    const patchRes = await fetch(
+      `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(existingFileId)}?uploadType=media&fields=id`,
+      {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/x-ipynb+json",
+        },
+        body: contentStr,
+        cache: "no-store",
+      }
+    );
+    if (patchRes.ok) {
+      return { fileId: existingFileId, updated: true };
+    }
+  }
+
+  let parentId: string | null = null;
+  if (hasFullDriveScope && folderSegments?.length) {
+    parentId = await ensureFolderIdByPath(accessToken, folderSegments);
+  }
+
+  const escaped = filename.replace(/'/g, "\\'");
+  const q = parentId
+    ? `'${parentId}' in parents and name='${escaped}' and trashed=false`
+    : `name='${escaped}' and trashed=false`;
+  const searchUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id)&pageSize=1`;
+  const searchRes = await fetch(searchUrl, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    cache: "no-store",
+  });
+
+  if (searchRes.ok) {
+    const searchData = (await searchRes.json()) as { files?: Array<{ id: string }> };
+    const matchedId = searchData.files?.[0]?.id;
+    if (matchedId) {
+      const patchRes = await fetch(
+        `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(matchedId)}?uploadType=media&fields=id`,
+        {
+          method: "PATCH",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/x-ipynb+json",
+          },
+          body: contentStr,
+          cache: "no-store",
+        }
+      );
+      if (patchRes.ok) {
+        return { fileId: matchedId, updated: true };
+      }
+    }
+  }
+
+  const boundary = `scriptoria_colab_nb_${Date.now()}`;
+  const metadata = JSON.stringify({
+    name: filename,
+    mimeType: "application/vnd.google.colaboratory",
+    ...(parentId ? { parents: [parentId] } : {}),
+  });
+  const multipartBody =
+    `--${boundary}\r\n` +
+    `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
+    `${metadata}\r\n` +
+    `--${boundary}\r\n` +
+    `Content-Type: application/x-ipynb+json\r\n\r\n` +
+    `${contentStr}\r\n` +
+    `--${boundary}--`;
+
+  const createRes = await fetch(
+    "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": `multipart/related; boundary=${boundary}`,
+      },
+      body: multipartBody,
+      cache: "no-store",
+    }
+  );
+
+  if (!createRes.ok) {
+    const errText = await createRes.text().catch(() => createRes.statusText);
+    throw new Error(`Failed uploading Colab notebook to Google Drive (${createRes.status}): ${errText}`);
+  }
+
+  const created = (await createRes.json()) as { id?: string };
+  if (!created.id) {
+    throw new Error("Google Drive upload succeeded without returning a file ID.");
+  }
+  return { fileId: created.id, updated: false };
+}
+

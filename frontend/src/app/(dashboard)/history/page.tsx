@@ -1,8 +1,10 @@
 "use client";
 
 import React, { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Images, Loader2, RefreshCw, Download } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { Images, Loader2, RefreshCw, Download, Wand2 } from "lucide-react";
+import { useClusterStore } from "@/store/cluster-store";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -10,6 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { toast } from "sonner";
 
 interface HistoryJobItem {
   id: string;
@@ -33,7 +36,9 @@ interface HistoryJobItem {
 }
 
 export default function HistoryPage() {
+  const router = useRouter();
   const [selected, setSelected] = useState<HistoryJobItem | null>(null);
+  const remixFromHistory = useClusterStore((s) => s.remixFromHistory);
 
   const { data, isLoading, refetch, isFetching } = useQuery<{ items: HistoryJobItem[] }>({
     queryKey: ["outputs-history"],
@@ -42,9 +47,18 @@ export default function HistoryPage() {
       if (!res.ok) throw new Error("Failed to load history");
       return res.json();
     },
+    placeholderData: keepPreviousData,
+    staleTime: 60_000,
   });
 
   const items = data?.items ?? [];
+
+  function handleRemix(item: HistoryJobItem) {
+    remixFromHistory(item);
+    toast.success("Loaded prompt & parameters into Studio");
+    setSelected(null);
+    router.push("/studio");
+  }
 
   return (
     <div className="space-y-6">
@@ -155,15 +169,24 @@ export default function HistoryPage() {
                         : "--"}
                     </div>
                   </div>
-                  {selected.outputs[0]?.previewUrl && (
-                    <a
-                      href={selected.outputs[0].previewUrl}
-                      download={selected.outputs[0].filename}
-                      className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-500"
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => handleRemix(selected)}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-500"
                     >
-                      <Download className="h-3.5 w-3.5" /> Download Full Image
-                    </a>
-                  )}
+                      <Wand2 className="h-3.5 w-3.5" /> Reuse in Studio
+                    </button>
+                    {selected.outputs[0]?.previewUrl && (
+                      <a
+                        href={selected.outputs[0].previewUrl}
+                        download={selected.outputs[0].filename}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-500"
+                      >
+                        <Download className="h-3.5 w-3.5" /> Download Full Image
+                      </a>
+                    )}
+                  </div>
                 </div>
               </div>
             </>
@@ -173,4 +196,3 @@ export default function HistoryPage() {
     </div>
   );
 }
-

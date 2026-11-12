@@ -38,6 +38,9 @@ export interface BuildWorkflowGraphInput {
   samplerName?: string;
   scheduler?: string;
   hiresPass?: boolean;
+  batchSize?: number;
+  loraName?: string;
+  loraStrength?: number;
   seed: number;
   target: string;
 }
@@ -72,6 +75,108 @@ interface ComfyHistoryRecord {
   >;
 }
 
+interface NodeSchemaSpec {
+  output?: unknown[];
+  output_name?: string[];
+  input?: {
+    required?: Record<string, [unknown, Record<string, unknown>?]>;
+    optional?: Record<string, [unknown, Record<string, unknown>?]>;
+  };
+}
+
+const BUILTIN_COMFY_SCHEMAS: Record<string, NodeSchemaSpec> = {
+  CheckpointLoaderSimple: {
+    output: ["MODEL", "CLIP", "VAE"],
+    output_name: ["MODEL", "CLIP", "VAE"],
+    input: { required: { ckpt_name: ["COMBO", { default: "" }] } },
+  },
+  LoraLoader: {
+    output: ["MODEL", "CLIP"],
+    output_name: ["MODEL", "CLIP"],
+    input: {
+      required: {
+        model: ["MODEL"],
+        clip: ["CLIP"],
+        lora_name: ["COMBO", { default: "" }],
+        strength_model: ["FLOAT", { default: 1.0 }],
+        strength_clip: ["FLOAT", { default: 1.0 }],
+      },
+    },
+  },
+  EmptyLatentImage: {
+    output: ["LATENT"],
+    output_name: ["LATENT"],
+    input: {
+      required: {
+        width: ["INT", { default: 1024 }],
+        height: ["INT", { default: 1024 }],
+        batch_size: ["INT", { default: 1 }],
+      },
+    },
+  },
+  CLIPTextEncode: {
+    output: ["CONDITIONING"],
+    output_name: ["CONDITIONING"],
+    input: {
+      required: {
+        text: ["STRING", { default: "" }],
+        clip: ["CLIP"],
+      },
+    },
+  },
+  KSampler: {
+    output: ["LATENT"],
+    output_name: ["LATENT"],
+    input: {
+      required: {
+        model: ["MODEL"],
+        seed: ["INT", { default: 0, control_after_generate: true }],
+        steps: ["INT", { default: 20 }],
+        cfg: ["FLOAT", { default: 7.0 }],
+        sampler_name: ["COMBO", { default: "euler" }],
+        scheduler: ["COMBO", { default: "normal" }],
+        positive: ["CONDITIONING"],
+        negative: ["CONDITIONING"],
+        latent_image: ["LATENT"],
+        denoise: ["FLOAT", { default: 1.0 }],
+      },
+    },
+  },
+  LatentUpscale: {
+    output: ["LATENT"],
+    output_name: ["LATENT"],
+    input: {
+      required: {
+        samples: ["LATENT"],
+        upscale_method: ["COMBO", { default: "bislerp" }],
+        width: ["INT", { default: 1536 }],
+        height: ["INT", { default: 1536 }],
+        crop: ["COMBO", { default: "disabled" }],
+      },
+    },
+  },
+  VAEDecode: {
+    output: ["IMAGE"],
+    output_name: ["IMAGE"],
+    input: {
+      required: {
+        samples: ["LATENT"],
+        vae: ["VAE"],
+      },
+    },
+  },
+  SaveImage: {
+    output: [],
+    output_name: [],
+    input: {
+      required: {
+        images: ["IMAGE"],
+        filename_prefix: ["STRING", { default: "ComfyUI" }],
+      },
+    },
+  },
+};
+
 export class ComfyClient {
   constructor(private vm: VmEndpointTarget) {}
 
@@ -83,6 +188,25 @@ export class ComfyClient {
     });
   }
 
+  public async getQueueSummary(): Promise<{ runningCount: number; pendingCount: number }> {
+    try {
+      const q = await VmGateway.callJson<{
+        queue_running?: unknown[];
+        queue_pending?: unknown[];
+      }>(this.vm, "/queue", {
+        method: "GET",
+        targetPort: this.vm.internalPort,
+        timeoutMs: 4000,
+      });
+      return {
+        runningCount: Array.isArray(q.queue_running) ? q.queue_running.length : 0,
+        pendingCount: Array.isArray(q.queue_pending) ? q.queue_pending.length : 0,
+      };
+    } catch {
+      return { runningCount: 0, pendingCount: 0 };
+    }
+  }
+
   public async getCatalog(target: string): Promise<ComfyCatalog> {
     const objInfo = await VmGateway.callJson<Record<string, ComfyObjectInfoNode>>(
       this.vm,
@@ -90,7 +214,7 @@ export class ComfyClient {
       {
         method: "GET",
         targetPort: this.vm.internalPort,
-        timeoutMs: 15000,
+        timeoutMs: 20000,
       }
     );
 
@@ -114,12 +238,16 @@ export class ComfyClient {
     };
   }
 
-  public static buildStandardPromptGraph(input: BuildWorkflowGraphInput): Record<string, unknown> {
-    if (input.hiresPass) {
-      return this.buildHiresUpscalePromptGraph(input);
-    }
-
-    return {
+  /**
+   * Builds shared Checkpoint (+ optional LoRA), EmptyLatent, and positive/negative CLIP nodes.
+   */
+  private static buildBasePromptNodes(input: BuildWorkflowGraphInput): {
+    nodes: Record<string, ApiGraphNode>;
+    modelRef: [string, number];
+    clipRef: [string, number];
+  } {
+    const batchSize = Math.min(4, Math.max(1, Math.round(input.batchSize ?? 1)));
+    const nodes: Record<string, ApiGraphNode> = {
       "1": {
         class_type: "CheckpointLoaderSimple",
         inputs: { ckpt_name: input.checkpoint },
@@ -129,17 +257,53 @@ export class ComfyClient {
         inputs: {
           width: input.width ?? 1024,
           height: input.height ?? 1024,
-          batch_size: 1,
+          batch_size: batchSize,
         },
       },
-      "3": {
-        class_type: "CLIPTextEncode",
-        inputs: { text: input.prompt, clip: ["1", 1] },
+    };
+
+    let modelRef: [string, number] = ["1", 0];
+    let clipRef: [string, number] = ["1", 1];
+
+    if (input.loraName?.trim()) {
+      const strength = input.loraStrength ?? 0.85;
+      nodes["10"] = {
+        class_type: "LoraLoader",
+        inputs: {
+          model: modelRef,
+          clip: clipRef,
+          lora_name: input.loraName.trim(),
+          strength_model: strength,
+          strength_clip: strength,
+        },
+      };
+      modelRef = ["10", 0];
+      clipRef = ["10", 1];
+    }
+
+    nodes["3"] = {
+      class_type: "CLIPTextEncode",
+      inputs: { text: input.prompt, clip: clipRef },
+    };
+    nodes["4"] = {
+      class_type: "CLIPTextEncode",
+      inputs: {
+        text: input.negativePrompt || "bad quality, blurry, deformed",
+        clip: clipRef,
       },
-      "4": {
-        class_type: "CLIPTextEncode",
-        inputs: { text: input.negativePrompt || "bad quality, blurry, deformed", clip: ["1", 1] },
-      },
+    };
+
+    return { nodes, modelRef, clipRef };
+  }
+
+  public static buildStandardPromptGraph(input: BuildWorkflowGraphInput): Record<string, unknown> {
+    if (input.hiresPass) {
+      return this.buildHiresUpscalePromptGraph(input);
+    }
+
+    const { nodes, modelRef } = this.buildBasePromptNodes(input);
+    return {
+      ...nodes,
       "5": {
         class_type: "KSampler",
         inputs: {
@@ -149,7 +313,7 @@ export class ComfyClient {
           sampler_name: input.samplerName || "euler_ancestral",
           scheduler: input.scheduler || "normal",
           denoise: 1.0,
-          model: ["1", 0],
+          model: modelRef,
           positive: ["3", 0],
           negative: ["4", 0],
           latent_image: ["2", 0],
@@ -169,23 +333,10 @@ export class ComfyClient {
   public static buildHiresUpscalePromptGraph(input: BuildWorkflowGraphInput): Record<string, unknown> {
     const baseW = input.width ?? 768;
     const baseH = input.height ?? 768;
+    const { nodes, modelRef } = this.buildBasePromptNodes(input);
+
     return {
-      "1": {
-        class_type: "CheckpointLoaderSimple",
-        inputs: { ckpt_name: input.checkpoint },
-      },
-      "2": {
-        class_type: "EmptyLatentImage",
-        inputs: { width: baseW, height: baseH, batch_size: 1 },
-      },
-      "3": {
-        class_type: "CLIPTextEncode",
-        inputs: { text: input.prompt, clip: ["1", 1] },
-      },
-      "4": {
-        class_type: "CLIPTextEncode",
-        inputs: { text: input.negativePrompt || "bad quality, blurry, deformed", clip: ["1", 1] },
-      },
+      ...nodes,
       "5": {
         class_type: "KSampler",
         inputs: {
@@ -195,7 +346,7 @@ export class ComfyClient {
           sampler_name: input.samplerName || "dpmpp_2m",
           scheduler: input.scheduler || "karras",
           denoise: 1.0,
-          model: ["1", 0],
+          model: modelRef,
           positive: ["3", 0],
           negative: ["4", 0],
           latent_image: ["2", 0],
@@ -220,7 +371,7 @@ export class ComfyClient {
           sampler_name: input.samplerName || "dpmpp_2m",
           scheduler: input.scheduler || "karras",
           denoise: 0.55,
-          model: ["1", 0],
+          model: modelRef,
           positive: ["3", 0],
           negative: ["4", 0],
           latent_image: ["6", 0],
@@ -238,34 +389,74 @@ export class ComfyClient {
   }
 
   /**
-   * Injects a workflow JSON directly into ComfyUI WebUI's saved workflows sidebar (/userdata/workflows/<name>.json).
+   * Injects a LiteGraph workflow JSON directly into ComfyUI WebUI's saved workflows folder.
+   * Uses fast offline built-in node schemas unless custom unknown nodes are present.
    */
   public async pushWorkflowToWebUi(
     workflowName: string,
     apiGraph: Record<string, unknown>
-  ): Promise<{ savedPath: string }> {
+  ): Promise<{ savedPath: string; method: string; workflowUiJson: Record<string, unknown> }> {
     const cleanName = workflowName.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/\.json$/i, "") + ".json";
-    const objInfo = await VmGateway.callJson<Record<string, Record<string, unknown>>>(
-      this.vm,
-      "/object_info",
-      {
-        method: "GET",
-        targetPort: this.vm.internalPort,
-        timeoutMs: 12000,
-      }
-    );
-
-    const uiWorkflow = convertApiGraphToLiteGraph(apiGraph, objInfo);
-    const encodedRel = encodeURIComponent(`workflows/${cleanName}`);
-
-    await VmGateway.callJson(this.vm, `/userdata/${encodedRel}?overwrite=true`, {
-      method: "POST",
-      targetPort: this.vm.internalPort,
-      body: JSON.stringify(uiWorkflow),
-      timeoutMs: 10000,
+    const needsRemoteSchema = Object.values(apiGraph).some((node) => {
+      const n = node as ApiGraphNode;
+      return n?.class_type && !(n.class_type in BUILTIN_COMFY_SCHEMAS);
     });
 
-    return { savedPath: `workflows/${cleanName}` };
+    let remoteObjInfo: Record<string, Record<string, unknown>> = {};
+    if (needsRemoteSchema) {
+      remoteObjInfo = await VmGateway.callJson<Record<string, Record<string, unknown>>>(
+        this.vm,
+        "/object_info",
+        {
+          method: "GET",
+          targetPort: this.vm.internalPort,
+          timeoutMs: 20000,
+        }
+      ).catch(() => ({}));
+    }
+
+    const uiWorkflow = convertApiGraphToLiteGraph(apiGraph, remoteObjInfo);
+    const payloadStr = JSON.stringify(uiWorkflow, null, 2);
+
+    // Strategy 1: Write straight to ComfyUI/user/default/workflows via Sidecar :9999
+    if (this.vm.useRouteLess) {
+      try {
+        await VmGateway.callJson(this.vm, "/save-workflow", {
+          method: "POST",
+          targetPort: 9999,
+          body: JSON.stringify({ filename: cleanName, workflow: uiWorkflow }),
+          timeoutMs: 8000,
+        });
+        return { savedPath: `workflows/${cleanName}`, method: "sidecar", workflowUiJson: uiWorkflow };
+      } catch {
+        // Running legacy Sidecar or unavailable -> fall back to ComfyUI /userdata HTTP API
+      }
+    }
+
+    // Strategy 2: ComfyUI /api/userdata or /userdata routes using callText (safe on non-JSON 200)
+    const encodedRel = encodeURIComponent(`workflows/${cleanName}`);
+    const candidatePaths = [
+      `/api/userdata/${encodedRel}?overwrite=true`,
+      `/userdata/${encodedRel}?overwrite=true`,
+      `/userdata/workflows/${cleanName}?overwrite=true`,
+    ];
+
+    let lastError: Error | null = null;
+    for (const candidate of candidatePaths) {
+      try {
+        await VmGateway.callText(this.vm, candidate, {
+          method: "POST",
+          targetPort: this.vm.internalPort,
+          body: payloadStr,
+          timeoutMs: 12000,
+        });
+        return { savedPath: `workflows/${cleanName}`, method: candidate, workflowUiJson: uiWorkflow };
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+      }
+    }
+
+    throw lastError ?? new Error("ComfyUI userdata endpoint rejected workflow save");
   }
 
   public async queuePrompt(
@@ -280,9 +471,6 @@ export class ComfyClient {
     });
   }
 
-  /**
-   * Checks /history/{promptId} once (non-blocking for serverless status polling).
-   */
   public async checkPromptHistory(
     promptId: string
   ): Promise<{ finished: boolean; images: ComfyOutputImageInfo[]; error?: string }> {
@@ -327,9 +515,6 @@ export class ComfyClient {
     return { finished: images.length > 0 || Boolean(record.status?.completed), images };
   }
 
-  /**
-   * Calls the VM's port 9999 sidecar to copy an output image into Google Drive and return its fileId.
-   */
   public async syncOutputToGDrive(
     filename: string,
     subfolder = ""
@@ -366,15 +551,18 @@ interface LiteGraphNode {
   widgets_values: unknown[];
 }
 
-function convertApiGraphToLiteGraph(
+export function convertApiGraphToLiteGraph(
   rawGraph: Record<string, unknown>,
-  objectInfo: Record<string, Record<string, unknown>>
-) {
+  remoteObjectInfo: Record<string, Record<string, unknown>> = {}
+): Record<string, unknown> {
   const apiGraph = rawGraph as Record<string, ApiGraphNode>;
   const widgetTypes = new Set(["INT", "FLOAT", "STRING", "BOOLEAN", "COMBO"]);
   const keys = Object.keys(apiGraph);
   const keyToId = new Map<string, number>();
   keys.forEach((k, idx) => keyToId.set(k, idx + 1));
+
+  const getSchema = (ctype: string): NodeSchemaSpec =>
+    (remoteObjectInfo[ctype] as NodeSchemaSpec | undefined) || BUILTIN_COMFY_SCHEMAS[ctype] || {};
 
   const depths: Record<string, number> = {};
   for (const k of keys) depths[k] = 0;
@@ -406,10 +594,7 @@ function convertApiGraphToLiteGraph(
   for (const k of keys) {
     const nid = keyToId.get(k)!;
     const ctype = apiGraph[k].class_type;
-    const schema = (objectInfo[ctype] || {}) as {
-      output?: unknown[];
-      output_name?: string[];
-    };
+    const schema = getSchema(ctype);
     const outTypes = Array.isArray(schema.output) ? schema.output : [];
     const outNames = Array.isArray(schema.output_name) ? schema.output_name : [];
 
@@ -439,12 +624,7 @@ function convertApiGraphToLiteGraph(
     const nid = keyToId.get(k)!;
     const ctype = apiGraph[k].class_type;
     const givenInputs = apiGraph[k].inputs || {};
-    const schema = (objectInfo[ctype] || {}) as {
-      input?: {
-        required?: Record<string, [unknown, Record<string, unknown>?]>;
-        optional?: Record<string, [unknown, Record<string, unknown>?]>;
-      };
-    };
+    const schema = getSchema(ctype);
 
     const allInputs = [
       ...Object.entries(schema.input?.required || {}),
@@ -519,4 +699,3 @@ function convertApiGraphToLiteGraph(
     version: 0.4,
   };
 }
-

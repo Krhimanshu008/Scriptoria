@@ -1,3 +1,8 @@
+export interface PrewarmModelItem {
+  category: string;
+  filename: string;
+}
+
 export interface NotebookBuildConfig {
   provider: "kaggle" | "colab";
   appWebhookUrl: string;
@@ -9,15 +14,16 @@ export interface NotebookBuildConfig {
   accountAlias: string;
   idleTimeoutSeconds?: number;
   enableOfflineDatasetScan?: boolean;
+  prewarmModels?: PrewarmModelItem[];
 }
 
 /**
  * Generates an executable Python bootstrapper for either Kaggle Dual-T4 or Colab Single-T4.
  * Runs:
- *  - Rclone RC daemon (:5572) streaming from Google Drive into /tmp/models
+ *  - Rclone RC daemon (:5572) streaming via HTTP/1.1 multi-thread from Google Drive into /tmp/models
  *  - ComfyUI instance(s) bound via CUDA_VISIBLE_DEVICES (:8188 and :8189)
- *  - In-band Sidecar (:9999) for /vm-kill, /sync-output -> GDrive, /health
- *  - Caddy reverse proxy (:8000) enforcing X-VM-Secret & X-Target-Port
+ *  - In-band Sidecar (:9999) for /vm-kill, /sync-output -> GDrive, /storage, /save-workflow, /health
+ *  - Caddy reverse proxy (:8000) enforcing X-VM-Secret / cookie handshake & X-Target-Port
  *  - 1 Route-less Cloudflare Quick Tunnel -> Heartbeat loop back to Next.js
  */
 export function buildUnifiedNotebookPythonCode(cfg: NotebookBuildConfig): string {
@@ -25,8 +31,12 @@ export function buildUnifiedNotebookPythonCode(cfg: NotebookBuildConfig): string
   const workDir = isKaggle ? "/kaggle/working" : "/content";
   const idleSeconds = cfg.idleTimeoutSeconds ?? 900;
   const ports = isKaggle && cfg.gpuTargets.length > 1 ? [8188, 8189] : [8188];
+  const rcloneStreams = isKaggle ? "8" : "10";
+  const rcloneBuffer = isKaggle ? "16M" : "8M";
+  const rcloneTransfers = isKaggle ? "2" : "1";
+  const prewarmModels = cfg.prewarmModels ?? [];
 
-  return `import os, sys, re, time, json, zipfile, tarfile, subprocess, threading, urllib.request, urllib.parse, urllib.error
+  return `import os, sys, re, time, json, shutil, zipfile, tarfile, subprocess, threading, urllib.request, urllib.parse, urllib.error
 from collections import deque
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
@@ -42,6 +52,7 @@ GDRIVE_BASE = ${JSON.stringify(cfg.gdriveBaseFolder.replace(/^\/+|\/+$/g, "") ||
 GDRIVE_TOKEN_RAW = ${JSON.stringify(cfg.gdriveTokenJson)}
 IDLE_TIMEOUT_SEC = ${idleSeconds}
 ENABLE_OFFLINE_SCAN = ${cfg.enableOfflineDatasetScan ? "True" : "False"}
+PREWARM_MODELS = ${JSON.stringify(prewarmModels)}
 
 LAST_ACTIVE = time.time()
 BOOT_LOGS = deque(maxlen=150)
@@ -117,6 +128,24 @@ CATEGORIES = [
     "checkpoints", "loras", "vae", "unet", "clip",
     "clip_vision", "controlnet", "ipadapter", "text_encoders", "upscale_models", "diffusion_models"
 ]
+
+# Verify /tmp is disk-backed overlay vs RAM-backed tmpfs (avoid OOM on mmap checkpoints)
+try:
+    tmp_fs = subprocess.run(["stat", "-f", "-c", "%T", "/tmp"], capture_output=True, text=True).stdout.strip()
+    if tmp_fs == "tmpfs":
+        fallback_root = "/kaggle/tmp_models" if PROVIDER == "kaggle" else os.path.join(WORK_DIR, "tmp_models")
+        os.makedirs(fallback_root, exist_ok=True)
+        if not os.path.islink("/tmp/models") and not os.path.exists("/tmp/models"):
+            os.symlink(fallback_root, "/tmp/models")
+        log_event(f"/tmp is tmpfs; redirected /tmp/models -> {fallback_root}", category="SYSTEM", level="WARN")
+    else:
+        log_event(f"Storage topology verified: /tmp is {tmp_fs or 'disk-backed'}.", category="SYSTEM")
+except Exception as e:
+    log_event(f"Storage check notice: {e}", category="SYSTEM")
+
+if PROVIDER == "colab":
+    subprocess.run(["sysctl", "-w", "vm.dirty_ratio=35", "vm.dirty_background_ratio=10"], capture_output=True, check=False)
+
 for d in CATEGORIES:
     os.makedirs(f"/tmp/models/{d}", exist_ok=True)
 os.makedirs("/tmp/outputs", exist_ok=True)
@@ -179,16 +208,69 @@ subprocess.Popen([
     "--config", "/tmp/rclone.conf",
     "--rc-addr", "127.0.0.1:5572",
     "--rc-no-auth",
-    "--drive-chunk-size", "128M",
-    "--buffer-size", "64M",
+    "--rc-job-expire-duration", "30m",
+    "--rc-job-expire-interval", "5m",
+    "--drive-disable-http2=true",
+    "--disable-http2",
     "--multi-thread-cutoff", "64M",
-    "--multi-thread-streams", "8",
-    "--transfers", "8",
-    "--checkers", "16",
+    "--multi-thread-chunk-size", "128M",
+    "--multi-thread-streams", "${rcloneStreams}",
+    "--multi-thread-write-buffer-size", "1M",
+    "--buffer-size", "${rcloneBuffer}",
+    "--transfers", "${rcloneTransfers}",
+    "--checkers", "4",
+    "--tpslimit", "12",
+    "--tpslimit-burst", "24",
     "--drive-pacer-min-sleep", "10ms",
-    "--drive-pacer-burst", "200"
+    "--drive-pacer-burst", "100",
+    "--timeout", "5m",
+    "--contimeout", "30s",
+    "--low-level-retries", "10",
+    "--retries", "3"
 ], stdout=rclone_log, stderr=rclone_log)
-log_event("Rclone RC daemon listening on 127.0.0.1:5572", category="RCLONE", level="SUCCESS")
+
+rclone_ready = False
+for _ in range(30):
+    try:
+        req = urllib.request.Request("http://127.0.0.1:5572/rc/noop", data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=2) as r:
+            if r.status == 200:
+                rclone_ready = True
+                break
+    except Exception:
+        time.sleep(0.2)
+
+if rclone_ready:
+    log_event("Rclone RC daemon listening on 127.0.0.1:5572 (HTTP/1.1 multi-thread)", category="RCLONE", level="SUCCESS")
+    for pw in PREWARM_MODELS:
+        try:
+            pw_cat = pw.get("category", "checkpoints")
+            pw_file = pw.get("filename", "")
+            if pw_file:
+                pw_payload = json.dumps({
+                    "srcFs": f"gdrive:{GDRIVE_BASE}/models/{pw_cat}",
+                    "srcRemote": pw_file,
+                    "dstFs": f"/tmp/models/{pw_cat}",
+                    "dstRemote": pw_file,
+                    "_async": True,
+                    "_config": {
+                        "SizeOnly": True,
+                        "Inplace": False,
+                        "MultiThreadCutoff": "64M",
+                        "MultiThreadChunkSize": "128M",
+                        "MultiThreadStreams": ${rcloneStreams},
+                        "MultiThreadWriteBufferSize": "1M",
+                        "BufferSize": "${rcloneBuffer}",
+                        "DisableHTTP2": True,
+                    },
+                }).encode("utf-8")
+                pw_req = urllib.request.Request("http://127.0.0.1:5572/operations/copyfile", data=pw_payload, headers={"Content-Type": "application/json"}, method="POST")
+                urllib.request.urlopen(pw_req, timeout=5)
+                log_event(f"Pre-warming {pw_file} -> /tmp/models/{pw_cat} while ComfyUI boots...", category="RCLONE")
+        except Exception as pw_err:
+            log_event(f"Pre-warm skip: {pw_err}", category="RCLONE", level="WARN")
+else:
+    log_event("Rclone RC readiness check timed out", category="RCLONE", level="WARN")
 
 # -------------------------------------------------------------
 # 3. Install ComfyUI, Custom Nodes & Extra Model Paths
@@ -307,8 +389,62 @@ class SidecarHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"logs": snapshot}).encode())
+        elif self.path.startswith("/storage"):
+            du = shutil.disk_usage("/tmp")
+            files = []
+            for cat in os.listdir("/tmp/models"):
+                cat_dir = os.path.join("/tmp/models", cat)
+                if not os.path.isdir(cat_dir):
+                    continue
+                for fname in os.listdir(cat_dir):
+                    fpath = os.path.join(cat_dir, fname)
+                    if os.path.isfile(fpath) or os.path.islink(fpath):
+                        try:
+                            st = os.stat(fpath)
+                            files.append({
+                                "category": cat,
+                                "name": fname,
+                                "sizeBytes": st.st_size,
+                                "modifiedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(st.st_mtime)),
+                            })
+                        except Exception:
+                            pass
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "disk": {
+                    "totalGb": round(du.total / (1024 ** 3), 2),
+                    "usedGb": round(du.used / (1024 ** 3), 2),
+                    "freeGb": round(du.free / (1024 ** 3), 2),
+                },
+                "files": files,
+            }).encode())
         else:
             self.send_response(404); self.end_headers()
+
+    def do_DELETE(self):
+        global LAST_ACTIVE
+        LAST_ACTIVE = time.time()
+        if not self._authorized():
+            self.send_response(403); self.end_headers(); return
+        if self.path.startswith("/storage"):
+            parsed = urllib.parse.urlparse(self.path)
+            qs = urllib.parse.parse_qs(parsed.query)
+            cat = os.path.basename((qs.get("category") or [""])[0])
+            name = os.path.basename((qs.get("name") or [""])[0])
+            base_real = os.path.realpath("/tmp/models")
+            target_real = os.path.realpath(os.path.join("/tmp/models", cat, name))
+            if not cat or not name or not target_real.startswith(base_real + os.sep) or not os.path.exists(target_real):
+                self.send_response(404); self.end_headers(); return
+            os.remove(target_real)
+            log_event(f"Deleted cached model /tmp/models/{cat}/{name}", category="SYSTEM")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}')
+            return
+        self.send_response(404); self.end_headers()
 
     def do_POST(self):
         global LAST_ACTIVE
@@ -331,6 +467,27 @@ class SidecarHandler(BaseHTTPRequestHandler):
                         pass
                 os._exit(0)
             threading.Thread(target=terminate_vm, daemon=False).start()
+            return
+
+        if self.path == "/save-workflow":
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length) or b"{}")
+            fname = os.path.basename(str(body.get("filename") or "scriptoria_workflow.json"))
+            if not fname.endswith(".json"):
+                fname += ".json"
+            wf_data = body.get("workflow")
+            if wf_data is None:
+                self.send_response(400); self.end_headers(); return
+            wf_dir = os.path.join(comfy_dir, "user", "default", "workflows")
+            os.makedirs(wf_dir, exist_ok=True)
+            wf_path = os.path.join(wf_dir, fname)
+            with open(wf_path, "w", encoding="utf-8") as wf:
+                json.dump(wf_data, wf, indent=2)
+            log_event(f"Saved workflow to {wf_path}", category="COMFYUI", level="SUCCESS")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True, "path": f"workflows/{fname}"}).encode())
             return
 
         if self.path == "/sync-output":
@@ -379,19 +536,57 @@ if not os.path.exists("/tmp/caddy"):
     os.chmod("/tmp/caddy", 0o755)
 
 with open("/tmp/Caddyfile", "w", encoding="utf-8") as f:
-    f.write(f""":8000 {{
-    @unauth not header X-VM-Secret "{VM_SECRET}"
-    handle @unauth {{
-        respond "Unauthorized" 403
+    f.write(f"""(sc_dispatch) {{
+    @has_header header X-Target-Port *
+    handle @has_header {{
+        @badport not header_regexp X-Target-Port ^(8188|8189|5572|9999)$
+        handle @badport {{
+            respond "Invalid Target Port" 400
+        }}
+        handle {{
+            reverse_proxy 127.0.0.1:{{http.request.header.X-Target-Port}} {{
+                header_up Host 127.0.0.1
+            }}
+        }}
     }}
-    @badport not header_regexp X-Target-Port ^(8188|8189|5572|9999)$
-    handle @badport {{
-        respond "Invalid Target Port" 400
-    }}
-    handle {{
-        reverse_proxy 127.0.0.1:{{http.request.header.X-Target-Port}} {{
+    @want8189 header_regexp Cookie (^|;\\\\s*)sc_vm_port=8189(;|$)
+    handle @want8189 {{
+        reverse_proxy 127.0.0.1:8189 {{
             header_up Host 127.0.0.1
         }}
+    }}
+    handle {{
+        reverse_proxy 127.0.0.1:8188 {{
+            header_up Host 127.0.0.1
+        }}
+    }}
+}}
+
+:8000 {{
+    @auth_url {{
+        path /scriptoria-auth
+        query token={VM_SECRET}
+    }}
+    handle @auth_url {{
+        @port8189 query port=8189
+        @port8188 query port=8188
+        route {{
+            header +Set-Cookie "sc_vm_auth={VM_SECRET}; Path=/; HttpOnly; SameSite=Lax; Secure"
+            header @port8189 +Set-Cookie "sc_vm_port=8189; Path=/; HttpOnly; SameSite=Lax; Secure"
+            header @port8188 +Set-Cookie "sc_vm_port=8188; Path=/; HttpOnly; SameSite=Lax; Secure"
+            redir / 302
+        }}
+    }}
+    @has_secret header X-VM-Secret "{VM_SECRET}"
+    handle @has_secret {{
+        import sc_dispatch
+    }}
+    @has_cookie header_regexp Cookie (^|;\\\\s*)sc_vm_auth={VM_SECRET}(;|$)
+    handle @has_cookie {{
+        import sc_dispatch
+    }}
+    handle {{
+        respond "Unauthorized" 403
     }}
 }}
 """)
@@ -469,19 +664,55 @@ while True:
 `;
 }
 
+export interface ColabLauncherConfig {
+  appWebhookUrl: string;
+  target: string;
+  runnerToken: string;
+}
+
 /**
- * Wraps the unified Colab Python bootstrap inside a ready-to-run .ipynb notebook.
+ * Generates a self-renewing ~25-line Colab cell that claims a fresh session ID and
+ * fetches the latest ComfyUI + Rclone + Caddy worker script on every run without stale 410 errors.
  */
-export function buildColabNotebookJson(cfg: NotebookBuildConfig) {
-  const pyCode = buildUnifiedNotebookPythonCode({ ...cfg, provider: "colab" });
+export function buildColabSelfUpdatingLauncherCode(cfg: ColabLauncherConfig): string {
+  const cleanUrl = cfg.appWebhookUrl.replace(/\/$/, "");
+  return `import json, urllib.request, urllib.error
+
+APP_URL = ${JSON.stringify(cleanUrl)}
+TARGET = ${JSON.stringify(cfg.target)}
+RUNNER_TOKEN = ${JSON.stringify(cfg.runnerToken)}
+
+print(f"[SCRIPTORIA] Claiming fresh session ID for '{TARGET}' from {APP_URL}...", flush=True)
+req = urllib.request.Request(
+    f"{APP_URL}/api/vm/colab/claim",
+    data=json.dumps({"target": TARGET, "runnerToken": RUNNER_TOKEN}).encode("utf-8"),
+    headers={"Content-Type": "application/json", "User-Agent": "Scriptoria-Colab-Launcher/3.0"},
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+except urllib.error.HTTPError as err:
+    body = err.read().decode("utf-8", errors="ignore")
+    raise RuntimeError(f"Session claim rejected ({err.code}): {body}")
+
+print(f"[SCRIPTORIA] Fresh session claimed ({payload.get('accountAlias', 'acc1')}). Booting GPU worker...", flush=True)
+exec(compile(payload["pythonCode"], f"scriptoria_{TARGET}_worker.py", "exec"), {"__name__": "__main__"})
+`;
+}
+
+/**
+ * Wraps Python bootstrap code inside a ready-to-run Colab T4 .ipynb document.
+ */
+function wrapColabNotebookDocument(target: string, pyCode: string) {
   return {
     cells: [
       {
         cell_type: "markdown",
         metadata: {},
         source: [
-          `# Scriptoria Colab GPU Worker (${cfg.gpuTargets[0] || "gcgpu"})\n`,
-          "Click **Runtime ➔ Run all** to boot ComfyUI, Rclone GDrive streaming, and Caddy ingress.\n",
+          `# Scriptoria Colab GPU Worker (${target})\n`,
+          "Click **Runtime ➔ Run all** (`Ctrl+F9`). Automatically renews your Scriptoria session ID, mounts Rclone GDrive streaming, and starts ComfyUI + Caddy ingress.\n",
         ],
       },
       {
@@ -501,5 +732,17 @@ export function buildColabNotebookJson(cfg: NotebookBuildConfig) {
     nbformat: 4,
     nbformat_minor: 4,
   };
+}
+
+export function buildColabLauncherNotebookJson(cfg: ColabLauncherConfig) {
+  return wrapColabNotebookDocument(cfg.target, buildColabSelfUpdatingLauncherCode(cfg));
+}
+
+/**
+ * Wraps the full standalone Colab Python bootstrap inside an .ipynb notebook.
+ */
+export function buildColabNotebookJson(cfg: NotebookBuildConfig) {
+  const pyCode = buildUnifiedNotebookPythonCode({ ...cfg, provider: "colab" });
+  return wrapColabNotebookDocument(cfg.gpuTargets[0] || "gcgpu", pyCode);
 }
 

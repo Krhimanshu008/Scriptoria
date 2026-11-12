@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import jwt from "jsonwebtoken";
 import { getAuthUser } from "@/lib/auth/session";
-import { saveUserCredential } from "@/lib/crypto/credentials";
+import { getDecryptedCredential, saveUserCredential } from "@/lib/crypto/credentials";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
 import { appendSystemLog } from "@/lib/logs/logger";
 
@@ -84,17 +84,33 @@ export async function GET(req: NextRequest) {
     }
 
     const profile = (await profileRes.json()) as { email: string; name?: string };
+    const existingColab = await getDecryptedCredential(
+      user.userId,
+      "colab",
+      decoded.alias
+    ).catch(() => null);
+    let existingParsed: { refresh_token?: string } = {};
+    if (existingColab?.secret) {
+      try {
+        existingParsed = JSON.parse(existingColab.secret);
+      } catch {
+        // ignore
+      }
+    }
+
     const secretPayload = JSON.stringify({
       email: profile.email,
       name: profile.name || profile.email,
       client_id: clientId,
       client_secret: clientSecret,
-      refresh_token: tokenData.refresh_token || "",
+      refresh_token: tokenData.refresh_token || existingParsed.refresh_token || "",
       access_token: tokenData.access_token,
       scope: tokenData.scope || "",
     });
 
     const hasColabScope = Boolean(tokenData.scope?.includes("colaboratory"));
+    const hasDriveScope = Boolean(tokenData.scope?.includes("drive"));
+    const existingMeta = (existingColab?.metadata || {}) as Record<string, unknown>;
 
     await saveUserCredential(user.userId, {
       provider: "colab",
@@ -103,9 +119,11 @@ export async function GET(req: NextRequest) {
       rawSecret: secretPayload,
       authType: "oauth_json",
       metadata: {
+        ...existingMeta,
         email: profile.email,
         name: profile.name || profile.email,
         hasColabScope,
+        hasDriveScope,
         connectedAt: new Date().toISOString(),
       },
     });

@@ -126,6 +126,19 @@ export function verifyVmRegistrationToken(token: string): VmRegistrationPayload 
   }
 }
 
+export async function getSessionUserFast(req?: NextRequest): Promise<SessionUser | null> {
+  let token: string | undefined;
+  if (req) {
+    token = req.cookies.get(SESSION_COOKIE_NAME)?.value;
+  } else {
+    const cookieStore = await cookies();
+    token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
+  }
+
+  if (!token) return null;
+  return verifySessionToken(token);
+}
+
 /**
  * Extracts and verifies the authenticated user from cookies and ensures user exists in DB.
  */

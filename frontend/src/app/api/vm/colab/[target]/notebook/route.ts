@@ -3,7 +3,13 @@ import { prisma } from "@/lib/db/prisma";
 import { getAuthUser, signVmRegistrationToken } from "@/lib/auth/session";
 import { generateVmSecret } from "@/lib/crypto/vault";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
-import { buildColabNotebookJson, buildUnifiedNotebookPythonCode } from "@/lib/orchestrator/notebook-builder";
+import {
+  buildColabLauncherNotebookJson,
+  buildColabNotebookJson,
+  buildColabSelfUpdatingLauncherCode,
+  buildUnifiedNotebookPythonCode,
+} from "@/lib/orchestrator/notebook-builder";
+import { getOrCreateColabRunnerToken } from "@/lib/orchestrator/colab-runner";
 import { resolveWebhookBaseUrl } from "@/lib/orchestrator/vm-helpers";
 
 export async function GET(
@@ -25,6 +31,31 @@ export async function GET(
       return NextResponse.json({ error: "Colab target not found." }, { status: 404 });
     }
 
+    const format = req.nextUrl.searchParams.get("format");
+    const standalone = req.nextUrl.searchParams.get("standalone") === "true";
+    const appWebhookUrl = resolveWebhookBaseUrl(req);
+
+    // Default: thin self-renewing launcher cell (re-usable forever, no stale 410 errors!)
+    if (!standalone) {
+      const runnerToken = await getOrCreateColabRunnerToken(user.userId, vm.target);
+      const launcherCfg = { appWebhookUrl, target: vm.target, runnerToken };
+
+      if (format === "python") {
+        const pythonCode = buildColabSelfUpdatingLauncherCode(launcherCfg);
+        return NextResponse.json({ target, pythonCode });
+      }
+
+      const nb = buildColabLauncherNotebookJson(launcherCfg);
+      return new NextResponse(JSON.stringify(nb, null, 2), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/x-ipynb+json",
+          "Content-Disposition": `attachment; filename="scriptoria-${target}-runner.ipynb"`,
+        },
+      });
+    }
+
+    // Legacy standalone mode (only if explicitly requested with ?standalone=true)
     const gdriveCred = await getUserGDriveCredential(user.userId);
     if (!gdriveCred) {
       return NextResponse.json(
@@ -48,10 +79,9 @@ export async function GET(
       vmSecret,
     });
 
-    const format = req.nextUrl.searchParams.get("format");
     const buildCfg = {
       provider: "colab" as const,
-      appWebhookUrl: resolveWebhookBaseUrl(req),
+      appWebhookUrl,
       registrationJwt,
       vmSecret,
       gdriveTokenJson: gdriveCred.rawTokenJson,
@@ -66,7 +96,6 @@ export async function GET(
     }
 
     const nb = buildColabNotebookJson(buildCfg);
-
     return new NextResponse(JSON.stringify(nb, null, 2), {
       status: 200,
       headers: {
@@ -79,4 +108,3 @@ export async function GET(
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
-

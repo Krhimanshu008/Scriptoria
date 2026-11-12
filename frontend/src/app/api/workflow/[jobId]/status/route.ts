@@ -71,7 +71,15 @@ export async function GET(
     }
 
     if (!check.finished || check.images.length === 0) {
-      return NextResponse.json({ jobId: job.id, status: "PROCESSING", outputs: [] });
+      const queue = await client.getQueueSummary();
+      return NextResponse.json({
+        jobId: job.id,
+        status: "PROCESSING",
+        outputs: [],
+        elapsedMs: Date.now() - job.createdAt.getTime(),
+        queueRunning: queue.runningCount,
+        queuePending: queue.pendingCount,
+      });
     }
 
     // Sync generated outputs from /tmp/outputs to Google Drive via port 9999 sidecar

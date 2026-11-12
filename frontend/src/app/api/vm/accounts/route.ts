@@ -20,6 +20,9 @@ export interface ColabAccountSummary {
   name: string | null;
   connected: boolean;
   hasColabScope: boolean;
+  hasDriveScope: boolean;
+  driveFileId: string | null;
+  runnerConfigured: boolean;
   targets: string[];
 }
 
@@ -30,11 +33,14 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const [vms, colabCreds, gdriveCred] = await Promise.all([
+    const [vms, colabRelatedCreds, gdriveCred] = await Promise.all([
       prisma.vmInstance.findMany({ where: { userId: user.userId } }),
       prisma.credential.findMany({
-        where: { userId: user.userId, provider: "colab" },
-        select: { accountAlias: true, username: true, metadataJson: true, authType: true },
+        where: {
+          userId: user.userId,
+          provider: { in: ["colab", "colab-meta", "colab-runner"] },
+        },
+        select: { provider: true, accountAlias: true, username: true, metadataJson: true },
       }),
       getUserGDriveCredential(user.userId),
     ]);
@@ -89,24 +95,57 @@ export async function GET(req: NextRequest) {
         .filter((v) => v.provider === "colab" && v.accountAlias === alias)
         .map((v) => v.target)
         .sort();
-      const row = colabCreds.find((c) => c.accountAlias === alias);
+      const primaryTarget = targets[0] || (alias === "acc2" ? "gcgpu1" : "gcgpu");
+      const row = colabRelatedCreds.find(
+        (c) => c.provider === "colab" && c.accountAlias === alias
+      );
+      const metaRow = colabRelatedCreds.find(
+        (c) => c.provider === "colab-meta" && c.accountAlias === primaryTarget
+      );
+      const runnerRow = colabRelatedCreds.find(
+        (c) => c.provider === "colab-runner" && c.accountAlias === primaryTarget
+      );
+
       let name: string | null = null;
       let hasColabScope = false;
+      let hasDriveScope = false;
+      let driveFileId: string | null = null;
+
       if (row?.metadataJson) {
         try {
-          const meta = JSON.parse(row.metadataJson) as { name?: string; hasColabScope?: boolean };
+          const meta = JSON.parse(row.metadataJson) as {
+            name?: string;
+            hasColabScope?: boolean;
+            hasDriveScope?: boolean;
+            driveFileId?: string;
+          };
           name = meta.name || null;
           hasColabScope = Boolean(meta.hasColabScope);
+          hasDriveScope = Boolean(meta.hasDriveScope);
+          driveFileId = meta.driveFileId || null;
         } catch {
           // ignore
         }
       }
+
+      if (metaRow?.metadataJson) {
+        try {
+          const m = JSON.parse(metaRow.metadataJson) as { driveFileId?: string };
+          if (m.driveFileId) driveFileId = m.driveFileId;
+        } catch {
+          // ignore
+        }
+      }
+
       return {
         accountAlias: alias,
         email: row?.username || null,
         name,
         connected: Boolean(row),
         hasColabScope,
+        hasDriveScope,
+        driveFileId,
+        runnerConfigured: Boolean(runnerRow),
         targets,
       };
     });
@@ -126,4 +165,3 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
-

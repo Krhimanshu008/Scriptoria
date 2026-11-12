@@ -72,6 +72,24 @@ export class VmGateway {
     return res.json() as Promise<T>;
   }
 
+  public static async callText(
+    vm: VmEndpointTarget,
+    path: string,
+    options: VmGatewayRequestOptions = {}
+  ): Promise<string> {
+    const headers = new Headers(options.headers);
+    if (options.body && !headers.has("Content-Type")) {
+      headers.set("Content-Type", "application/json");
+    }
+
+    const res = await this.call(vm, path, { ...options, headers });
+    const bodyText = await res.text().catch(() => res.statusText);
+    if (!res.ok) {
+      throw new Error(`VM call ${path} (port ${options.targetPort ?? vm.internalPort}) failed (${res.status}): ${bodyText}`);
+    }
+    return bodyText;
+  }
+
   /**
    * Sends termination signal to the VM's in-band sidecar on port 9999.
    */

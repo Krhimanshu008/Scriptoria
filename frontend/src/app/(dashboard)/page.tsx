@@ -50,8 +50,10 @@ function ClusterPageContent() {
   const [colabDialog, setColabDialog] = useState<{ url: string; target: string } | null>(null);
   const [connectModalAlias, setConnectModalAlias] = useState<string | null>(null);
   const [manualEmail, setManualEmail] = useState("");
+  const [driveUrlInput, setDriveUrlInput] = useState("");
   const [includeColabScope, setIncludeColabScope] = useState(false);
   const [savingEmail, setSavingEmail] = useState(false);
+  const [savingConfig, setSavingConfig] = useState(false);
   const [copiedTarget, setCopiedTarget] = useState<string | null>(null);
 
   useEffect(() => {
@@ -96,9 +98,29 @@ function ClusterPageContent() {
     { accountAlias: "acc1", username: "Account 1", configured: false, targets: ["gpu0", "gpu1"], quota: null },
     { accountAlias: "acc2", username: "Account 2", configured: false, targets: ["gpu2", "gpu3"], quota: null },
   ];
-  const colabAccounts = accountsData?.colabAccounts ?? [
-    { accountAlias: "acc1", email: null, name: null, connected: false, hasColabScope: false, targets: ["gcgpu"] },
-    { accountAlias: "acc2", email: null, name: null, connected: false, hasColabScope: false, targets: ["gcgpu1"] },
+  const colabAccounts: ColabAccountSummary[] = accountsData?.colabAccounts ?? [
+    {
+      accountAlias: "acc1",
+      email: null,
+      name: null,
+      connected: false,
+      hasColabScope: false,
+      hasDriveScope: false,
+      driveFileId: null,
+      runnerConfigured: false,
+      targets: ["gcgpu"],
+    },
+    {
+      accountAlias: "acc2",
+      email: null,
+      name: null,
+      connected: false,
+      hasColabScope: false,
+      hasDriveScope: false,
+      driveFileId: null,
+      runnerConfigured: false,
+      targets: ["gcgpu1"],
+    },
   ];
 
   async function handleForceProbe() {
@@ -182,6 +204,67 @@ function ClusterPageContent() {
       refetchAccounts();
     } finally {
       setSavingEmail(false);
+    }
+  }
+
+  function openAccountConnectModal(colAcc: ColabAccountSummary) {
+    setConnectModalAlias(colAcc.accountAlias);
+    setDriveUrlInput(
+      colAcc.driveFileId ? `https://colab.research.google.com/drive/${colAcc.driveFileId}` : ""
+    );
+  }
+
+  async function handleSaveDriveFile(e: React.FormEvent) {
+    e.preventDefault();
+    if (!connectModalAlias) return;
+    const colAcc = colabAccounts.find((c) => c.accountAlias === connectModalAlias);
+    const target = colAcc?.targets[0] || (connectModalAlias === "acc2" ? "gcgpu1" : "gcgpu");
+    setSavingConfig(true);
+    try {
+      const res = await fetch(`/api/vm/colab/${encodeURIComponent(target)}/config`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "set_drive_file", driveUrlOrId: driveUrlInput }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || "Failed to bind Colab Drive file");
+        return;
+      }
+      toast.success(
+        data.driveFileId
+          ? `Linked saved Colab file (${data.driveFileId})`
+          : "Cleared linked Colab Drive file — next Open Colab creates a fresh file."
+      );
+      refetchAccounts();
+    } finally {
+      setSavingConfig(false);
+    }
+  }
+
+  async function handleRotateRunnerKey() {
+    if (!connectModalAlias) return;
+    const colAcc = colabAccounts.find((c) => c.accountAlias === connectModalAlias);
+    const target = colAcc?.targets[0] || (connectModalAlias === "acc2" ? "gcgpu1" : "gcgpu");
+    if (!confirm(`Rotate runner key for ${target}? Old downloaded .ipynb copies will stop working.`)) {
+      return;
+    }
+    setSavingConfig(true);
+    try {
+      const res = await fetch(`/api/vm/colab/${encodeURIComponent(target)}/config`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "rotate_key" }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        toast.error(data.error || "Failed to rotate key");
+        return;
+      }
+      toast.success(`Rotated runner key for ${target}. Click Open Colab to sync Drive notebook.`);
+      refetchAccounts();
+    } finally {
+      setSavingConfig(false);
     }
   }
 
@@ -361,12 +444,6 @@ function ClusterPageContent() {
             const target = colAcc.targets[0] || (colAcc.accountAlias === "acc2" ? "gcgpu1" : "gcgpu");
             const colVm = vms.find((v) => v.target === target);
 
-            const colabLaunchUrl = colAcc.email
-              ? `https://accounts.google.com/AccountChooser?Email=${encodeURIComponent(
-                  colAcc.email
-                )}&continue=${encodeURIComponent("https://colab.research.google.com/#create=true")}`
-              : "https://colab.research.google.com/#create=true";
-
             return (
               <div
                 key={colAcc.accountAlias}
@@ -375,7 +452,7 @@ function ClusterPageContent() {
                 {/* Colab Account Group Header */}
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800/80 pb-4">
                   <div className="space-y-1">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span className="rounded-md bg-amber-500/15 px-2 py-0.5 font-mono text-xs font-bold uppercase text-amber-300">
                         Colab {colAcc.accountAlias}
                       </span>
@@ -390,16 +467,19 @@ function ClusterPageContent() {
                           No Google account linked
                         </span>
                       )}
+                      {colAcc.driveFileId && (
+                        <span className="rounded-full border border-indigo-500/30 bg-indigo-500/10 px-2 py-0.5 font-mono text-[10px] text-indigo-300">
+                          Drive File Synced
+                        </span>
+                      )}
                     </div>
                     <p className="text-[11px] text-zinc-500">
-                      {colAcc.connected
-                        ? "One-click launch opens Google Colab directly under this account and streams from your main Drive Vault."
-                        : "Connect a Google account via your browser to bind this Colab runtime slot."}
+                      Self-renewing runner: Open Colab syncs &amp; opens your Drive notebook—clicking Run All auto-mints a fresh session ID.
                     </p>
                   </div>
 
                   <button
-                    onClick={() => setConnectModalAlias(colAcc.accountAlias)}
+                    onClick={() => openAccountConnectModal(colAcc)}
                     className="flex items-center gap-1.5 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-300 transition hover:bg-amber-500/20"
                   >
                     <Globe className="h-3.5 w-3.5" />
@@ -410,7 +490,7 @@ function ClusterPageContent() {
                 {/* Quick Browser Launch Toolbar */}
                 <div className="flex flex-wrap gap-2">
                   <a
-                    href={colabLaunchUrl}
+                    href={`/api/vm/colab/${encodeURIComponent(target)}/launch`}
                     target="_blank"
                     rel="noreferrer"
                     className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-amber-600/20 border border-amber-500/30 px-3 py-2 text-xs font-semibold text-amber-200 transition hover:bg-amber-600/30"
@@ -534,6 +614,43 @@ function ClusterPageContent() {
                 className="w-full border-zinc-700 bg-zinc-900 text-xs text-zinc-200 hover:bg-zinc-800"
               >
                 {savingEmail ? "Saving..." : "Bind Gmail to Colab Slot"}
+              </Button>
+            </form>
+
+            {/* Option 3: Existing Drive Notebook Link & Runner Security */}
+            <form
+              onSubmit={handleSaveDriveFile}
+              className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/40 p-4"
+            >
+              <div className="flex items-center justify-between">
+                <div className="text-xs font-semibold text-zinc-200">
+                  Saved Drive Notebook &amp; Session Security
+                </div>
+                <button
+                  type="button"
+                  onClick={handleRotateRunnerKey}
+                  disabled={savingConfig}
+                  className="text-[11px] font-medium text-amber-400 hover:text-amber-300"
+                >
+                  Rotate Runner Key
+                </button>
+              </div>
+              <p className="text-[11px] text-zinc-400">
+                Leave blank for auto-sync, or paste an existing Colab Drive URL so &ldquo;Open Colab&rdquo; updates and reopens that exact file.
+              </p>
+              <Input
+                type="text"
+                value={driveUrlInput}
+                onChange={(e) => setDriveUrlInput(e.target.value)}
+                placeholder="https://colab.research.google.com/drive/1AbC..."
+              />
+              <Button
+                type="submit"
+                variant="outline"
+                disabled={savingConfig}
+                className="w-full border-zinc-700 bg-zinc-900 text-xs text-zinc-200 hover:bg-zinc-800"
+              >
+                {savingConfig ? "Updating..." : "Save Colab Notebook URL"}
               </Button>
             </form>
           </div>

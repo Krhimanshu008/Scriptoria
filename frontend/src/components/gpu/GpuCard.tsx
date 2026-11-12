@@ -11,8 +11,11 @@ import {
   Loader2,
   AlertTriangle,
   Clock,
+  ExternalLink,
+  Terminal,
 } from "lucide-react";
 import type { PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
+import { VmLogsDialog } from "@/components/gpu/VmLogsDialog";
 import { toast } from "sonner";
 
 interface GpuCardProps {
@@ -41,6 +44,7 @@ function formatUptime(seconds: number): string {
 export const GpuCard: React.FC<GpuCardProps> = ({ vm, onRefresh, onColabReady }) => {
   const [loading, setLoading] = useState(false);
   const [catalogLoading, setCatalogLoading] = useState(false);
+  const [logsOpen, setLogsOpen] = useState(false);
 
   const vramTotal = vm.vramTotalGb || 16;
   const vramUsed = vm.vramUsedGb || 0;
@@ -248,7 +252,7 @@ export const GpuCard: React.FC<GpuCardProps> = ({ vm, onRefresh, onColabReady })
           </button>
         </div>
 
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button
             onClick={handleFetchCatalog}
             disabled={!isOnline || catalogLoading}
@@ -259,7 +263,30 @@ export const GpuCard: React.FC<GpuCardProps> = ({ vm, onRefresh, onColabReady })
             ) : (
               <ListChecks className="h-3.5 w-3.5 text-indigo-400" />
             )}
-            Inspect Catalog
+            Catalog
+          </button>
+
+          <a
+            href={isOnline ? `/api/vm/${vm.target}/webui` : undefined}
+            target="_blank"
+            rel="noreferrer"
+            aria-disabled={!isOnline}
+            className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-[11px] transition ${
+              isOnline
+                ? "text-emerald-300 hover:bg-zinc-800"
+                : "pointer-events-none opacity-40 text-zinc-500"
+            }`}
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+            ComfyUI
+          </a>
+
+          <button
+            onClick={() => setLogsOpen(true)}
+            className="flex items-center justify-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-[11px] text-zinc-300 transition hover:bg-zinc-800"
+          >
+            <Terminal className="h-3.5 w-3.5 text-zinc-400" />
+            Logs
           </button>
 
           {vm.provider === "colab" && (
@@ -268,11 +295,13 @@ export const GpuCard: React.FC<GpuCardProps> = ({ vm, onRefresh, onColabReady })
               className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-[11px] text-amber-300 transition hover:bg-zinc-800"
             >
               <Download className="h-3.5 w-3.5" />
-              Download .ipynb
+              .ipynb
             </a>
           )}
         </div>
       </div>
+
+      <VmLogsDialog target={vm.target} open={logsOpen} onOpenChange={setLogsOpen} />
     </div>
   );
 };

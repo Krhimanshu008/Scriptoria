@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -14,10 +14,12 @@ import {
   LogOut,
   Loader2,
   Cpu,
+  X,
 } from "lucide-react";
 import type { SessionUser } from "@/lib/auth/session";
 import type { PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
 import { useClusterStore } from "@/store/cluster-store";
+import { formatStreamSummary } from "@/lib/format";
 import { toast } from "sonner";
 
 const NAV_ITEMS = [
@@ -39,7 +41,13 @@ export function DashboardShell({
   const router = useRouter();
   const queryClient = useQueryClient();
   const [stoppingAll, setStoppingAll] = useState(false);
+
   const activeStream = useClusterStore((s) => s.activeStream);
+  const setActiveStream = useClusterStore((s) => s.setActiveStream);
+  const syncTargetWithVms = useClusterStore((s) => s.syncTargetWithVms);
+  const pollingJobId = useClusterStore((s) => s.studio.pollingJobId);
+  const pollingTarget = useClusterStore((s) => s.studio.pollingTarget);
+  const updateStudio = useClusterStore((s) => s.updateStudio);
 
   const { data } = useQuery<{ vms: PublicVmInstance[] }>({
     queryKey: ["vm-status"],
@@ -53,11 +61,163 @@ export function DashboardShell({
       return res.json();
     },
     refetchInterval: 5000,
+    staleTime: 4000,
   });
 
   const vms = data?.vms ?? [];
   const onlineVms = vms.filter((v) => v.status === "ONLINE" || v.status === "BUSY");
   const totalVram = onlineVms.reduce((acc, v) => acc + (v.vramTotalGb || 16), 0);
+
+  // Sync preferred online GPU automatically across all pages
+  useEffect(() => {
+    if (data?.vms?.length) {
+      syncTargetWithVms(data.vms);
+    }
+  }, [data?.vms, syncTargetWithVms]);
+
+  // Background Rclone stream progress poller (persists across route switches)
+  useEffect(() => {
+    if (!activeStream?.active || activeStream.completed) return;
+
+    const target = activeStream.target;
+    const modelName = activeStream.modelName;
+    const category = activeStream.category;
+    const jobId = activeStream.jobId;
+
+    let cancelled = false;
+    const timer = setInterval(async () => {
+      if (cancelled) return;
+      try {
+        const qs = new URLSearchParams();
+        if (jobId) qs.set("jobId", String(jobId));
+        if (modelName) qs.set("file", modelName);
+
+        const res = await fetch(
+          `/api/models/stream-status/${encodeURIComponent(target)}?${qs.toString()}`
+        );
+        if (!res.ok || cancelled) return;
+
+        const stats = await res.json();
+        if (stats.status === "transferring" || stats.active) {
+          const speedMbps = Number(stats.speedMbps || 0);
+          const bytesDone = Number(stats.bytesDone || 0);
+          const totalBytes = Number(stats.totalBytes || 0);
+          const etaSeconds = stats.etaSeconds != null ? Number(stats.etaSeconds) : null;
+          const percentage = Number(stats.percentage || 0);
+
+          setActiveStream({
+            target,
+            jobId,
+            modelName,
+            category,
+            percentage,
+            speedMbps,
+            bytesDone,
+            totalBytes,
+            etaSeconds,
+            speedText: formatStreamSummary({ speedMbps, bytesDone, totalBytes, etaSeconds }),
+            active: true,
+            completed: false,
+            error: null,
+          });
+        } else if (stats.completed) {
+          setActiveStream({
+            target,
+            jobId,
+            modelName,
+            category,
+            percentage: 100,
+            speedMbps: 0,
+            bytesDone: stats.totalBytes || stats.bytes || 0,
+            totalBytes: stats.totalBytes || stats.bytes || 0,
+            etaSeconds: 0,
+            speedText: "Ready on /tmp",
+            active: true,
+            completed: true,
+            error: null,
+          });
+          toast.success(`${modelName} loaded into /tmp/models/${category} on ${target.toUpperCase()}`);
+          queryClient.invalidateQueries({ queryKey: ["vm-catalog", target] });
+          queryClient.invalidateQueries({ queryKey: ["vm-storage", target] });
+          setTimeout(() => {
+            const cur = useClusterStore.getState().activeStream;
+            if (cur?.completed && cur.modelName === modelName) {
+              useClusterStore.getState().setActiveStream(null);
+            }
+          }, 4000);
+        } else if (stats.failed) {
+          toast.error(stats.error || `Failed streaming ${modelName}`);
+          setActiveStream(null);
+        }
+      } catch {
+        // Ignore transient network hiccups during polling
+      }
+    }, 1500);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [
+    activeStream?.active,
+    activeStream?.completed,
+    activeStream?.target,
+    activeStream?.modelName,
+    activeStream?.category,
+    activeStream?.jobId,
+    queryClient,
+    setActiveStream,
+  ]);
+
+  // Background Studio generation job poller (persists across route switches)
+  useEffect(() => {
+    if (!pollingJobId) return;
+
+    let cancelled = false;
+    const timer = setInterval(async () => {
+      if (cancelled) return;
+      try {
+        const res = await fetch(`/api/workflow/${encodeURIComponent(pollingJobId)}/status`);
+        if (!res.ok || cancelled) return;
+        const sData = await res.json();
+
+        if (sData.status === "COMPLETED") {
+          updateStudio({
+            outputs: sData.outputs || [],
+            durationMs: sData.executionTimeMs || null,
+            pollingJobId: null,
+            pollingTarget: null,
+            submitting: false,
+            queueElapsedMs: null,
+            queuePending: 0,
+          });
+          toast.success("Generation completed & saved permanently to Google Drive!");
+          queryClient.invalidateQueries({ queryKey: ["outputs-history"] });
+        } else if (sData.status === "FAILED") {
+          updateStudio({
+            pollingJobId: null,
+            pollingTarget: null,
+            submitting: false,
+            queueElapsedMs: null,
+            queuePending: 0,
+          });
+          toast.error(sData.errorMessage || "Workflow failed on GPU");
+        } else {
+          updateStudio({
+            queueElapsedMs: sData.elapsedMs ?? null,
+            queuePending: sData.queuePending ?? 0,
+          });
+        }
+      } catch {
+        // keep polling
+      }
+    }, 2000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [pollingJobId, pollingTarget, queryClient, updateStudio]);
 
   async function handleEmergencyStopAll() {
     if (!confirm("Immediately terminate ALL active Kaggle/Colab GPU sessions?")) return;
@@ -91,7 +251,7 @@ export function DashboardShell({
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-6 py-3">
           {/* Brand + Nav */}
           <div className="flex items-center gap-6">
-            <Link href="/" className="flex items-center gap-2.5">
+            <Link href="/" prefetch={true} className="flex items-center gap-2.5">
               <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 text-white shadow-lg shadow-indigo-500/20">
                 <Server className="h-4 w-4" />
               </div>
@@ -110,6 +270,7 @@ export function DashboardShell({
                   <Link
                     key={item.href}
                     href={item.href}
+                    prefetch={true}
                     className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
                       active
                         ? "bg-indigo-600 text-white shadow"
@@ -167,25 +328,44 @@ export function DashboardShell({
 
         {/* Global Rclone Stream Progress Banner */}
         {activeStream?.active && (
-          <div className="border-t border-indigo-500/30 bg-indigo-950/30 px-6 py-2">
-            <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 text-xs">
-              <div className="flex items-center gap-2 font-mono text-indigo-300">
+          <div
+            className={`border-t px-6 py-2 ${
+              activeStream.completed
+                ? "border-emerald-500/30 bg-emerald-950/30"
+                : "border-indigo-500/30 bg-indigo-950/30"
+            }`}
+          >
+            <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 text-xs">
+              <div
+                className={`flex items-center gap-2 font-mono ${
+                  activeStream.completed ? "text-emerald-300" : "text-indigo-300"
+                }`}
+              >
                 <HardDriveDownload className="h-4 w-4 animate-pulse" />
                 <span>
-                  Streaming {activeStream.modelName} ➔ {activeStream.target} (/tmp/models/
-                  {activeStream.category})
+                  {activeStream.completed ? "Loaded" : "Streaming"} {activeStream.modelName} ➔{" "}
+                  {activeStream.target.toUpperCase()} (/tmp/models/{activeStream.category})
                 </span>
               </div>
               <div className="flex items-center gap-3">
                 <div className="h-2 w-40 overflow-hidden rounded-full bg-zinc-800">
                   <div
-                    className="h-full bg-indigo-500 transition-all duration-300"
+                    className={`h-full transition-all duration-300 ${
+                      activeStream.completed ? "bg-emerald-500" : "bg-indigo-500"
+                    }`}
                     style={{ width: `${activeStream.percentage}%` }}
                   />
                 </div>
                 <span className="font-mono text-zinc-200">
-                  {activeStream.percentage}% ({activeStream.speedText})
+                  {activeStream.percentage}% · {activeStream.speedText}
                 </span>
+                <button
+                  onClick={() => setActiveStream(null)}
+                  title="Dismiss banner"
+                  className="text-zinc-400 hover:text-white"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
               </div>
             </div>
           </div>
@@ -196,4 +376,3 @@ export function DashboardShell({
     </div>
   );
 }
-

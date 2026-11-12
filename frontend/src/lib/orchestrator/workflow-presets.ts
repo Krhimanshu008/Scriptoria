@@ -104,3 +104,75 @@ export function getPresetById(id?: string | null): WorkflowPreset | undefined {
   return WORKFLOW_PRESETS.find((p) => p.id === id);
 }
 
+export interface ParsedWorkflowRequest {
+  target: string;
+  preset?: WorkflowPreset;
+  customWorkflowJson: Record<string, unknown> | null;
+  prompt: string;
+  negativePrompt: string;
+  requestedCheckpoint: string;
+  width: number;
+  height: number;
+  steps: number;
+  cfg: number;
+  samplerName: string;
+  scheduler: string;
+  hiresPass: boolean;
+  batchSize: number;
+  loraName: string;
+  loraStrength: number;
+  seed: number;
+}
+
+export function parseWorkflowParamsFromBody(
+  body: Record<string, unknown>
+): ParsedWorkflowRequest {
+  const target = String(body.target || "gpu0");
+  const preset = getPresetById(body.presetId ? String(body.presetId) : null);
+  const customWorkflowJson =
+    body.customWorkflowJson && typeof body.customWorkflowJson === "object"
+      ? (body.customWorkflowJson as Record<string, unknown>)
+      : null;
+
+  const prompt = String(body.prompt || preset?.defaultPrompt || "").trim();
+  const negativePrompt = body.negativePrompt
+    ? String(body.negativePrompt)
+    : preset?.defaultNegativePrompt || "bad quality, blurry, deformed";
+  const requestedCheckpoint = body.checkpoint ? String(body.checkpoint).trim() : "";
+  const width = Number(body.width) || preset?.width || 1024;
+  const height = Number(body.height) || preset?.height || 1024;
+  const steps = Number(body.steps) || preset?.steps || 25;
+  const cfg = Number(body.cfg) || preset?.cfg || 6.0;
+  const samplerName = String(body.samplerName || preset?.samplerName || "euler_ancestral");
+  const scheduler = String(body.scheduler || preset?.scheduler || "normal");
+  const hiresPass =
+    typeof body.hiresPass === "boolean" ? body.hiresPass : Boolean(preset?.hiresPass);
+  const batchSize = Math.min(4, Math.max(1, Math.round(Number(body.batchSize) || 1)));
+  const loraName = body.loraName ? String(body.loraName).trim() : "";
+  const rawStrength = Number(body.loraStrength);
+  const loraStrength = Number.isFinite(rawStrength) && body.loraStrength !== "" ? rawStrength : 0.85;
+  const seed = body.seed
+    ? Number(body.seed)
+    : Math.floor(100_000 + Math.random() * 999_000_000);
+
+  return {
+    target,
+    preset,
+    customWorkflowJson,
+    prompt,
+    negativePrompt,
+    requestedCheckpoint,
+    width,
+    height,
+    steps,
+    cfg,
+    samplerName,
+    scheduler,
+    hiresPass,
+    batchSize,
+    loraName,
+    loraStrength,
+    seed,
+  };
+}
+
