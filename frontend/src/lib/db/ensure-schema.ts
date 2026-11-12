@@ -280,8 +280,35 @@ const SCHEMA_DDL_STATEMENTS: string[] = [
     "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "Scene_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project" ("id") ON DELETE CASCADE ON UPDATE CASCADE
   )`,
+  `CREATE TABLE IF NOT EXISTS "LlmChatSession" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "userId" TEXT NOT NULL,
+    "title" TEXT NOT NULL DEFAULT 'New Chat',
+    "mode" TEXT NOT NULL DEFAULT 'chat',
+    "systemPrompt" TEXT,
+    "jsonSchema" TEXT,
+    "temperature" REAL NOT NULL DEFAULT 0.25,
+    "maxTokens" INTEGER NOT NULL DEFAULT 2048,
+    "reasoningEffort" TEXT NOT NULL DEFAULT 'none',
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "LlmChatSession_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+  )`,
+  `CREATE TABLE IF NOT EXISTS "LlmChatMessage" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "sessionId" TEXT NOT NULL,
+    "role" TEXT NOT NULL,
+    "content" TEXT NOT NULL,
+    "thinking" TEXT,
+    "imagesJson" TEXT,
+    "metaJson" TEXT,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "LlmChatMessage_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "LlmChatSession" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+  )`,
   `CREATE INDEX IF NOT EXISTS "AgentSession_userId_updatedAt_idx" ON "AgentSession"("userId", "updatedAt")`,
   `CREATE INDEX IF NOT EXISTS "AgentMessage_sessionId_createdAt_idx" ON "AgentMessage"("sessionId", "createdAt")`,
+  `CREATE INDEX IF NOT EXISTS "LlmChatSession_userId_updatedAt_idx" ON "LlmChatSession"("userId", "updatedAt")`,
+  `CREATE INDEX IF NOT EXISTS "LlmChatMessage_sessionId_createdAt_idx" ON "LlmChatMessage"("sessionId", "createdAt")`,
   `CREATE UNIQUE INDEX IF NOT EXISTS "ApiToken_tokenHash_key" ON "ApiToken"("tokenHash")`,
   `CREATE INDEX IF NOT EXISTS "ApiToken_userId_idx" ON "ApiToken"("userId")`,
   `CREATE UNIQUE INDEX IF NOT EXISTS "BatchJob_userId_idempotencyKey_key" ON "BatchJob"("userId", "idempotencyKey")`,
@@ -297,7 +324,7 @@ async function runSchemaSync(): Promise<void> {
   const [vmCols, existingTables] = await Promise.all([
     prisma.$queryRawUnsafe<Array<{ name: string }>>(`PRAGMA table_info("VmInstance")`),
     prisma.$queryRawUnsafe<Array<{ name: string }>>(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name IN ('User','Credential','VmInstance','Job','SystemLog','ModelAsset','WorkflowTemplate','WorkspaceSettings','AgentSession','AgentMessage','ApiToken','BatchJob','BatchTask','Project','CharacterProfile','Scene')`
+      `SELECT name FROM sqlite_master WHERE type='table' AND name IN ('User','Credential','VmInstance','Job','SystemLog','ModelAsset','WorkflowTemplate','WorkspaceSettings','AgentSession','AgentMessage','ApiToken','BatchJob','BatchTask','Project','CharacterProfile','Scene','LlmChatSession','LlmChatMessage')`
     ),
   ]);
 
@@ -306,6 +333,7 @@ async function runSchemaSync(): Promise<void> {
   const hasWorkerProfile = vmColSet.has("workerProfile");
   const hasIdleTimeout = vmColSet.has("idleTimeoutMinutes");
   const hasPrewarmModels = vmColSet.has("prewarmModelsJson");
+  const hasBootMetadata = vmColSet.has("bootMetadataJson");
   const allTablesExist =
     tableSet.has("User") &&
     tableSet.has("Credential") &&
@@ -322,9 +350,11 @@ async function runSchemaSync(): Promise<void> {
     tableSet.has("BatchTask") &&
     tableSet.has("Project") &&
     tableSet.has("CharacterProfile") &&
-    tableSet.has("Scene");
+    tableSet.has("Scene") &&
+    tableSet.has("LlmChatSession") &&
+    tableSet.has("LlmChatMessage");
 
-  if (allTablesExist && hasWorkerProfile && hasIdleTimeout && hasPrewarmModels) {
+  if (allTablesExist && hasWorkerProfile && hasIdleTimeout && hasPrewarmModels && hasBootMetadata) {
     globalForSchema.__scriptoriaSchemaReady = true;
     return;
   }
@@ -346,6 +376,10 @@ async function runSchemaSync(): Promise<void> {
       {
         present: hasPrewarmModels,
         sql: `ALTER TABLE "VmInstance" ADD COLUMN "prewarmModelsJson" TEXT`,
+      },
+      {
+        present: hasBootMetadata,
+        sql: `ALTER TABLE "VmInstance" ADD COLUMN "bootMetadataJson" TEXT`,
       },
     ];
 

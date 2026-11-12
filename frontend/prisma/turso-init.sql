@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS "VmInstance" (
     "vramUsedGb" REAL,
     "gpuName" TEXT,
     "lastError" TEXT,
+    "bootMetadataJson" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "VmInstance_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE CASCADE ON UPDATE CASCADE
@@ -304,4 +305,34 @@ CREATE INDEX IF NOT EXISTS "BatchTask_status_idx" ON "BatchTask"("status");
 CREATE INDEX IF NOT EXISTS "Project_userId_updatedAt_idx" ON "Project"("userId", "updatedAt");
 CREATE INDEX IF NOT EXISTS "CharacterProfile_projectId_idx" ON "CharacterProfile"("projectId");
 CREATE INDEX IF NOT EXISTS "Scene_projectId_orderIndex_idx" ON "Scene"("projectId", "orderIndex");
+
+CREATE TABLE IF NOT EXISTS "LlmChatSession" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "userId" TEXT NOT NULL,
+    "title" TEXT NOT NULL DEFAULT 'New Chat',
+    "mode" TEXT NOT NULL DEFAULT 'chat',
+    "systemPrompt" TEXT,
+    "jsonSchema" TEXT,
+    "temperature" REAL NOT NULL DEFAULT 0.25,
+    "maxTokens" INTEGER NOT NULL DEFAULT 2048,
+    "reasoningEffort" TEXT NOT NULL DEFAULT 'none',
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "LlmChatSession_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS "LlmChatMessage" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "sessionId" TEXT NOT NULL,
+    "role" TEXT NOT NULL,
+    "content" TEXT NOT NULL,
+    "thinking" TEXT,
+    "imagesJson" TEXT,
+    "metaJson" TEXT,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "LlmChatMessage_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "LlmChatSession" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS "LlmChatSession_userId_updatedAt_idx" ON "LlmChatSession"("userId", "updatedAt");
+CREATE INDEX IF NOT EXISTS "LlmChatMessage_sessionId_createdAt_idx" ON "LlmChatMessage"("sessionId", "createdAt");
 

@@ -36,6 +36,14 @@ const STEP_LABELS: Record<number, string> = {
   5: "5/5: Online & Ready",
 };
 
+const STEP_SHORT_LABELS: Record<number, string> = {
+  1: "Kernel",
+  2: "FastBoot",
+  3: "Models/Deps",
+  4: "Tunnel",
+  5: "Ready",
+};
+
 function formatHoursMinutes(seconds: number): string {
   const mins = Math.max(0, Math.floor(seconds / 60));
   const hrs = Math.floor(mins / 60);
@@ -408,24 +416,61 @@ export const AccountClusterCard: React.FC<AccountClusterCardProps> = ({
 
         {/* Inline Live Booting Process Strip (Shown automatically during STARTING) */}
         {isStarting && (
-          <div className="mt-3 space-y-1.5 rounded-xl border border-amber-400/25 bg-black/30 p-2.5">
+          <div className="mt-3 space-y-2 rounded-xl border border-amber-400/25 bg-black/40 p-2.5">
             <div className="flex items-center justify-between text-[10px]">
               <span className="flex items-center gap-1.5 font-medium text-amber-200">
-                <Loader2 className="h-3 w-3 animate-spin" />
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-400" />
                 {STEP_LABELS[maxStep] || "Booting container..."}
               </span>
-              <span className="font-mono text-zinc-400">{maxStep}/5</span>
+              <div className="flex items-center gap-2 font-mono text-[10px]">
+                {primaryVm?.bootMetadata?.totalBootElapsed ? (
+                  <span className="text-amber-300">
+                    Total: {primaryVm.bootMetadata.totalBootElapsed}s
+                  </span>
+                ) : null}
+                <span className="rounded bg-amber-500/20 px-1.5 py-0.5 font-semibold text-amber-300">
+                  {maxStep}/5
+                </span>
+              </div>
             </div>
-            <div className="flex gap-1">
-              {[1, 2, 3, 4, 5].map((step) => (
-                <div
-                  key={step}
-                  className={`h-1.5 flex-1 rounded-sm transition-all duration-300 ${
-                    step <= maxStep ? "bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.5)]" : "bg-white/10"
-                  }`}
-                />
-              ))}
+
+            <div className="grid grid-cols-5 gap-1 pt-0.5">
+              {[1, 2, 3, 4, 5].map((s) => {
+                const isDone = s < maxStep || (s === 5 && isOnline);
+                const isRunning = s === maxStep && !isOnline;
+                const dur = primaryVm?.bootMetadata?.stepDurations?.[String(s)];
+                const runningElapsed = primaryVm?.bootMetadata?.currentStepElapsed;
+
+                return (
+                  <div key={s} className="space-y-1">
+                    <div
+                      className={`h-1.5 w-full rounded-sm transition-all duration-300 ${
+                        isDone
+                          ? "bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.4)]"
+                          : isRunning
+                          ? "animate-pulse bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.5)]"
+                          : "bg-white/10"
+                      }`}
+                    />
+                    <div className="flex flex-col text-[9px] font-mono leading-tight">
+                      <span className={`truncate ${isRunning ? "font-semibold text-amber-300" : isDone ? "text-zinc-300" : "text-zinc-600"}`}>
+                        {STEP_SHORT_LABELS[s]}
+                      </span>
+                      <span className="text-[8px] text-zinc-400">
+                        {isDone && dur != null ? (
+                          <span className="text-emerald-400/90">{dur}s</span>
+                        ) : isRunning ? (
+                          <span className="text-amber-300">{runningElapsed != null ? `${runningElapsed}s...` : "active"}</span>
+                        ) : (
+                          <span className="text-zinc-600">—</span>
+                        )}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
+
             {firstError && (
               <p className="truncate text-[10px] text-amber-200/80" title={firstError}>
                 {firstError}

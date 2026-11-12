@@ -27,6 +27,7 @@ model User {
   apiTokens         ApiToken[]
   batchJobs         BatchJob[]
   projects          Project[]
+  llmChatSessions   LlmChatSession[]
 }
 
 model Credential {
@@ -73,6 +74,7 @@ model VmInstance {
   vramUsedGb    Float?
   gpuName       String?
   lastError     String?
+  bootMetadataJson String?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -336,4 +338,36 @@ model Scene {
   updatedAt  DateTime @updatedAt
 
   @@index([projectId, orderIndex])
+}
+
+model LlmChatSession {
+  id              String           @id @default(cuid())
+  userId          String
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title           String           @default("New Chat")
+  mode            String           @default("chat") // "chat" | "json" | "vision_qa"
+  systemPrompt    String?
+  jsonSchema      String?
+  temperature     Float            @default(0.25)
+  maxTokens       Int              @default(2048)
+  reasoningEffort String           @default("none")
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  messages        LlmChatMessage[]
+
+  @@index([userId, updatedAt])
+}
+
+model LlmChatMessage {
+  id          String         @id @default(cuid())
+  sessionId   String
+  session     LlmChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role        String         // "user" | "assistant"
+  content     String
+  thinking    String?
+  imagesJson  String?        // JSON array of image data URLs or URLs
+  metaJson    String?        // { source, model, latencyMs, tokPerSec, completionTokens }
+  createdAt   DateTime       @default(now())
+
+  @@index([sessionId, createdAt])
 }

@@ -51,6 +51,14 @@ const STEP_LABELS: Record<number, string> = {
   5: "5/5 Ready",
 };
 
+const STEP_SHORT_LABELS: Record<number, string> = {
+  1: "Kernel",
+  2: "FastBoot",
+  3: "Models/Deps",
+  4: "Tunnel",
+  5: "Ready",
+};
+
 function formatHoursMinutes(seconds: number): string {
   const mins = Math.max(0, Math.floor(seconds / 60));
   const hrs = Math.floor(mins / 60);
@@ -567,23 +575,59 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
         </div>
 
         {isStarting && (
-          <div className="space-y-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-[11px] text-amber-200">
+          <div className="space-y-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-2.5 text-[11px] text-amber-200">
             <div className="flex items-center justify-between">
-              <span className="flex items-center gap-1.5">
-                <Loader2 className="h-3 w-3 animate-spin" />
+              <span className="flex items-center gap-1.5 font-medium">
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-400" />
                 {STEP_LABELS[maxStep] || "Booting container..."}
               </span>
-              <span className="font-mono text-[10px]">{maxStep}/5</span>
+              <div className="flex items-center gap-2 font-mono text-[10px]">
+                {primaryVm?.bootMetadata?.totalBootElapsed ? (
+                  <span className="text-amber-300">
+                    Total: {primaryVm.bootMetadata.totalBootElapsed}s
+                  </span>
+                ) : null}
+                <span className="rounded bg-amber-500/20 px-1.5 py-0.5 font-semibold text-amber-300">
+                  {maxStep}/5
+                </span>
+              </div>
             </div>
-            <div className="flex gap-1">
-              {[1, 2, 3, 4, 5].map((s) => (
-                <div
-                  key={s}
-                  className={`h-1 flex-1 rounded-sm ${
-                    s <= maxStep ? "bg-amber-400" : "bg-zinc-800"
-                  }`}
-                />
-              ))}
+
+            <div className="grid grid-cols-5 gap-1 pt-0.5">
+              {[1, 2, 3, 4, 5].map((s) => {
+                const isDone = s < maxStep || (s === 5 && isOnline);
+                const isRunning = s === maxStep && !isOnline;
+                const dur = primaryVm?.bootMetadata?.stepDurations?.[String(s)];
+                const runningElapsed = primaryVm?.bootMetadata?.currentStepElapsed;
+
+                return (
+                  <div key={s} className="space-y-1">
+                    <div
+                      className={`h-1.5 w-full rounded-sm transition-all duration-300 ${
+                        isDone
+                          ? "bg-emerald-400"
+                          : isRunning
+                          ? "animate-pulse bg-amber-400"
+                          : "bg-zinc-800"
+                      }`}
+                    />
+                    <div className="flex flex-col text-[9px] font-mono leading-tight">
+                      <span className={`truncate ${isRunning ? "font-semibold text-amber-300" : isDone ? "text-zinc-300" : "text-zinc-600"}`}>
+                        {STEP_SHORT_LABELS[s]}
+                      </span>
+                      <span className="text-[8px] text-zinc-400">
+                        {isDone && dur != null ? (
+                          <span className="text-emerald-400/90">{dur}s</span>
+                        ) : isRunning ? (
+                          <span className="text-amber-300">{runningElapsed != null ? `${runningElapsed}s...` : "active"}</span>
+                        ) : (
+                          <span className="text-zinc-600">—</span>
+                        )}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}

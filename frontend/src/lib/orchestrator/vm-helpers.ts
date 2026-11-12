@@ -6,6 +6,12 @@ export interface PrewarmModelRef {
   filename: string;
 }
 
+export interface BootMetadata {
+  stepDurations?: Record<string, number>;
+  currentStepElapsed?: number;
+  totalBootElapsed?: number;
+}
+
 export interface PublicVmInstance {
   id: string;
   target: string;
@@ -16,6 +22,7 @@ export interface PublicVmInstance {
   workerProfile: string;
   idleTimeoutMinutes: number | null;
   prewarmModels: PrewarmModelRef[];
+  bootMetadata?: BootMetadata | null;
   internalPort: number;
   publicUrl: string;
   useRouteLess: boolean;
@@ -62,6 +69,15 @@ export function sanitizeVmForClient(vm: VmInstance): PublicVmInstance {
     }
   }
 
+  let bootMetadata: BootMetadata | null = null;
+  if (vm.bootMetadataJson) {
+    try {
+      bootMetadata = JSON.parse(vm.bootMetadataJson);
+    } catch {
+      bootMetadata = null;
+    }
+  }
+
   return {
     id: vm.id,
     target: vm.target,
@@ -72,6 +88,7 @@ export function sanitizeVmForClient(vm: VmInstance): PublicVmInstance {
     workerProfile: vm.workerProfile || "BASE_COMFY",
     idleTimeoutMinutes: vm.idleTimeoutMinutes ?? null,
     prewarmModels,
+    bootMetadata,
     internalPort: vm.internalPort,
     publicUrl: vm.publicUrl,
     useRouteLess: vm.useRouteLess,

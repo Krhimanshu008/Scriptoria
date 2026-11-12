@@ -1,16 +1,20 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   Bot,
   ChevronDown,
   ChevronRight,
   Cpu,
+  History,
   ImagePlus,
   Loader2,
+  MessageSquare,
+  Pencil,
+  Plus,
   RefreshCw,
   Send,
   Sparkles,
@@ -19,6 +23,20 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
+
+interface SessionItem {
+  id: string;
+  title: string;
+  mode: string;
+  systemPrompt?: string | null;
+  jsonSchema?: string | null;
+  temperature: number;
+  maxTokens: number;
+  reasoningEffort: string;
+  createdAt: string;
+  updatedAt: string;
+  _count?: { messages: number };
+}
 
 interface LlmStudioHealth {
   vmStatus: string;
@@ -213,6 +231,125 @@ export function LlmStudioTab() {
     }
   }
 
+  const queryClient = useQueryClient();
+  const [leftTab, setLeftTab] = useState<"controls" | "history">("controls");
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+
+  const { data: sessionData, refetch: refetchSessions } = useQuery<{ sessions: SessionItem[] }>({
+    queryKey: ["llm-sessions"],
+    queryFn: async () => {
+      const res = await fetch("/api/llm-studio/sessions");
+      if (!res.ok) throw new Error("Failed to load sessions");
+      return res.json();
+    },
+  });
+  const sessions = sessionData?.sessions ?? [];
+
+  const { data: activeSessionData } = useQuery({
+    queryKey: ["llm-session", activeSessionId],
+    enabled: Boolean(activeSessionId),
+    queryFn: async () => {
+      const res = await fetch(`/api/llm-studio/sessions/${encodeURIComponent(activeSessionId!)}`);
+      if (!res.ok) throw new Error("Failed to load session details");
+      return res.json();
+    },
+  });
+
+  // Restore activeSessionId on mount or localStorage turns
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("scriptoria_llm_active_session");
+      if (saved) {
+        setActiveSessionId(saved);
+      } else {
+        try {
+          const cached = localStorage.getItem("scriptoria_llm_cached_turns");
+          if (cached) {
+            const parsed = JSON.parse(cached);
+            if (Array.isArray(parsed) && parsed.length > 0) setTurns(parsed);
+          }
+        } catch {}
+      }
+    }
+  }, []);
+
+  // Sync activeSessionData to turns & state
+  useEffect(() => {
+    if (activeSessionData?.session) {
+      const sess = activeSessionData.session;
+      if (sess.mode) setMode(sess.mode as StudioMode);
+      if (sess.systemPrompt) setSystemPrompt(sess.systemPrompt);
+      if (sess.jsonSchema) setJsonSchema(sess.jsonSchema);
+      if (typeof sess.temperature === "number") setTemperature(sess.temperature);
+      if (typeof sess.maxTokens === "number") setMaxTokens(sess.maxTokens);
+      if (sess.reasoningEffort) setReasoningEffort(sess.reasoningEffort as ThinkingLevel);
+
+      const msgs: TurnMessage[] = (sess.messages || []).map(
+        (m: {
+          id: string;
+          role: string;
+          content: string;
+          thinking?: string | null;
+          imagesJson?: string | null;
+          metaJson?: string | null;
+        }) => ({
+          id: m.id,
+          role: m.role as "user" | "assistant",
+          content: m.content,
+          thinking: m.thinking,
+          imageDataUrls: m.imagesJson ? JSON.parse(m.imagesJson) : undefined,
+          meta: m.metaJson ? JSON.parse(m.metaJson) : undefined,
+        })
+      );
+      setTurns(msgs);
+    }
+  }, [activeSessionData]);
+
+  // Persist current session ID & turns to localStorage
+  useEffect(() => {
+    if (activeSessionId) {
+      localStorage.setItem("scriptoria_llm_active_session", activeSessionId);
+    } else {
+      localStorage.removeItem("scriptoria_llm_active_session");
+    }
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    if (turns.length > 0) {
+      try {
+        localStorage.setItem("scriptoria_llm_cached_turns", JSON.stringify(turns));
+      } catch {}
+    }
+  }, [turns]);
+
+  async function handleCreateNewSession() {
+    setActiveSessionId(null);
+    setTurns([]);
+    setPromptInput("");
+    setAttachedImages([]);
+    localStorage.removeItem("scriptoria_llm_active_session");
+    localStorage.removeItem("scriptoria_llm_cached_turns");
+    toast.success("Started new clean session");
+  }
+
+  async function handleDeleteSession(id: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    try {
+      const res = await fetch(`/api/llm-studio/sessions/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        if (activeSessionId === id) {
+          handleCreateNewSession();
+        }
+        refetchSessions();
+        toast.success("Deleted session");
+      }
+    } catch {
+      toast.error("Failed to delete session");
+    }
+  }
+
   async function handleSend() {
     const trimmed = promptInput.trim();
     if (!trimmed && attachedImages.length === 0) return;
@@ -230,6 +367,34 @@ export function LlmStudioTab() {
     setPromptInput("");
     setAttachedImages([]);
     setSending(true);
+
+    let curSessionId = activeSessionId;
+    if (!curSessionId) {
+      try {
+        const title = trimmed ? trimmed.slice(0, 42) : "Vision QA";
+        const cRes = await fetch("/api/llm-studio/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title,
+            mode,
+            systemPrompt,
+            jsonSchema,
+            temperature,
+            maxTokens,
+            reasoningEffort,
+          }),
+        });
+        const cData = await cRes.json();
+        if (cRes.ok && cData.session?.id) {
+          curSessionId = cData.session.id;
+          setActiveSessionId(curSessionId);
+          refetchSessions();
+        }
+      } catch {
+        // continue even if session creation fails
+      }
+    }
 
     try {
       const res = await fetch("/api/llm-studio/chat", {
@@ -270,7 +435,35 @@ export function LlmStudioTab() {
           completionTokens: data.usage?.completion_tokens ?? null,
         },
       };
+
       setTurns((prev) => [...prev, assistantTurn]);
+
+      if (curSessionId) {
+        fetch(`/api/llm-studio/sessions/${encodeURIComponent(curSessionId)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            messages: [
+              {
+                role: userTurn.role,
+                content: userTurn.content,
+                imageDataUrls: userTurn.imageDataUrls,
+              },
+              {
+                role: assistantTurn.role,
+                content: assistantTurn.content,
+                thinking: assistantTurn.thinking,
+                meta: assistantTurn.meta,
+              },
+            ],
+          }),
+        })
+          .then(() => {
+            refetchSessions();
+            queryClient.invalidateQueries({ queryKey: ["llm-session", curSessionId] });
+          })
+          .catch(() => {});
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Network error");
     } finally {
@@ -329,6 +522,26 @@ export function LlmStudioTab() {
         <div className="flex items-center gap-2">
           <button
             type="button"
+            onClick={handleCreateNewSession}
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-900 px-2.5 text-[11px] font-medium text-white hover:bg-zinc-800"
+          >
+            <Plus className="h-3 w-3 text-emerald-400" />
+            New Chat
+          </button>
+          <button
+            type="button"
+            onClick={() => setLeftTab(leftTab === "history" ? "controls" : "history")}
+            className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-[11px] font-medium transition ${
+              leftTab === "history"
+                ? "border-indigo-500/50 bg-indigo-500/20 text-indigo-200"
+                : "border-zinc-800 bg-zinc-900 text-zinc-300 hover:bg-zinc-800"
+            }`}
+          >
+            <History className="h-3 w-3 text-indigo-400" />
+            Sessions ({sessions.length})
+          </button>
+          <button
+            type="button"
             onClick={() => refetchHealth()}
             disabled={refreshingHealth}
             className="inline-flex h-7 items-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-900 px-2.5 text-[11px] text-zinc-300 hover:bg-zinc-800"
@@ -367,19 +580,98 @@ export function LlmStudioTab() {
         {/* Left Configuration & Presets Pane */}
         <div className="space-y-3 rounded-lg border border-zinc-800 bg-[#111114] p-3.5 lg:col-span-4">
           <div className="flex items-center justify-between">
-            <span className="flex items-center gap-1.5 text-xs font-semibold text-zinc-200">
-              <Wrench className="h-3.5 w-3.5 text-indigo-400" />
-              Inference Controls
-            </span>
+            <div className="flex items-center gap-1 rounded-md border border-zinc-800 bg-zinc-950 p-1 text-[11px]">
+              <button
+                type="button"
+                onClick={() => setLeftTab("controls")}
+                className={`rounded px-2.5 py-1 font-medium transition ${
+                  leftTab === "controls"
+                    ? "bg-indigo-600 text-white"
+                    : "text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                <Wrench className="inline-block mr-1 h-3 w-3" />
+                Controls
+              </button>
+              <button
+                type="button"
+                onClick={() => setLeftTab("history")}
+                className={`rounded px-2.5 py-1 font-medium transition ${
+                  leftTab === "history"
+                    ? "bg-indigo-600 text-white"
+                    : "text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                <History className="inline-block mr-1 h-3 w-3" />
+                Sessions ({sessions.length})
+              </button>
+            </div>
+
             <button
               type="button"
-              onClick={() => setTurns([])}
-              className="inline-flex items-center gap-1 text-[11px] text-zinc-500 hover:text-zinc-300"
+              onClick={handleCreateNewSession}
+              className="inline-flex items-center gap-1 text-[11px] text-zinc-400 hover:text-white"
+              title="New Chat Session"
             >
-              <Trash2 className="h-3 w-3" />
-              Clear
+              <Plus className="h-3.5 w-3.5 text-emerald-400" />
+              New
             </button>
           </div>
+
+          {leftTab === "history" ? (
+            <div className="space-y-2">
+              <div className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+                Saved Chat Sessions
+              </div>
+              {sessions.length === 0 ? (
+                <div className="rounded border border-dashed border-zinc-800 p-4 text-center text-xs text-zinc-500">
+                  No saved sessions yet. Start chatting to auto-save!
+                </div>
+              ) : (
+                <div className="max-h-[520px] space-y-1.5 overflow-y-auto pr-1">
+                  {sessions.map((sess) => {
+                    const isCurrent = sess.id === activeSessionId;
+                    return (
+                      <div
+                        key={sess.id}
+                        onClick={() => setActiveSessionId(sess.id)}
+                        className={`group flex cursor-pointer items-center justify-between rounded-lg border p-2 text-xs transition ${
+                          isCurrent
+                            ? "border-indigo-500/50 bg-indigo-500/15 text-white"
+                            : "border-zinc-800 bg-zinc-950 text-zinc-300 hover:border-zinc-700 hover:bg-zinc-900"
+                        }`}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5 font-medium truncate">
+                            <MessageSquare
+                              className={`h-3 w-3 shrink-0 ${
+                                isCurrent ? "text-indigo-400" : "text-zinc-500"
+                              }`}
+                            />
+                            <span className="truncate">{sess.title}</span>
+                          </div>
+                          <div className="mt-0.5 flex items-center gap-2 text-[10px] text-zinc-500">
+                            <span className="uppercase font-mono">{sess.mode}</span>
+                            <span>·</span>
+                            <span>{sess._count?.messages ?? 0} msgs</span>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={(e) => handleDeleteSession(sess.id, e)}
+                          className="opacity-0 group-hover:opacity-100 p-1 text-zinc-500 hover:text-rose-400 transition"
+                          title="Delete Session"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          ) : (
+            <>
 
           {/* Mode Tabs */}
           <div className="grid grid-cols-3 gap-1 rounded-md border border-zinc-800 bg-zinc-950 p-1 text-[11px]">
@@ -558,6 +850,8 @@ export function LlmStudioTab() {
               </div>
             )}
           </div>
+          </>
+          )}
         </div>
 
         {/* Right Conversation & Output Pane */}

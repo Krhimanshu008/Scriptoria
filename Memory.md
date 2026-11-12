@@ -64,7 +64,20 @@ Verified live on `https://scriptoria.krhimanshu.in/vms`:
 
 ---
 
-## 5. Planned Next Work
+## 5. Performance & Feature Upgrades (Verified 2026-11-13)
+
+1. **Step-by-Step Boot Timers:** VM heartbeat now reports `stepDurations`, `currentStepElapsed`, and `totalBootElapsed`. `VmClusterCard` and `AccountClusterCard` render 5-segment live countdown/countup bars with real-time timers and final elapsed seconds per step.
+2. **Hugging Face CDN Multi-Stream & Real-Time Download Speed:** Inverted download priority to check local disk $\rightarrow$ Hugging Face CDN (via `aria2c -x 16 -s 16` reaching 150–220 MB/s) $\rightarrow$ Google Drive fallback. Completed downloads are mirrored to Google Drive in a non-blocking background daemon thread.
+3. **Dedicated LLM Studio Sidebar & Route:** Added `/llm-studio` to left navigation under "Intelligence & Studio" with dedicated page at `src/app/(dashboard)/llm-studio/page.tsx`.
+4. **Persistent Chat Session History in LLM Studio:** Added `LlmChatSession` and `LlmChatMessage` tables to Prisma and Turso schemas. Implemented `/api/llm-studio/sessions` & `[id]` endpoints, session switcher drawer in `LlmStudioTab`, auto-save on turn completion, and `localStorage` instant recovery.
+5. **Multi-GPU Simultaneous Prompt Dispatch:** Added "Fan-Out" mode to `StudioWorkspace.tsx`, enabling multi-selection of online GPUs and concurrent prompt dispatching with randomized seed variations via `Promise.all`.
+6. **Token Speed (<10 tok/s) & Latency Fix:** Switched from CPU-emulated `q8_0` KV cache to native FP16 tensor core cache (`-ctk f16 -ctv f16`), tuned speculative drafting to `--spec-draft-n-max 3`, and increased `--ubatch-size 256` for faster prompt evaluation.
+7. **Cloudflare HTTP 524 Timeout Fix:** Eliminated 0-byte buffering `resp.read()` in `_LlmBridgeHandler` in favor of unbuffered chunked transfer streaming (`Transfer-Encoding: chunked`), paired with Caddy `flush_interval -1`.
+8. **AI Studio Controller:** Added `dispatch_multi_gpu_prompt` in `src/lib/agent/tools.ts`, connected to conversational AI Controller panels in both `/studio` and `/llm-studio`.
+
+---
+
+## 6. Planned Next Work
 
 See [`MEMORY.md`](file:///c:/Users/5480/Desktop/Automation/Book_Visualiser/MEMORY.md) for the full cross-repo plan:
 1. Run end-to-end **`Book Graph`** chapter ingestion, Knowledge Graph extraction, Foundry plate rendering (`ACC1`), and Batch VLM Shot QA (`ACC2` Qwen 27B `/v1`).

@@ -118,12 +118,40 @@ export const AGENT_TOOL_DEFINITIONS: LlmToolDefinition[] = [
       required: ["title", "rawText"],
     },
   },
+  {
+    name: "dispatch_multi_gpu_prompt",
+    description:
+      "Simultaneously dispatch an image generation prompt to multiple GPUs (e.g. ['gpu0', 'gpu1'] or ['all']) in parallel with randomized seeds.",
+    parameters: {
+      type: "object",
+      properties: {
+        targets: {
+          type: "array",
+          items: { type: "string" },
+          description: "List of targets e.g. ['gpu0', 'gpu1'] or ['all']",
+        },
+        prompt: { type: "string", description: "Positive prompt" },
+        negativePrompt: { type: "string", description: "Negative prompt" },
+        pipeline: {
+          type: "string",
+          description: "sdxl_txt2img | flux_gguf | sdxl_detailer_upscale | wai_illustrious",
+        },
+        checkpoint: { type: "string", description: "Model checkpoint filename or slug" },
+        width: { type: "number", description: "Width (default 1024)" },
+        height: { type: "number", description: "Height (default 1024)" },
+        steps: { type: "number", description: "Inference steps (default 25)" },
+        cfg: { type: "number", description: "CFG scale (default 6.0)" },
+      },
+      required: ["prompt"],
+    },
+  },
 ];
 
 export const MUTATING_AGENT_TOOLS = new Set([
   "ensure_models_ready",
   "run_compiled_workflow",
   "create_multi_gpu_batch",
+  "dispatch_multi_gpu_prompt",
 ]);
 
 export async function executeAgentTool(
@@ -356,6 +384,99 @@ export async function executeAgentTool(
       };
     }
     return plan;
+  }
+
+  if (name === "dispatch_multi_gpu_prompt") {
+    const rawTargets = Array.isArray(args.targets) ? args.targets.map(String) : ["all"];
+    let targetList: string[] = [];
+
+    const allOnlineVms = await prisma.vmInstance.findMany({
+      where: {
+        userId,
+        status: "ONLINE",
+        workerProfile: { notIn: ["LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"] },
+      },
+    });
+
+    if (allOnlineVms.length === 0) {
+      return { error: "No image generation GPUs are currently ONLINE. Boot them in VM Cluster first." };
+    }
+
+    if (rawTargets.includes("all")) {
+      targetList = allOnlineVms.map((v) => v.target);
+    } else {
+      targetList = rawTargets.filter((t) => allOnlineVms.some((v) => v.target === t));
+    }
+
+    if (targetList.length === 0) {
+      return { error: `None of the requested targets (${rawTargets.join(", ")}) are online.` };
+    }
+
+    const baseSeed = Math.floor(Math.random() * 10000000);
+    const results = [];
+
+    for (let i = 0; i < targetList.length; i++) {
+      const tgt = targetList[i];
+      const vm = allOnlineVms.find((v) => v.target === tgt)!;
+      const seed = String(baseSeed + i);
+      const spec: WorkflowBuildSpec = {
+        pipeline: (String(args.pipeline || "sdxl_txt2img") as WorkflowBuildSpec["pipeline"]),
+        baseModel: args.checkpoint ? String(args.checkpoint) : undefined,
+        prompt: String(args.prompt),
+        negativePrompt: args.negativePrompt ? String(args.negativePrompt) : undefined,
+        width: typeof args.width === "number" ? args.width : 1024,
+        height: typeof args.height === "number" ? args.height : 1024,
+        steps: typeof args.steps === "number" ? args.steps : 25,
+        cfg: typeof args.cfg === "number" ? args.cfg : 6.0,
+      };
+
+      try {
+        const compiled = await compileResourceAwareWorkflow(userId, spec, tgt);
+        const job = await prisma.job.create({
+          data: {
+            userId,
+            vmInstanceId: vm.id,
+            target: tgt,
+            prompt: spec.prompt || "[Multi-GPU Prompt]",
+            negativePrompt: spec.negativePrompt || null,
+            checkpoint: spec.baseModel || compiled.pipeline,
+            width: spec.width || 1024,
+            height: spec.height || 1024,
+            steps: spec.steps || 25,
+            cfg: spec.cfg || 6.0,
+            seed,
+            status: "PENDING",
+          },
+        });
+
+        const comfy = new ComfyClient(vm);
+        const { prompt_id } = await comfy.queuePrompt(compiled.graph, job.id);
+        await prisma.job.update({
+          where: { id: job.id },
+          data: { promptId: prompt_id, status: "PROCESSING" },
+        });
+
+        results.push({
+          target: tgt,
+          jobId: job.id,
+          promptId: prompt_id,
+          seed,
+          status: "QUEUED",
+        });
+      } catch (err) {
+        results.push({
+          target: tgt,
+          error: err instanceof Error ? err.message : "Failed to queue",
+          status: "FAILED",
+        });
+      }
+    }
+
+    return {
+      message: `Dispatched prompt across ${results.length} GPU(s) in parallel.`,
+      dispatchedCount: results.length,
+      results,
+    };
   }
 
   return { error: `Unknown tool '${name}'` };

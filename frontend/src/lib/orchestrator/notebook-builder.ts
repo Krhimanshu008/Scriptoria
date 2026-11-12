@@ -93,6 +93,9 @@ FETCH_LOCK = threading.Lock()
 RCLONE_READY = False
 TUNNEL_URL = None
 CURRENT_STEP = 1
+T_BOOT_START = time.time()
+STEP_START = time.time()
+STEP_DURATIONS = {}
 EVER_CONNECTED = False
 HEARTBEAT_FAIL_STREAK = 0
 LAST_HB_SENT = 0.0
@@ -114,20 +117,30 @@ def has_pending_logs():
         return len(PENDING_LOGS) > 0
 
 def post_heartbeat(step, status="STARTING", telemetry=None):
-    global CURRENT_STEP, EVER_CONNECTED, HEARTBEAT_FAIL_STREAK, LAST_HB_SENT
-    if step == 0 or step >= CURRENT_STEP:
+    global CURRENT_STEP, EVER_CONNECTED, HEARTBEAT_FAIL_STREAK, LAST_HB_SENT, STEP_START, STEP_DURATIONS
+    now = time.time()
+    if step > CURRENT_STEP:
+        prev_step = CURRENT_STEP
+        STEP_DURATIONS[str(prev_step)] = round(now - STEP_START, 1)
         CURRENT_STEP = step
-    LAST_HB_SENT = time.time()
+        STEP_START = now
+    elif step == 5 and CURRENT_STEP == 5 and "5" not in STEP_DURATIONS:
+        STEP_DURATIONS["5"] = round(now - STEP_START, 1)
+    LAST_HB_SENT = now
     with LOG_LOCK:
         logs_batch = PENDING_LOGS[:]
         PENDING_LOGS.clear()
+    telem = dict(telemetry or {})
+    telem["stepDurations"] = dict(STEP_DURATIONS)
+    telem["currentStepElapsed"] = round(now - STEP_START, 1)
+    telem["totalBootElapsed"] = round(now - T_BOOT_START, 1)
     payload = {
         "token": REG_JWT,
         "tunnelUrl": TUNNEL_URL or "",
         "targets": TARGETS,
         "stepProgress": step,
         "status": status,
-        "telemetry": telemetry or {},
+        "telemetry": telem,
         "logs": logs_batch,
     }
     try:
@@ -707,13 +720,14 @@ with open("/tmp/Caddyfile", "w", encoding="utf-8") as f:
     f.write(f"""(sc_dispatch) {{
     @has_header header X-Target-Port *
     handle @has_header {{
-        @badport not header_regexp X-Target-Port ^(8188|8189|5572|9999)$
+        @badport not header_regexp X-Target-Port ^(8188|8189|8190|5572|9999)$
         handle @badport {{
             respond "Invalid Target Port" 400
         }}
         handle {{
             reverse_proxy 127.0.0.1:{{http.request.header.X-Target-Port}} {{
                 header_up Host 127.0.0.1
+                flush_interval -1
             }}
         }}
     }}
@@ -721,11 +735,13 @@ with open("/tmp/Caddyfile", "w", encoding="utf-8") as f:
     handle @want8189 {{
         reverse_proxy 127.0.0.1:8189 {{
             header_up Host 127.0.0.1
+            flush_interval -1
         }}
     }}
     handle {{
         reverse_proxy 127.0.0.1:8188 {{
             header_up Host 127.0.0.1
+            flush_interval -1
         }}
     }}
 }}
@@ -1062,6 +1078,46 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"):
         os.chmod("/tmp/llama_bin/llama-server", 0o755)
         return "/tmp/llama_bin/llama-server"
 
+    def _fast_download_hf(repo_id, filename, dst_dir="/tmp/models/llm", label="Model"):
+        os.makedirs(dst_dir, exist_ok=True)
+        final_path = os.path.join(dst_dir, filename)
+        if os.path.exists(final_path) and os.path.getsize(final_path) > 1000000:
+            log_event(f"Local cache hit for {filename} ({round(os.path.getsize(final_path)/(1024**3), 2)}GB)", category="SYSTEM", level="SUCCESS")
+            return final_path
+        hf_url = f"https://huggingface.co/{repo_id}/resolve/main/{filename}"
+        part_path = final_path + ".part"
+        t0 = time.time()
+        last_log = time.time()
+        log_event(f"Fast-downloading {filename} from Hugging Face CDN (16 parallel streams)...", category="DOWNLOAD")
+        if shutil.which("aria2c"):
+            cmd = [
+                "aria2c", "-x", "16", "-s", "16", "-k", "4M",
+                "--file-allocation=none", "--allow-overwrite=true",
+                "--auto-file-renaming=false", "--summary-interval=1",
+                "-d", dst_dir, "-o", os.path.basename(part_path),
+                hf_url
+            ]
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            while proc.poll() is None:
+                if os.path.exists(part_path):
+                    sz = os.path.getsize(part_path)
+                    now = time.time()
+                    if now - last_log >= 5:
+                        spd = sz / max(0.1, now - t0)
+                        spd_mb = round(spd / (1024 * 1024), 1)
+                        log_event(f"[{label}] Transferred {round(sz/(1024**3), 2)}GB @ {spd_mb} MB/s", category="DOWNLOAD")
+                        last_log = now
+                time.sleep(1)
+            if proc.returncode == 0 and os.path.exists(part_path):
+                os.replace(part_path, final_path)
+                dur = round(time.time() - t0, 1)
+                spd_mb = round(os.path.getsize(final_path) / (max(0.1, dur) * 1024 * 1024), 1)
+                log_event(f"[{label}] {filename} ready in {dur}s ({spd_mb} MB/s)!", category="DOWNLOAD", level="SUCCESS")
+                return final_path
+        uv_thread.join(timeout=30)
+        from huggingface_hub import hf_hub_download
+        return hf_hub_download(repo_id=repo_id, filename=filename, local_dir=dst_dir)
+
     def _resolve_qwen_ggufs():
         from pathlib import Path as _P
         needs_vision = (PROFILE_ID == "LLM_QWEN_VLM")
@@ -1077,6 +1133,56 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"):
                 log_event(f"Mounted Kaggle Dataset Qwen weights: {os.path.basename(m)}", category="SYSTEM", level="SUCCESS")
                 return m, mm, dr, False
 
+        # Check local /tmp/models/llm first
+        local_files = [str(p) for p in _P("/tmp/models/llm").glob("*.gguf")] if os.path.exists("/tmp/models/llm") else []
+        if local_files:
+            m = next((p for p in local_files if "mmproj" not in p.lower() and "dflash" not in p.lower()), None)
+            if needs_vision:
+                mm = next((p for p in local_files if "mmproj" in p.lower()), None)
+            dr = next((p for p in local_files if "dflash" in p.lower()), None)
+            if m:
+                log_event(f"Reusing cached Qwen weights in /tmp: {os.path.basename(m)}", category="SYSTEM", level="SUCCESS")
+                return m, mm, dr, False
+
+        # Primary source: Direct Hugging Face CDN (16 parallel streams)
+        try:
+            uv_thread.join(timeout=30)
+            from huggingface_hub import list_repo_files
+            files = list_repo_files(LLM_MODEL_REPO)
+            ggufs = [f for f in files if f.lower().endswith(".gguf") and "mmproj" not in f.lower() and not f.lower().startswith("mtp/")]
+            chosen_gguf = None
+            for pat in ["Q4_K_M", "UD-Q4_K_XL", "Q4_K_S", "Q4_0"]:
+                hit = [f for f in ggufs if pat.lower() in f.lower() and "-00002-of-" not in f.lower()]
+                if hit:
+                    chosen_gguf = hit[0]
+                    break
+            if not chosen_gguf:
+                chosen_gguf = ggufs[0] if ggufs else None
+
+            if chosen_gguf:
+                m = _fast_download_hf(LLM_MODEL_REPO, chosen_gguf, "/tmp/models/llm", label="Qwen 27B")
+
+            if needs_vision:
+                mms = [f for f in files if f.lower().endswith(".gguf") and "mmproj" in f.lower()]
+                chosen_mm = next((f for f in mms if "mmproj-f16" in f.lower()), next((f for f in mms if "f16" in f.lower() or "bf16" in f.lower()), mms[0] if mms else None))
+                if chosen_mm:
+                    mm = _fast_download_hf(LLM_MODEL_REPO, chosen_mm, "/tmp/models/llm", label="mmproj Vision")
+
+            for dr_repo in ["z-lab/Qwen3.8-27B-DFlash2-GGUF", "Akicou/Qwen3.8-27B-DFlash2-GGUF", "incoai/Qwen3.8-27B-DFlash2-GGUF"]:
+                try:
+                    draft_fname = "Qwen3.8-27B-DFlash2-Q4_K_M.gguf"
+                    dr = _fast_download_hf(dr_repo, draft_fname, "/tmp/models/llm", label="DFlash2 Drafter")
+                    if dr and os.path.exists(dr):
+                        break
+                except Exception as dfe:
+                    log_event(f"Draft repo {dr_repo} skipped ({dfe}); trying next...", category="SYSTEM")
+
+            if m and os.path.exists(m):
+                return m, mm, dr, True
+        except Exception as hf_err:
+            log_event(f"Hugging Face download failed ({hf_err}); falling back to Google Drive...", category="SYSTEM", level="WARN")
+
+        # Fallback to Google Drive if HF failed
         if rclone_ok:
             try:
                 ls = rc_post("operations/list", {"fs": f"gdrive:{GDRIVE_BASE}/models/llm", "remote": ""}, timeout=15)
@@ -1085,7 +1191,7 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"):
                 mm_item = next((x for x in items if x.get("Name", "").lower().endswith(".gguf") and "mmproj" in x.get("Name", "").lower()), None) if needs_vision else None
                 dr_item = next((x for x in items if x.get("Name", "").lower().endswith(".gguf") and "dflash" in x.get("Name", "").lower()), None)
                 if gg_item:
-                    log_event(f"Streaming Qwen GGUF from Google Drive: {gg_item['Name']}...", category="RCLONE", level="SUCCESS")
+                    log_event(f"Streaming Qwen GGUF from Google Drive fallback: {gg_item['Name']}...", category="RCLONE", level="SUCCESS")
                     rc_copy_async({"srcFs": f"gdrive:{GDRIVE_BASE}/models/llm", "srcRemote": gg_item["Name"], "dstFs": "/tmp/models/llm", "dstRemote": gg_item["Name"], "_config": {"MultiThreadStreams": 8, "DisableHTTP2": True}}, max_wait=600, label="Qwen GGUF stream")
                     m_local = f"/tmp/models/llm/{gg_item['Name']}"
                     mm_local = None
@@ -1100,46 +1206,7 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"):
             except Exception as de:
                 log_event(f"Drive LLM weights check: {de}", category="RCLONE")
 
-        uv_thread.join(timeout=30)
-        if os.path.exists("/tmp/uv"):
-            subprocess.run(["/tmp/uv", "pip", "install", "--system", "--quiet", "huggingface_hub"], check=False)
-        else:
-            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "huggingface_hub"], check=False)
-        from huggingface_hub import hf_hub_download, list_repo_files
-        files = list_repo_files(LLM_MODEL_REPO)
-        ggufs = [f for f in files if f.lower().endswith(".gguf") and "mmproj" not in f.lower() and not f.lower().startswith("mtp/")]
-        chosen_gguf = None
-        for pat in ["Q4_K_M", "UD-Q4_K_XL", "Q4_K_S", "Q4_0"]:
-            hit = [f for f in ggufs if pat.lower() in f.lower() and "-00002-of-" not in f.lower()]
-            if hit:
-                chosen_gguf = hit[0]
-                break
-        if not chosen_gguf:
-            raise RuntimeError(f"No 4-bit GGUF found in {LLM_MODEL_REPO}")
-        log_event(f"Downloading {LLM_MODEL_REPO}/{chosen_gguf} from Hugging Face...", category="SYSTEM")
-        m_local = hf_hub_download(repo_id=LLM_MODEL_REPO, filename=chosen_gguf, local_dir="/tmp/models/llm")
-
-        mm_local = None
-        if needs_vision:
-            mms = [f for f in files if f.lower().endswith(".gguf") and "mmproj" in f.lower()]
-            chosen_mm = next((f for f in mms if "mmproj-f16" in f.lower()), next((f for f in mms if "f16" in f.lower() or "bf16" in f.lower()), mms[0] if mms else None))
-            if chosen_mm:
-                log_event(f"Downloading {chosen_mm} (mmproj vision)...", category="SYSTEM")
-                mm_local = hf_hub_download(repo_id=LLM_MODEL_REPO, filename=chosen_mm, local_dir="/tmp/models/llm")
-
-        dr_local = None
-        for dr_repo in ["z-lab/Qwen3.8-27B-DFlash2-GGUF", "Akicou/Qwen3.8-27B-DFlash2-GGUF", "incoai/Qwen3.8-27B-DFlash2-GGUF"]:
-            try:
-                draft_fname = "Qwen3.8-27B-DFlash2-Q4_K_M.gguf"
-                log_event(f"Downloading {draft_fname} from {dr_repo} (DFlash2 drafter)...", category="SYSTEM")
-                cand_dr = hf_hub_download(repo_id=dr_repo, filename=draft_fname, local_dir="/tmp/models/llm")
-                if cand_dr and os.path.exists(cand_dr):
-                    dr_local = cand_dr
-                    break
-            except Exception as dfe:
-                log_event(f"Draft repo {dr_repo} skipped ({dfe}); trying next...", category="SYSTEM")
-
-        return m_local, mm_local, dr_local, True
+        raise RuntimeError("Failed to resolve Qwen weights from Kaggle dataset, Hugging Face, or Google Drive.")
 
     llama_bin = _resolve_llama_bin()
     model_gguf, mmproj_gguf, draft_gguf, downloaded_fresh = _resolve_qwen_ggufs()
@@ -1154,7 +1221,7 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"):
                     rc_copy_async({"srcFs": "/tmp/models/llm", "srcRemote": os.path.basename(mmproj_gguf), "dstFs": f"gdrive:{GDRIVE_BASE}/models/llm", "dstRemote": os.path.basename(mmproj_gguf)}, max_wait=300, label="Backup mmproj")
                 if draft_gguf:
                     rc_copy_async({"srcFs": "/tmp/models/llm", "srcRemote": os.path.basename(draft_gguf), "dstFs": f"gdrive:{GDRIVE_BASE}/models/llm", "dstRemote": os.path.basename(draft_gguf)}, max_wait=300, label="Backup DFlash2")
-                log_event("Cached Qwen 27B GGUF + drafter to Google Drive for fast future boots!", category="RCLONE", level="SUCCESS")
+                log_event("Cached Qwen 27B GGUF + drafter to Google Drive backup in background!", category="RCLONE", level="SUCCESS")
             except Exception as be:
                 log_event(f"Drive LLM backup skipped: {be}", category="RCLONE", level="WARN")
         threading.Thread(target=_backup_llm_to_drive, daemon=True).start()
@@ -1169,18 +1236,18 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"):
         "--tensor-split", "55,45" if PROFILE_ID == "LLM_QWEN_VLM" else "50,50",
         "--fit", "off",
         "--flash-attn", "on",
-        "--ctx-size", "16384" if PROFILE_ID == "LLM_QWEN_VLM" else "32768",
-        "-ctk", "q8_0", "-ctv", "q8_0",
-        "-ctkd", "q8_0", "-ctvd", "q8_0",
+        "--ctx-size", "8192" if PROFILE_ID == "LLM_QWEN_VLM" else "16384",
+        "-ctk", "f16", "-ctv", "f16",
+        "-ctkd", "f16", "-ctvd", "f16",
         "--batch-size", "512",
-        "--ubatch-size", "128" if PROFILE_ID == "LLM_QWEN_VLM" else "64",
+        "--ubatch-size", "256",
         "--parallel", "1",
         "--kv-unified",
         "--jinja",
     ]
     if draft_gguf and os.path.exists(draft_gguf):
-        ll_cmd.extend(["-md", draft_gguf, "--spec-type", "draft-dflash", "--spec-draft-n-max", "5"])
-        log_event(f"Speculative decoding ACTIVE on CUDA1: {os.path.basename(draft_gguf)} (5-token draft)", category="SYSTEM", level="SUCCESS")
+        ll_cmd.extend(["-md", draft_gguf, "--spec-type", "draft-dflash", "--spec-draft-n-max", "3"])
+        log_event(f"Speculative decoding ACTIVE on CUDA1: {os.path.basename(draft_gguf)} (3-token draft)", category="SYSTEM", level="SUCCESS")
     if mmproj_gguf and PROFILE_ID == "LLM_QWEN_VLM":
         ll_cmd.extend(["--mmproj", mmproj_gguf])
         log_event(f"Multimodal vision ACTIVE on CUDA1: {os.path.basename(mmproj_gguf)}", category="SYSTEM", level="SUCCESS")
@@ -1232,21 +1299,40 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"):
             try:
                 conn.request(method, self.path, body=req_body, headers=fwd_hdrs)
                 resp = conn.getresponse()
-                data = resp.read()
                 self.send_response(resp.status)
+                ctype = resp.getheader("Content-Type", "")
+                is_sse = "text/event-stream" in ctype.lower()
+                content_len = resp.getheader("Content-Length")
+
                 for hk, hv in resp.getheaders():
-                    if hk.lower() not in {"transfer-encoding", "connection"}:
+                    if hk.lower() not in {"transfer-encoding", "connection", "content-length"}:
                         self.send_header(hk, hv)
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
+
+                if content_len is not None and not is_sse:
+                    self.send_header("Content-Length", content_len)
+                    self.end_headers()
+                    shutil.copyfileobj(resp, self.wfile)
+                else:
+                    self.send_header("Transfer-Encoding", "chunked")
+                    self.end_headers()
+                    while True:
+                        chunk = resp.read(1024)
+                        if not chunk:
+                            break
+                        self.wfile.write(f"{len(chunk):X}\r\n".encode("latin1") + chunk + b"\r\n")
+                        self.wfile.flush()
+                    self.wfile.write(b"0\r\n\r\n")
+                    self.wfile.flush()
             except Exception as pe:
                 err = json.dumps({"error": str(pe)}).encode("utf-8")
-                self.send_response(502)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(err)))
-                self.end_headers()
-                self.wfile.write(err)
+                try:
+                    self.send_response(502)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(err)))
+                    self.end_headers()
+                    self.wfile.write(err)
+                except Exception:
+                    pass
             finally:
                 conn.close()
         def do_GET(self):

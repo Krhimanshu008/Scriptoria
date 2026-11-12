@@ -51,6 +51,8 @@ export function StudioWorkspace() {
   const [exportingJson, setExportingJson] = useState(false);
   const [startingStream, setStartingStream] = useState(false);
   const [logsOpen, setLogsOpen] = useState(false);
+  const [multiGpuMode, setMultiGpuMode] = useState(false);
+  const [selectedTargets, setSelectedTargets] = useState<string[]>([]);
 
   const { data: vmData } = useQuery<{ vms: PublicVmInstance[] }>({
     queryKey: ["vm-status"],
@@ -272,24 +274,43 @@ export function StudioWorkspace() {
       queuePending: 0,
     });
 
-    try {
-      const res = await fetch("/api/workflow/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        toast.error(data.error || "Failed to queue workflow");
-        updateStudio({ submitting: false });
-        return;
-      }
+    const activeTargets =
+      multiGpuMode && selectedTargets.length > 0 ? selectedTargets : [target];
 
-      updateStudio({
-        pollingJobId: data.jobId,
-        pollingTarget: target,
+    try {
+      const baseSeed = studio.seed ? Number(studio.seed) : Math.floor(Math.random() * 10000000);
+      const dispatches = activeTargets.map((tgt, idx) => {
+        const payloadForTarget = {
+          ...payload,
+          target: tgt,
+          seed: baseSeed + idx,
+        };
+        return fetch("/api/workflow/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payloadForTarget),
+        }).then(async (r) => {
+          const body = await r.json();
+          return { ok: r.ok, body, target: tgt };
+        });
       });
-      toast.info(`Dispatched to ${target.toUpperCase()}. Live progress tracked across all tabs.`);
+
+      const results = await Promise.all(dispatches);
+      const successful = results.filter((r) => r.ok && r.body.jobId);
+      if (successful.length > 0) {
+        updateStudio({
+          pollingJobId: successful[0].body.jobId,
+          pollingTarget: successful[0].target,
+        });
+        toast.success(
+          successful.length > 1
+            ? `Concurrently queued on ${successful.length} GPUs (${successful.map((s) => s.target.toUpperCase()).join(", ")})!`
+            : `Dispatched to ${target.toUpperCase()}. Live progress tracked across all tabs.`
+        );
+      } else {
+        toast.error("Failed to queue workflow on target GPU(s)");
+        updateStudio({ submitting: false });
+      }
     } catch {
       toast.error("Network error dispatching prompt");
       updateStudio({ submitting: false });
@@ -318,28 +339,77 @@ export function StudioWorkspace() {
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => {
+                const nextMode = !multiGpuMode;
+                setMultiGpuMode(nextMode);
+                if (nextMode) {
+                  const onlines = vms
+                    .filter(
+                      (v) =>
+                        v.status === "ONLINE" &&
+                        !["LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"].includes(v.workerProfile)
+                    )
+                    .map((v) => v.target);
+                  setSelectedTargets(onlines.length > 0 ? onlines : [target]);
+                }
+              }}
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 font-mono text-[11px] transition whitespace-nowrap ${
+                multiGpuMode
+                  ? "border-amber-400/50 bg-amber-500/20 text-amber-200 shadow-sm shadow-amber-500/20 font-semibold"
+                  : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-white"
+              }`}
+            >
+              <Shuffle className="h-3 w-3 text-amber-400" />
+              Fan-Out {multiGpuMode && selectedTargets.length > 0 ? `(${selectedTargets.length})` : ""}
+            </button>
+
             {vms.map((v) => {
-              const active = v.target === target;
+              const isSelected = multiGpuMode
+                ? selectedTargets.includes(v.target)
+                : v.target === target;
               const online = v.status === "ONLINE";
+              const isLlm = ["LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"].includes(v.workerProfile);
               return (
                 <button
                   key={v.target}
                   type="button"
-                  onClick={() => setSelectedTarget(v.target, true)}
+                  onClick={() => {
+                    if (multiGpuMode) {
+                      if (selectedTargets.includes(v.target)) {
+                        setSelectedTargets((prev) => prev.filter((t) => t !== v.target));
+                      } else {
+                        setSelectedTargets((prev) => [...prev, v.target]);
+                      }
+                    } else {
+                      setSelectedTarget(v.target, true);
+                    }
+                  }}
                   className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 font-mono text-[11px] transition whitespace-nowrap ${
-                    active
-                      ? "border-indigo-400/50 bg-indigo-500/25 text-white shadow-sm shadow-indigo-500/20"
+                    isSelected
+                      ? multiGpuMode
+                        ? "border-amber-400/50 bg-amber-500/25 text-amber-100 shadow-sm shadow-amber-500/20 font-semibold"
+                        : "border-indigo-400/50 bg-indigo-500/25 text-white shadow-sm shadow-indigo-500/20"
                       : online
                       ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
                       : "border-white/10 bg-white/[0.04] text-zinc-400 hover:text-white"
-                  }`}
+                  } ${isLlm ? "opacity-60" : ""}`}
+                  title={isLlm ? "LLM Profile Slot" : undefined}
                 >
                   <span
                     className={`h-1.5 w-1.5 rounded-full ${
-                      online ? "bg-emerald-400" : v.status === "STARTING" ? "bg-amber-400" : "bg-zinc-600"
+                      online
+                        ? isLlm
+                          ? "bg-cyan-400"
+                          : "bg-emerald-400"
+                        : v.status === "STARTING"
+                        ? "bg-amber-400"
+                        : "bg-zinc-600"
                     }`}
                   />
                   {v.target.toUpperCase()}
+                  {multiGpuMode && isSelected ? " ✓" : ""}
                 </button>
               );
             })}
@@ -768,13 +838,23 @@ export function StudioWorkspace() {
 
           <Button
             type="submit"
-            disabled={studio.submitting || !isTargetOnline}
-            className="h-9 w-full bg-indigo-600 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40"
+            disabled={
+              studio.submitting ||
+              (!multiGpuMode && !isTargetOnline) ||
+              (multiGpuMode && selectedTargets.length === 0)
+            }
+            className={`h-9 w-full text-xs font-medium text-white disabled:opacity-40 ${
+              multiGpuMode && selectedTargets.length > 1
+                ? "bg-amber-600 hover:bg-amber-500 shadow-md shadow-amber-500/20 font-semibold"
+                : "bg-indigo-600 hover:bg-indigo-500"
+            }`}
           >
             {studio.submitting ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                {studio.pollingJobId
+                {multiGpuMode && selectedTargets.length > 1
+                  ? `Rendering across ${selectedTargets.length} GPUs in parallel...`
+                  : studio.pollingJobId
                   ? `Rendering on ${(studio.pollingTarget || target).toUpperCase()} (${
                       studio.queueElapsedMs ? `${(studio.queueElapsedMs / 1000).toFixed(0)}s` : "..."
                     })...`
@@ -782,8 +862,14 @@ export function StudioWorkspace() {
               </>
             ) : (
               <>
-                <Sparkles className="mr-2 h-4 w-4" />
-                {isTargetOnline
+                {multiGpuMode && selectedTargets.length > 1 ? (
+                  <Shuffle className="mr-2 h-4 w-4" />
+                ) : (
+                  <Sparkles className="mr-2 h-4 w-4" />
+                )}
+                {multiGpuMode && selectedTargets.length > 1
+                  ? `Dispatch Concurrently to ${selectedTargets.length} GPUs (${selectedTargets.map((t) => t.toUpperCase()).join(", ")})`
+                  : isTargetOnline
                   ? `Generate on ${target.toUpperCase()} & Save to Drive`
                   : `Boot a GPU Above to Generate`}
               </>

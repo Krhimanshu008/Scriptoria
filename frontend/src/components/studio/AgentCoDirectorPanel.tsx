@@ -39,9 +39,10 @@ interface AgentMessageItem {
 }
 
 const STARTER_PROMPTS = [
-  "Inspect my online GPUs & cached checkpoints right now.",
-  "Design a 16GB T4 anime portrait workflow using WAI-Illustrious + FaceDetailer.",
-  "Plan a multi-GPU batch (visual + TTS audio) for a 2-scene fantasy battle.",
+  "Inspect my online GPUs, VRAM & cached checkpoints right now.",
+  "Dispatch prompt across all online GPUs simultaneously in parallel.",
+  "Search catalog and cache WAI-Illustrious or Flux GGUF on GPU0.",
+  "Design a 16GB T4 workflow using SDXL + FaceDetailer upscale.",
 ];
 
 export function AgentCoDirectorPanel() {

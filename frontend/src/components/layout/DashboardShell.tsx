@@ -14,6 +14,7 @@ import {
   Loader2,
   Sparkles,
   Cpu,
+  Bot,
   X,
   PanelLeftClose,
   PanelLeftOpen,
@@ -34,8 +35,9 @@ const NAV_GROUPS = [
     ],
   },
   {
-    section: "Create",
+    section: "Intelligence & Studio",
     items: [
+      { href: "/llm-studio", label: "LLM Studio", icon: Bot },
       { href: "/studio", label: "Studio", icon: Sparkles },
       { href: "/history", label: "Outputs", icon: Images },
     ],
@@ -47,6 +49,7 @@ const NAV_GROUPS = [
 ];
 
 function pageTitleForPath(pathname: string): string {
+  if (pathname.startsWith("/llm-studio")) return "LLM Studio";
   if (pathname.startsWith("/vms")) return "VM Cluster";
   if (pathname.startsWith("/studio")) return "Studio Workstation";
   if (pathname.startsWith("/models")) return "Models & Drive";

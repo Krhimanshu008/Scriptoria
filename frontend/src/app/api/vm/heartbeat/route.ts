@@ -33,8 +33,18 @@ export async function POST(req: NextRequest) {
     const targets: string[] = Array.isArray(body.targets) ? body.targets : payload.targets;
     const requestedStatus = typeof body.status === "string" ? body.status : "ONLINE";
     const requestedStep = typeof body.stepProgress === "number" ? body.stepProgress : 5;
-    const telemetry = (body.telemetry || {}) as Record<string, HeartbeatTelemetryEntry>;
+    const rawTelem = (body.telemetry || {}) as Record<string, unknown>;
+    const telemetry = rawTelem as Record<string, HeartbeatTelemetryEntry>;
     const logs = (Array.isArray(body.logs) ? body.logs : []) as HeartbeatLogEntry[];
+
+    const bootMeta =
+      rawTelem.stepDurations || rawTelem.currentStepElapsed || rawTelem.totalBootElapsed
+        ? {
+            stepDurations: rawTelem.stepDurations,
+            currentStepElapsed: rawTelem.currentStepElapsed,
+            totalBootElapsed: rawTelem.totalBootElapsed,
+          }
+        : null;
 
     const vms = await prisma.vmInstance.findMany({
       where: {
@@ -82,6 +92,7 @@ export async function POST(req: NextRequest) {
           vramTotalGb: tStats?.vramTotalGb ?? vm.vramTotalGb,
           vramUsedGb: nextStatus === "OFFLINE" ? 0 : tStats?.vramUsedGb ?? vm.vramUsedGb,
           lastError: null,
+          bootMetadataJson: bootMeta ? JSON.stringify(bootMeta) : vm.bootMetadataJson,
         },
       });
     }
