@@ -23,6 +23,10 @@ model User {
   modelAssets       ModelAsset[]
   workflowTemplates WorkflowTemplate[]
   workspaceSettings WorkspaceSettings?
+  agentSessions     AgentSession[]
+  apiTokens         ApiToken[]
+  batchJobs         BatchJob[]
+  projects          Project[]
 }
 
 model Credential {
@@ -196,4 +200,140 @@ model WorkspaceSettings {
   systemInstructions     String   @default("")
   createdAt              DateTime @default(now())
   updatedAt              DateTime @updatedAt
+}
+
+model AgentSession {
+  id        String         @id @default(cuid())
+  userId    String
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String         @default("Studio Session")
+  mode      String         @default("COPILOT") // "COPILOT" | "AUTONOMOUS"
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  messages  AgentMessage[]
+
+  @@index([userId, updatedAt])
+}
+
+model AgentMessage {
+  id                 String       @id @default(cuid())
+  sessionId          String
+  session            AgentSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role               String       // "user" | "assistant" | "tool"
+  content            String
+  toolCallsJson      String?
+  proposedActionJson String?
+  createdAt          DateTime     @default(now())
+
+  @@index([sessionId, createdAt])
+}
+
+model ApiToken {
+  id            String    @id @default(cuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name          String
+  tokenPrefix   String
+  tokenHash     String    @unique
+  scopes        String    @default("ingest,batch,read")
+  webhookSecret String?
+  lastUsedAt    DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([userId])
+}
+
+model BatchJob {
+  id             String      @id @default(cuid())
+  userId         String
+  user           User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title          String
+  sourceApp      String      @default("studio")
+  idempotencyKey String?
+  webhookUrl     String?
+  rawPayloadJson String?
+  strategyJson   String?
+  status         String      @default("QUEUED") // QUEUED, RUNNING, COMPLETED, PARTIAL, FAILED
+  totalTasks     Int         @default(0)
+  completedTasks Int         @default(0)
+  failedTasks    Int         @default(0)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  tasks          BatchTask[]
+
+  @@unique([userId, idempotencyKey])
+  @@index([userId, status, createdAt])
+}
+
+model BatchTask {
+  id                   String   @id @default(cuid())
+  batchId              String
+  batch                BatchJob @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  sequenceIndex        Int      @default(0)
+  sceneKey             String
+  trackType            String   @default("VISUAL") // VISUAL, AUDIO_TTS, AUDIO_SFX, AUDIO_BGM, VIDEO_I2V, LIPSYNC
+  dependsOnTaskIdsJson String?
+  workerProfile        String   @default("IMAGE_CORE")
+  baseCheckpoint       String   @default("")
+  requiredModelsJson   String?
+  workflowSlug         String?
+  inputParamsJson      String?
+  compiledGraphJson    String?
+  assignedTarget       String?
+  jobId                String?
+  status               String   @default("PENDING") // PENDING, PROCESSING, COMPLETED, FAILED, BLOCKED
+  outputFilesJson      String?
+  errorMessage         String?
+  attempts             Int      @default(0)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([batchId, sequenceIndex])
+  @@index([status])
+}
+
+model Project {
+  id          String             @id @default(cuid())
+  userId      String
+  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title       String
+  description String             @default("")
+  stylePreset String             @default("Illustrious Anime")
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  characters  CharacterProfile[]
+  scenes      Scene[]
+
+  @@index([userId, updatedAt])
+}
+
+model CharacterProfile {
+  id           String   @id @default(cuid())
+  projectId    String
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name         String
+  triggerWords String   @default("")
+  loraSlug     String?
+  voicePreset  String   @default("af_heart")
+  refImageUrl  String?
+  refAudioUrl  String?
+  notes        String   @default("")
+  createdAt    DateTime @default(now())
+
+  @@index([projectId])
+}
+
+model Scene {
+  id         String   @id @default(cuid())
+  projectId  String
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  orderIndex Int      @default(0)
+  title      String
+  narration  String   @default("")
+  tracksJson String   @default("{}")
+  status     String   @default("DRAFT")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([projectId, orderIndex])
 }

@@ -179,3 +179,129 @@ CREATE TABLE IF NOT EXISTS "WorkspaceSettings" (
 
 CREATE UNIQUE INDEX IF NOT EXISTS "WorkspaceSettings_userId_key" ON "WorkspaceSettings"("userId");
 
+CREATE TABLE IF NOT EXISTS "AgentSession" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "userId" TEXT NOT NULL,
+    "title" TEXT NOT NULL DEFAULT 'Studio Session',
+    "mode" TEXT NOT NULL DEFAULT 'COPILOT',
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "AgentSession_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS "AgentMessage" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "sessionId" TEXT NOT NULL,
+    "role" TEXT NOT NULL,
+    "content" TEXT NOT NULL,
+    "toolCallsJson" TEXT,
+    "proposedActionJson" TEXT,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "AgentMessage_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "AgentSession" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS "ApiToken" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "userId" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "tokenPrefix" TEXT NOT NULL,
+    "tokenHash" TEXT NOT NULL,
+    "scopes" TEXT NOT NULL DEFAULT 'ingest,batch,read',
+    "webhookSecret" TEXT,
+    "lastUsedAt" DATETIME,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "ApiToken_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS "BatchJob" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "userId" TEXT NOT NULL,
+    "title" TEXT NOT NULL,
+    "sourceApp" TEXT NOT NULL DEFAULT 'studio',
+    "idempotencyKey" TEXT,
+    "webhookUrl" TEXT,
+    "rawPayloadJson" TEXT,
+    "strategyJson" TEXT,
+    "status" TEXT NOT NULL DEFAULT 'QUEUED',
+    "totalTasks" INTEGER NOT NULL DEFAULT 0,
+    "completedTasks" INTEGER NOT NULL DEFAULT 0,
+    "failedTasks" INTEGER NOT NULL DEFAULT 0,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "BatchJob_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS "BatchTask" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "batchId" TEXT NOT NULL,
+    "sequenceIndex" INTEGER NOT NULL DEFAULT 0,
+    "sceneKey" TEXT NOT NULL,
+    "trackType" TEXT NOT NULL DEFAULT 'VISUAL',
+    "dependsOnTaskIdsJson" TEXT,
+    "workerProfile" TEXT NOT NULL DEFAULT 'IMAGE_CORE',
+    "baseCheckpoint" TEXT NOT NULL DEFAULT '',
+    "requiredModelsJson" TEXT,
+    "workflowSlug" TEXT,
+    "inputParamsJson" TEXT,
+    "compiledGraphJson" TEXT,
+    "assignedTarget" TEXT,
+    "jobId" TEXT,
+    "status" TEXT NOT NULL DEFAULT 'PENDING',
+    "outputFilesJson" TEXT,
+    "errorMessage" TEXT,
+    "attempts" INTEGER NOT NULL DEFAULT 0,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "BatchTask_batchId_fkey" FOREIGN KEY ("batchId") REFERENCES "BatchJob" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS "Project" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "userId" TEXT NOT NULL,
+    "title" TEXT NOT NULL,
+    "description" TEXT NOT NULL DEFAULT '',
+    "stylePreset" TEXT NOT NULL DEFAULT 'Illustrious Anime',
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "Project_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS "CharacterProfile" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "projectId" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "triggerWords" TEXT NOT NULL DEFAULT '',
+    "loraSlug" TEXT,
+    "voicePreset" TEXT NOT NULL DEFAULT 'af_heart',
+    "refImageUrl" TEXT,
+    "refAudioUrl" TEXT,
+    "notes" TEXT NOT NULL DEFAULT '',
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "CharacterProfile_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS "Scene" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "projectId" TEXT NOT NULL,
+    "orderIndex" INTEGER NOT NULL DEFAULT 0,
+    "title" TEXT NOT NULL,
+    "narration" TEXT NOT NULL DEFAULT '',
+    "tracksJson" TEXT NOT NULL DEFAULT '{}',
+    "status" TEXT NOT NULL DEFAULT 'DRAFT',
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "Scene_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS "AgentSession_userId_updatedAt_idx" ON "AgentSession"("userId", "updatedAt");
+CREATE INDEX IF NOT EXISTS "AgentMessage_sessionId_createdAt_idx" ON "AgentMessage"("sessionId", "createdAt");
+CREATE UNIQUE INDEX IF NOT EXISTS "ApiToken_tokenHash_key" ON "ApiToken"("tokenHash");
+CREATE INDEX IF NOT EXISTS "ApiToken_userId_idx" ON "ApiToken"("userId");
+CREATE UNIQUE INDEX IF NOT EXISTS "BatchJob_userId_idempotencyKey_key" ON "BatchJob"("userId", "idempotencyKey");
+CREATE INDEX IF NOT EXISTS "BatchJob_userId_status_createdAt_idx" ON "BatchJob"("userId", "status", "createdAt");
+CREATE INDEX IF NOT EXISTS "BatchTask_batchId_sequenceIndex_idx" ON "BatchTask"("batchId", "sequenceIndex");
+CREATE INDEX IF NOT EXISTS "BatchTask_status_idx" ON "BatchTask"("status");
+CREATE INDEX IF NOT EXISTS "Project_userId_updatedAt_idx" ON "Project"("userId", "updatedAt");
+CREATE INDEX IF NOT EXISTS "CharacterProfile_projectId_idx" ON "CharacterProfile"("projectId");
+CREATE INDEX IF NOT EXISTS "Scene_projectId_orderIndex_idx" ON "Scene"("projectId", "orderIndex");
+

@@ -174,6 +174,92 @@ export async function listModelsInGDriveApi(
 }
 
 /**
+ * Recursively scans `<baseFolder>/models` across all category subfolders (up to depth 3)
+ * so the Studio Workflow Creator & Drive Preview/Review scanner can list every file on 5 TB Drive.
+ */
+export async function scanAllModelsInGDriveApi(userId: string): Promise<{
+  baseFolder: string;
+  files: Array<GDriveModelFile & { subdir: string; relativePath: string }>;
+}> {
+  const resolved = await getUserGDriveCredential(userId);
+  if (!resolved) {
+    throw new Error("No Google Drive credential found in Vault.");
+  }
+
+  const accessToken = await mintGDriveAccessToken(resolved.parsed);
+  const modelsRootSegments = [...resolved.baseFolder.split("/").filter(Boolean), "models"];
+  const modelsFolderId = await findFolderIdByPath(accessToken, modelsRootSegments);
+
+  if (!modelsFolderId) {
+    return { baseFolder: resolved.baseFolder, files: [] };
+  }
+
+  const results: Array<GDriveModelFile & { subdir: string; relativePath: string }> = [];
+
+  async function listChildren(folderId: string) {
+    const q = `'${folderId}' in parents and trashed=false`;
+    const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
+      q
+    )}&fields=files(id,name,mimeType,size,modifiedTime)&orderBy=name&pageSize=200`;
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      throw new Error(`Google Drive scan failed (${res.status})`);
+    }
+    const data = (await res.json()) as {
+      files?: Array<{
+        id: string;
+        name: string;
+        mimeType: string;
+        size?: string;
+        modifiedTime?: string;
+      }>;
+    };
+    return data.files || [];
+  }
+
+  const topEntries = await listChildren(modelsFolderId);
+  for (const catEntry of topEntries) {
+    if (catEntry.mimeType !== "application/vnd.google-apps.folder") continue;
+    const category = catEntry.name;
+    const level1 = await listChildren(catEntry.id);
+
+    for (const entry of level1) {
+      if (entry.mimeType === "application/vnd.google-apps.folder") {
+        const subdir = entry.name;
+        const level2 = await listChildren(entry.id);
+        for (const nested of level2) {
+          if (nested.mimeType === "application/vnd.google-apps.folder") continue;
+          results.push({
+            id: nested.id,
+            name: nested.name,
+            category,
+            subdir,
+            relativePath: `${category}/${subdir}/${nested.name}`,
+            sizeBytes: Number(nested.size || 0),
+            modifiedTime: nested.modifiedTime,
+          });
+        }
+      } else {
+        results.push({
+          id: entry.id,
+          name: entry.name,
+          category,
+          subdir: "",
+          relativePath: `${category}/${entry.name}`,
+          sizeBytes: Number(entry.size || 0),
+          modifiedTime: entry.modifiedTime,
+        });
+      }
+    }
+  }
+
+  return { baseFolder: resolved.baseFolder, files: results };
+}
+
+/**
  * Fetches binary media stream from Google Drive API v3 for a permanent fileId.
  */
 export async function fetchGDriveFileStream(userId: string, fileId: string): Promise<Response> {

@@ -20,10 +20,12 @@ import {
   HardDrive,
   Eye,
   EyeOff,
+  FileCode2,
 } from "lucide-react";
 import type { ReadinessItem } from "@/app/api/settings/readiness/route";
 import type { PublicWorkspaceSettings } from "@/lib/settings/workspace-settings";
 import { WORKER_PROFILE_LIST } from "@/lib/catalog/worker-profiles";
+import { ExternalApiTokensCard } from "@/components/settings/ExternalApiTokensCard";
 import {
   Dialog,
   DialogContent,
@@ -36,7 +38,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 
-type SettingsTab = "readiness" | "keys" | "preferences";
+type SettingsTab = "readiness" | "keys" | "preferences" | "integrations";
 
 interface RedactedCredential {
   id: string;
@@ -95,7 +97,10 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
 
   const tabParam = searchParams.get("tab");
   const resolvedInitial: SettingsTab =
-    tabParam === "keys" || tabParam === "preferences" || tabParam === "readiness"
+    tabParam === "keys" ||
+    tabParam === "preferences" ||
+    tabParam === "readiness" ||
+    tabParam === "integrations"
       ? tabParam
       : defaultTab;
 
@@ -526,6 +531,19 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
           >
             <Sliders className="h-3.5 w-3.5" />
             <span>Workspace Preferences</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab("integrations")}
+            className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+              activeTab === "integrations"
+                ? "bg-indigo-600 text-white shadow"
+                : "text-zinc-400 hover:text-white"
+            }`}
+          >
+            <FileCode2 className="h-3.5 w-3.5" />
+            <span>API &amp; Book Visualiser</span>
           </button>
         </div>
       </div>
@@ -1421,6 +1439,9 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
           </div>
         </form>
       )}
+
+      {/* TAB D: BOOK VISUALISER & EXTERNAL API TOKENS */}
+      {activeTab === "integrations" && <ExternalApiTokensCard />}
 
       {/* In-Place Edit Key Modal */}
       <Dialog
