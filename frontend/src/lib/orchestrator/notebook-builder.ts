@@ -749,6 +749,10 @@ with open("/tmp/Caddyfile", "w", encoding="utf-8") as f:
     handle @has_secret {{
         import sc_dispatch
     }}
+    @has_bearer header Authorization "Bearer {VM_SECRET}"
+    handle @has_bearer {{
+        import sc_dispatch
+    }}
     @has_cookie header_regexp Cookie (^|;\\\\s*)sc_vm_auth={VM_SECRET}(;|$)
     handle @has_cookie {{
         import sc_dispatch
@@ -951,6 +955,273 @@ threading.Thread(target=setup_aria2, daemon=True).start()
 uv_thread = threading.Thread(target=setup_uv, daemon=True)
 uv_thread.start()
 rclone_ok = setup_rclone()
+
+# -------------------------------------------------------------
+# 3B. Dedicated LLM + VLM Branch (LLM_QWEN_VLM on Dual-T4)
+# -------------------------------------------------------------
+if PROFILE_ID == "LLM_QWEN_VLM":
+    import http.client as _hc
+    from http.server import ThreadingHTTPServer as _THS, BaseHTTPRequestHandler as _BHRH
+    from pathlib import Path
+
+    os.makedirs("/tmp/models/llm", exist_ok=True)
+    os.makedirs("/tmp/llama_bin", exist_ok=True)
+    LLM_MODEL_REPO = os.environ.get("QWEN_MODEL_REPO", "unsloth/Qwen3.8-27B-GGUF")
+
+    def _resolve_llama_bin():
+        for cand in Path("/kaggle/input").rglob("llama-server") if os.path.exists("/kaggle/input") else []:
+            if cand.is_file():
+                dst = "/tmp/llama_bin/llama-server"
+                shutil.copy2(str(cand), dst)
+                os.chmod(dst, 0o755)
+                for so in cand.parent.glob("*.so*"):
+                    shutil.copy2(str(so), f"/tmp/llama_bin/{so.name}")
+                return dst
+
+        if rclone_ok:
+            try:
+                st = rc_post("operations/stat", {"fs": f"gdrive:{GDRIVE_BASE}/fastboot", "remote": "llama_server_t4_v1.tar.gz"}, timeout=10)
+                if (st.get("item") or {}).get("Size", 0) > 100000:
+                    log_event("Restoring cached llama-server binary from Google Drive...", category="SYSTEM", level="SUCCESS")
+                    rc_copy_async({
+                        "srcFs": f"gdrive:{GDRIVE_BASE}/fastboot", "srcRemote": "llama_server_t4_v1.tar.gz",
+                        "dstFs": "/tmp", "dstRemote": "llama_bin.tar.gz",
+                    }, max_wait=120, label="llama-server restore")
+                    subprocess.run(["tar", "-xzf", "/tmp/llama_bin.tar.gz", "-C", "/tmp/llama_bin"], check=True)
+                    bpath = "/tmp/llama_bin/llama-server"
+                    if os.path.exists(bpath):
+                        os.chmod(bpath, 0o755)
+                        return bpath
+            except Exception as re_err:
+                log_event(f"Drive llama-server lookup: {re_err}", category="SYSTEM")
+
+        try:
+            tar_url = "https://github.com/ai-dock/llama.cpp-cuda/releases/latest/download/llama.cpp-cuda-amd64.tar.gz"
+            log_event("Fetching prebuilt CUDA llama-server release...", category="SYSTEM")
+            urllib.request.urlretrieve(tar_url, "/tmp/llama_cuda.tar.gz")
+            subprocess.run(["tar", "-xzf", "/tmp/llama_cuda.tar.gz", "-C", "/tmp/llama_bin"], check=True)
+            for root, _, files in os.walk("/tmp/llama_bin"):
+                if "llama-server" in files:
+                    found = os.path.join(root, "llama-server")
+                    if found != "/tmp/llama_bin/llama-server":
+                        shutil.copy2(found, "/tmp/llama_bin/llama-server")
+                        for f_so in os.listdir(root):
+                            if ".so" in f_so:
+                                shutil.copy2(os.path.join(root, f_so), os.path.join("/tmp/llama_bin", f_so))
+                    os.chmod("/tmp/llama_bin/llama-server", 0o755)
+                    return "/tmp/llama_bin/llama-server"
+        except Exception as pe:
+            log_event(f"Prebuilt llama-server failed ({pe}); compiling sm_75 once...", category="SYSTEM", level="WARN")
+
+        subprocess.run(["git", "clone", "--depth", "1", "https://github.com/ggerganov/llama.cpp.git", "/tmp/llama_src"], check=True)
+        subprocess.run(["cmake", "-B", "/tmp/llama_src/build", "-S", "/tmp/llama_src", "-DGGML_CUDA=ON", "-DCMAKE_CUDA_ARCHITECTURES=75", "-DLLAMA_CURL=OFF"], check=True)
+        subprocess.run(["cmake", "--build", "/tmp/llama_src/build", "--config", "Release", "--target", "llama-server", "-j", "4"], check=True)
+        shutil.copy2("/tmp/llama_src/build/bin/llama-server", "/tmp/llama_bin/llama-server")
+        for f_so in os.listdir("/tmp/llama_src/build/bin"):
+            if ".so" in f_so:
+                shutil.copy2(os.path.join("/tmp/llama_src/build/bin", f_so), os.path.join("/tmp/llama_bin", f_so))
+        os.chmod("/tmp/llama_bin/llama-server", 0o755)
+        return "/tmp/llama_bin/llama-server"
+
+    def _resolve_qwen_ggufs():
+        from pathlib import Path as _P
+        if os.path.exists("/kaggle/input"):
+            ggufs = list(_P("/kaggle/input").rglob("*.gguf"))
+            m = next((str(p) for p in ggufs if "mmproj" not in p.name.lower() and "q4" in p.name.lower()), None)
+            mm = next((str(p) for p in ggufs if "mmproj" in p.name.lower()), None)
+            if m:
+                log_event(f"Mounted Kaggle Dataset Qwen weights: {os.path.basename(m)}", category="SYSTEM", level="SUCCESS")
+                return m, mm, False
+
+        if rclone_ok:
+            try:
+                ls = rc_post("operations/list", {"fs": f"gdrive:{GDRIVE_BASE}/models/llm", "remote": ""}, timeout=15)
+                items = ls.get("list", []) or []
+                gg_item = next((x for x in items if x.get("Name", "").lower().endswith(".gguf") and "mmproj" not in x.get("Name", "").lower()), None)
+                mm_item = next((x for x in items if x.get("Name", "").lower().endswith(".gguf") and "mmproj" in x.get("Name", "").lower()), None)
+                if gg_item:
+                    log_event(f"Streaming Qwen GGUF from Google Drive: {gg_item['Name']}...", category="RCLONE", level="SUCCESS")
+                    rc_copy_async({"srcFs": f"gdrive:{GDRIVE_BASE}/models/llm", "srcRemote": gg_item["Name"], "dstFs": "/tmp/models/llm", "dstRemote": gg_item["Name"], "_config": {"MultiThreadStreams": 8, "DisableHTTP2": True}}, max_wait=600, label="Qwen GGUF stream")
+                    mm_local = None
+                    if mm_item:
+                        rc_copy_async({"srcFs": f"gdrive:{GDRIVE_BASE}/models/llm", "srcRemote": mm_item["Name"], "dstFs": "/tmp/models/llm", "dstRemote": mm_item["Name"]}, max_wait=180, label="mmproj stream")
+                        mm_local = f"/tmp/models/llm/{mm_item['Name']}"
+                    return f"/tmp/models/llm/{gg_item['Name']}", mm_local, False
+            except Exception as de:
+                log_event(f"Drive LLM weights check: {de}", category="RCLONE")
+
+        uv_thread.join(timeout=30)
+        if os.path.exists("/tmp/uv"):
+            subprocess.run(["/tmp/uv", "pip", "install", "--system", "--quiet", "huggingface_hub"], check=False)
+        else:
+            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "huggingface_hub"], check=False)
+        from huggingface_hub import hf_hub_download, list_repo_files
+        files = list_repo_files(LLM_MODEL_REPO)
+        ggufs = [f for f in files if f.lower().endswith(".gguf") and "mmproj" not in f.lower()]
+        mms = [f for f in files if f.lower().endswith(".gguf") and "mmproj" in f.lower()]
+        chosen_gguf = None
+        for pat in ["Q4_K_M", "UD-Q4_K_XL", "Q4_K_S", "Q4_0"]:
+            hit = [f for f in ggufs if pat.lower() in f.lower() and "-00002-of-" not in f.lower()]
+            if hit:
+                chosen_gguf = hit[0]
+                break
+        if not chosen_gguf:
+            raise RuntimeError(f"No 4-bit GGUF found in {LLM_MODEL_REPO}")
+        chosen_mm = next((f for f in mms if "f16" in f.lower() or "bf16" in f.lower()), mms[0] if mms else None)
+        log_event(f"Downloading {LLM_MODEL_REPO}/{chosen_gguf} from Hugging Face...", category="SYSTEM")
+        m_local = hf_hub_download(repo_id=LLM_MODEL_REPO, filename=chosen_gguf, local_dir="/tmp/models/llm")
+        mm_local = hf_hub_download(repo_id=LLM_MODEL_REPO, filename=chosen_mm, local_dir="/tmp/models/llm") if chosen_mm else None
+        return m_local, mm_local, True
+
+    llama_bin = _resolve_llama_bin()
+    model_gguf, mmproj_gguf, downloaded_fresh = _resolve_qwen_ggufs()
+    post_heartbeat(3, "STARTING")
+
+    if rclone_ok and downloaded_fresh:
+        def _backup_llm_to_drive():
+            try:
+                rc_post("operations/mkdir", {"fs": "gdrive:", "remote": f"{GDRIVE_BASE}/models/llm"})
+                rc_copy_async({"srcFs": "/tmp/models/llm", "srcRemote": os.path.basename(model_gguf), "dstFs": f"gdrive:{GDRIVE_BASE}/models/llm", "dstRemote": os.path.basename(model_gguf)}, max_wait=900, label="Backup Qwen GGUF")
+                if mmproj_gguf:
+                    rc_copy_async({"srcFs": "/tmp/models/llm", "srcRemote": os.path.basename(mmproj_gguf), "dstFs": f"gdrive:{GDRIVE_BASE}/models/llm", "dstRemote": os.path.basename(mmproj_gguf)}, max_wait=300, label="Backup mmproj")
+                log_event("Cached Qwen 27B GGUF + mmproj to Google Drive for fast future boots!", category="RCLONE", level="SUCCESS")
+            except Exception as be:
+                log_event(f"Drive LLM backup skipped: {be}", category="RCLONE", level="WARN")
+        threading.Thread(target=_backup_llm_to_drive, daemon=True).start()
+
+    ll_env = os.environ.copy()
+    ll_env["LD_LIBRARY_PATH"] = f"/tmp/llama_bin:{ll_env.get('LD_LIBRARY_PATH', '')}"
+    ll_cmd = [
+        llama_bin, "-m", model_gguf, "--host", "127.0.0.1", "--port", "8190",
+        "-ngl", "999", "--split-mode", "layer", "--ctx-size", "12288",
+        "-ctk", "q8_0", "-ctv", "q8_0", "--parallel", "2", "--flash-attn", "on", "--jinja",
+    ]
+    if mmproj_gguf:
+        ll_cmd.extend(["--mmproj", mmproj_gguf])
+    ll_log = open("/tmp/llama_server.log", "w")
+    ll_proc = subprocess.Popen(ll_cmd, env=ll_env, stdout=ll_log, stderr=ll_log)
+    log_event(f"Launched llama-server (2x T4 split) -> 127.0.0.1:8190 ({os.path.basename(model_gguf)})", category="SYSTEM")
+
+    def _query_nvidia_smi():
+        try:
+            out = subprocess.check_output(["nvidia-smi", "--query-gpu=name,memory.total,memory.used", "--format=csv,noheader,nounits"], text=True, timeout=3)
+            devs = []
+            for ln in out.strip().splitlines():
+                parts = [p.strip() for p in ln.split(",")]
+                if len(parts) >= 3:
+                    tot_b = int(float(parts[1]) * 1024 * 1024)
+                    used_b = int(float(parts[2]) * 1024 * 1024)
+                    devs.append({"name": f"{parts[0]} (Qwen 27B)", "vram_total": tot_b, "vram_free": max(0, tot_b - used_b)})
+            return devs
+        except Exception:
+            return []
+
+    class _LlmBridgeHandler(_BHRH):
+        def _proxy(self, method):
+            global LAST_ACTIVE
+            LAST_ACTIVE = time.time()
+            if self.path == "/system_stats":
+                body = json.dumps({"devices": _query_nvidia_smi()}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if self.path.startswith("/object_info/CheckpointLoaderSimple"):
+                body = json.dumps({"CheckpointLoaderSimple": {"input": {"required": {"ckpt_name": [[os.path.basename(model_gguf)]]}}}}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            req_body = self.rfile.read(length) if length > 0 else None
+            fwd_hdrs = {k: v for k, v in self.headers.items() if k.lower() not in {"host", "content-length"}}
+            if req_body is not None:
+                fwd_hdrs["Content-Length"] = str(len(req_body))
+            conn = _hc.HTTPConnection("127.0.0.1", 8190, timeout=300)
+            try:
+                conn.request(method, self.path, body=req_body, headers=fwd_hdrs)
+                resp = conn.getresponse()
+                data = resp.read()
+                self.send_response(resp.status)
+                for hk, hv in resp.getheaders():
+                    if hk.lower() not in {"transfer-encoding", "connection"}:
+                        self.send_header(hk, hv)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+            except Exception as pe:
+                err = json.dumps({"error": str(pe)}).encode("utf-8")
+                self.send_response(502)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(err)))
+                self.end_headers()
+                self.wfile.write(err)
+            finally:
+                conn.close()
+        def do_GET(self):
+            self._proxy("GET")
+        def do_POST(self):
+            self._proxy("POST")
+        def log_message(self, format, *args):
+            return
+
+    _bridge_srv = _THS(("127.0.0.1", 8188), _LlmBridgeHandler)
+    threading.Thread(target=_bridge_srv.serve_forever, daemon=True).start()
+
+    _llm_last_step = -1
+    _llm_t0 = time.time()
+    while True:
+        llm_ok = False
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:8190/health", timeout=2) as hr:
+                llm_ok = hr.status == 200
+        except Exception:
+            llm_ok = False
+
+        devs = _query_nvidia_smi()
+        telem = {}
+        for idx_t, t_name in enumerate(TARGETS):
+            d = devs[min(idx_t, len(devs) - 1)] if devs else {}
+            vt = round(d.get("vram_total", 16 * (1024**3)) / (1024**3), 2)
+            vf = round(d.get("vram_free", 0) / (1024**3), 2)
+            telem[t_name] = {
+                "ready": bool(llm_ok and TUNNEL_URL and is_caddy_ready()),
+                "gpuName": d.get("name", "NVIDIA T4 (Qwen 27B)"),
+                "vramTotalGb": vt,
+                "vramUsedGb": round(max(0.0, vt - vf), 2),
+            }
+
+        all_ready = bool(TUNNEL_URL) and is_caddy_ready() and llm_ok
+        next_step = 5 if all_ready else (4 if (TUNNEL_URL and is_caddy_ready()) else 3)
+        next_status = "ONLINE" if all_ready else "STARTING"
+
+        if ll_proc.poll() is not None:
+            log_event(f"llama-server exited unexpectedly (code={ll_proc.returncode}).", category="ERROR", level="ERROR")
+            post_heartbeat(0, "ERROR", telem)
+            break
+
+        if all_ready and CURRENT_STEP < 5:
+            log_event(f"Qwen 27B LLM+VLM ONLINE in {round(time.time() - t_boot_start, 1)}s -> {TUNNEL_URL}/v1", category="SYSTEM", level="SUCCESS")
+
+        hb_int = 20 if all_ready else 8
+        if next_step != _llm_last_step or has_pending_logs() or (time.time() - LAST_HB_SENT) >= hb_int:
+            post_heartbeat(next_step, next_status, telem)
+            _llm_last_step = next_step
+
+        if not EVER_CONNECTED and (time.time() - _llm_t0) > 90 and HEARTBEAT_FAIL_STREAK >= 3:
+            break
+        if IDLE_TIMEOUT_SEC > 0 and (time.time() - LAST_ACTIVE > IDLE_TIMEOUT_SEC):
+            log_event("LLM idle timeout reached. Stopping to preserve Kaggle quota.", category="ACTION", level="WARN")
+            post_heartbeat(0, "OFFLINE", {})
+            break
+        time.sleep(15 if all_ready else 3)
+
+    ll_proc.terminate()
+    sys.exit(0)
 
 # -------------------------------------------------------------
 # 4. FastBoot GDrive Cache Hit OR Parallel ComfyUI Clone + uv Delta

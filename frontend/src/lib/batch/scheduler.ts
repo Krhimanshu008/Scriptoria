@@ -353,7 +353,9 @@ export async function rankOnlineGpusForTask(
   vms: VmInstance[],
   task: BatchTask
 ): Promise<GpuAffinityScore[]> {
-  const online = vms.filter((v) => v.status === "ONLINE" && v.publicUrl);
+  const online = vms.filter(
+    (v) => v.status === "ONLINE" && v.publicUrl && v.workerProfile !== "LLM_QWEN_VLM"
+  );
   const scores: GpuAffinityScore[] = [];
 
   for (const vm of online) {

@@ -3,7 +3,8 @@ export type WorkerProfileId =
   | "IMAGE_CORE"
   | "IMAGE_GGUF_EDIT"
   | "AUDIO_LIPSYNC"
-  | "VIDEO_MOTION";
+  | "VIDEO_MOTION"
+  | "LLM_QWEN_VLM";
 
 export interface CustomNodeSpec {
   name: string;
@@ -120,6 +121,15 @@ export const WORKER_PROFILES: Record<WorkerProfileId, WorkerProfileSpec> = {
         repoUrl: "https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git",
       },
     ],
+  },
+  LLM_QWEN_VLM: {
+    id: "LLM_QWEN_VLM",
+    label: "Qwen 27B LLM + VLM (Dual-T4)",
+    shortTag: "QWEN-LLM",
+    description:
+      "Dedicated Dual-T4 OpenAI-compatible /v1 LLM + Vision QA server (llama-server Q4_K_M + mmproj) cached in Google Drive for Book Graph.",
+    recommendedTargets: ["gpu2", "gpu3"],
+    customNodes: [],
   },
 };
 

@@ -598,8 +598,25 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
 
       {/* Compact Footer Controls */}
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-zinc-800/80 pt-2.5">
-        <span className="max-w-[160px] truncate font-mono text-[10px] text-zinc-500">
-          {firstTunnel ? firstTunnel.replace(/^https?:\/\//, "") : "Caddy Route-less"}
+        <span className="inline-flex max-w-[200px] items-center gap-1.5 truncate font-mono text-[10px] text-zinc-500">
+          <span className="truncate">
+            {firstTunnel
+              ? `${firstTunnel.replace(/^https?:\/\//, "")}${activeProfile.id === "LLM_QWEN_VLM" ? "/v1" : ""}`
+              : "Caddy Route-less"}
+          </span>
+          {firstTunnel && activeProfile.id === "LLM_QWEN_VLM" && (
+            <button
+              type="button"
+              onClick={() => {
+                navigator.clipboard.writeText(`${firstTunnel.replace(/\/$/, "")}/v1`);
+                toast.success("Copied OpenAI /v1 endpoint URL");
+              }}
+              title="Copy /v1 LLM endpoint URL"
+              className="shrink-0 text-cyan-400 hover:text-cyan-300"
+            >
+              <Copy className="h-3 w-3" />
+            </button>
+          )}
         </span>
 
         <div className="flex flex-wrap items-center gap-1.5">
