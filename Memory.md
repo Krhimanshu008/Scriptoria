@@ -7,8 +7,8 @@
   - Top-level workspace memory: [`MEMORY.md`](file:///c:/Users/5480/Desktop/Automation/Book_Visualiser/MEMORY.md).
 - **Scriptoria Repo:** `c:\Users\5480\Desktop\Automation\Book_Visualiser\Scriptoria`
   - **Git Remote:** `origin` -> `https://github.com/Krhimanshu008/Scriptoria.git` (`main`)
-  - **Current HEAD:** `8453b7a` (synced & pushed to `origin/main`, deployed at `https://scriptoria.krhimanshu.in`)
-  - **Unstaged Working Tree Items (LEAVE UNSTAGED):** Pre-existing root deletions `D Migration.md`, `D PROJECT_MEMORY.md`, `D README.md`, plus local `.env` files. Only stage `frontend/src/` or explicit tracked files (like `Memory.md`) when committing.
+  - **Current HEAD:** `6a4e67c` (synced & pushed to `origin/main`, deployed at `https://scriptoria.krhimanshu.in`)
+  - **Git Status:** Working tree clean, `Memory.md` tracked and synced with GitHub.
 - **Tech Stack (`Scriptoria/frontend`):**
   - Next.js `16.4.6` (App Router + Turbopack), React 19 (React Compiler ESLint rules active), Tailwind CSS v4 (`cn` without `tailwind-merge`), `@base-ui/react`, TanStack React Query, Prisma `v6.19.3` -> Turso libSQL (`libsql://scriptoria-prod-krhimanshu.aws-ap-south-1.turso.io`), Vercel deployment target.
 - **ENCRYPTION_KEY Rule:**
