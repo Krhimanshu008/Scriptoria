@@ -275,17 +275,15 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
   return (
     <div className="space-y-5">
       {/* 5 TB Drive Sync & AI Preview Banner */}
-      <div className="glass-panel flex flex-wrap items-center justify-between gap-3 rounded-2xl p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-zinc-800 bg-[#111114] px-4 py-3">
         <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-emerald-400/30 bg-emerald-500/15 text-emerald-300">
-            <HardDrive className="h-4 w-4" />
-          </div>
+          <HardDrive className="h-4 w-4 shrink-0 text-zinc-400" />
           <div>
-            <div className="text-xs font-semibold text-white">
+            <div className="text-xs font-medium text-white">
               Smart Workflow Creator (VM /tmp + 5 TB Drive + HF/Civitai)
             </div>
-            <p className="text-[11px] text-zinc-400">
-              Select any model directly with 1 click. Scan your Drive to discover &amp; AI-review unrecognized files before adding them to your selector.
+            <p className="text-[11px] text-zinc-500">
+              Select any model in 1 click or scan Drive to AI-review unrecognized files before import.
             </p>
           </div>
         </div>
@@ -294,20 +292,20 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
           type="button"
           onClick={handleScanDriveWithAi}
           disabled={scanningDrive}
-          className="bg-emerald-600 text-xs font-semibold text-white hover:bg-emerald-500"
+          className="h-8 bg-zinc-800 text-xs font-medium text-zinc-100 hover:bg-zinc-700"
         >
           {scanningDrive ? (
-            <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+            <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
           ) : (
-            <Sparkles className="mr-2 h-3.5 w-3.5" />
+            <Sparkles className="mr-1.5 h-3.5 w-3.5 text-indigo-400" />
           )}
-          Scan 5 TB Drive &amp; AI Review
+          Scan 5 TB Drive
         </Button>
       </div>
 
       {/* Main Builder + Live Resource Inspector */}
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
-        <div className="glass-panel space-y-4 rounded-2xl p-5 lg:col-span-7">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
+        <div className="space-y-3.5 rounded-lg border border-zinc-800 bg-[#111114] p-4 lg:col-span-7">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1">
               <Label className="text-[11px]">Pipeline Architecture</Label>
@@ -567,43 +565,43 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
         </div>
 
         {/* Right: Resource Preflight Inspector + Save Template */}
-        <div className="glass-panel flex flex-col justify-between space-y-4 rounded-2xl p-5 lg:col-span-5">
+        <div className="flex flex-col justify-between space-y-4 rounded-lg border border-zinc-800 bg-[#111114] p-4 lg:col-span-5">
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-sm font-semibold text-white">
-                <Cpu className="h-4 w-4 text-cyan-400" />
+              <div className="flex items-center gap-2 text-xs font-semibold text-white">
+                <Cpu className="h-3.5 w-3.5 text-zinc-400" />
                 <span>T4 16 GB Resource Inspector</span>
               </div>
               {compiled && (
                 <span
-                  className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
+                  className={`rounded px-2 py-0.5 font-mono text-[10px] font-semibold uppercase ${
                     compiled.vramStatus === "OVER_T4_LIMIT"
-                      ? "bg-rose-500/20 text-rose-300"
+                      ? "bg-rose-500/15 text-rose-300"
                       : compiled.vramStatus === "TIGHT"
-                      ? "bg-amber-500/20 text-amber-200"
-                      : "bg-emerald-500/20 text-emerald-300"
+                      ? "bg-amber-500/15 text-amber-200"
+                      : "bg-emerald-500/15 text-emerald-300"
                   }`}
                 >
-                  {compiled.vramEstimateGb} / 16.0 GB · {compiled.vramStatus}
+                  {compiled.vramEstimateGb} / 16G · {compiled.vramStatus}
                 </span>
               )}
             </div>
 
             {!compiled ? (
-              <p className="rounded-xl border border-white/10 bg-black/30 p-3 text-xs text-zinc-400">
-                Click <strong>Compile &amp; Check T4 VRAM</strong> to inspect exact required models, T4 safety guardrails, node dependencies, and ComfyUI JSON.
+              <p className="rounded-md border border-zinc-800 bg-zinc-950 p-3 text-xs text-zinc-500">
+                Click <strong>Compile &amp; Check T4 VRAM</strong> to inspect required models, safety guardrails, and ComfyUI graph.
               </p>
             ) : (
-              <div className="space-y-3 text-xs">
-                <div className="rounded-xl border border-white/10 bg-black/30 p-3">
-                  <div className="mb-1 text-[10px] font-semibold uppercase text-zinc-400">
-                    Required Models ({compiled.requiredModels.length}) · Profile: {compiled.recommendedProfile}
+              <div className="space-y-2.5 text-xs">
+                <div className="rounded-md border border-zinc-800 bg-zinc-950 p-2.5">
+                  <div className="mb-1 text-[10px] font-medium uppercase text-zinc-500">
+                    Required Models ({compiled.requiredModels.length}) · {compiled.recommendedProfile}
                   </div>
                   <div className="flex flex-wrap gap-1.5">
                     {compiled.requiredModels.map((rm) => (
                       <span
                         key={`${rm.category}/${rm.filename}`}
-                        className="rounded bg-white/[0.06] px-2 py-0.5 font-mono text-[10px] text-zinc-200"
+                        className="rounded border border-zinc-800 bg-zinc-900 px-1.5 py-0.5 font-mono text-[10px] text-zinc-300"
                       >
                         {rm.category}/{rm.filename}
                       </span>

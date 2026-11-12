@@ -335,7 +335,7 @@ export function SceneBatchStudio({ subView }: { subView: "scenes" | "batch" }) {
     return (
       <div className="space-y-5">
         {/* Project Selector + New Project */}
-        <div className="glass-panel flex flex-wrap items-center justify-between gap-3 rounded-2xl p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-zinc-800 bg-[#111114] px-3.5 py-2.5">
           <div className="flex flex-wrap items-center gap-2">
             <Film className="h-4 w-4 text-indigo-400" />
             <select
@@ -385,7 +385,7 @@ export function SceneBatchStudio({ subView }: { subView: "scenes" | "batch" }) {
         {activeProject && (
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
             {/* Character Profiles */}
-            <div className="glass-panel space-y-3 rounded-2xl p-4 lg:col-span-4">
+            <div className="space-y-3 rounded-lg border border-zinc-800 bg-[#111114] p-4 lg:col-span-4">
               <div className="text-xs font-semibold text-white">
                 Character Profiles ({activeProject.characters.length})
               </div>
@@ -456,7 +456,7 @@ export function SceneBatchStudio({ subView }: { subView: "scenes" | "batch" }) {
   return (
     <div className="space-y-5">
       {/* Book Visualiser & External Flexible Ingest Console */}
-      <div className="glass-panel space-y-4 rounded-2xl p-5">
+      <div className="space-y-3.5 rounded-lg border border-zinc-800 bg-[#111114] p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
             <FileCode2 className="h-4 w-4 text-cyan-400" />
@@ -540,7 +540,7 @@ export function SceneBatchStudio({ subView }: { subView: "scenes" | "batch" }) {
       </div>
 
       {/* Active & Recent Multi-GPU Batches */}
-      <div className="glass-panel space-y-3 rounded-2xl p-5">
+      <div className="space-y-3 rounded-lg border border-zinc-800 bg-[#111114] p-4">
         <div className="flex items-center justify-between">
           <div className="text-sm font-semibold text-white">
             Multi-GPU Batch Queue ({batches.length})

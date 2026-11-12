@@ -67,8 +67,8 @@ export function LiveConsole({ defaultExpanded = false }: { defaultExpanded?: boo
   }
 
   return (
-    <div className="glass-panel overflow-hidden rounded-2xl">
-      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 text-xs">
+    <div className="overflow-hidden rounded-lg border border-zinc-800 bg-[#111114]">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-3.5 py-2 text-xs">
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}

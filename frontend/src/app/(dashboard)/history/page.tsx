@@ -57,16 +57,16 @@ export default function HistoryPage() {
     remixFromHistory(item);
     toast.success("Loaded prompt & parameters into Studio");
     setSelected(null);
-    router.push("/");
+    router.push("/studio");
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold tracking-tight text-white">Permanent Output Gallery</h1>
-          <p className="text-xs text-zinc-400">
-            Streamed directly from your Google Drive Vault (`/api/outputs/[fileId]`) — available 24/7 even while all GPUs are offline.
+          <h1 className="text-base font-semibold text-white">Output Gallery</h1>
+          <p className="text-xs text-zinc-500">
+            Streamed directly from Google Drive Vault (`/api/outputs/[fileId]`).
           </p>
         </div>
 
@@ -75,24 +75,24 @@ export default function HistoryPage() {
           size="sm"
           onClick={() => refetch()}
           disabled={isFetching}
-          className="border-zinc-800 bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
+          className="h-8 border-zinc-800 bg-zinc-900 text-xs text-zinc-200 hover:bg-zinc-800"
         >
-          <RefreshCw className={`mr-2 h-3.5 w-3.5 ${isFetching ? "animate-spin" : ""}`} />
+          <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${isFetching ? "animate-spin" : ""}`} />
           Refresh
         </Button>
       </div>
 
       {isLoading ? (
         <div className="flex items-center justify-center py-20 text-xs text-zinc-400">
-          <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading permanent gallery...
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading gallery...
         </div>
       ) : items.length === 0 ? (
-        <div className="glass-panel flex flex-col items-center justify-center rounded-2xl py-20 text-xs text-zinc-500">
-          <Images className="mb-3 h-10 w-10 text-zinc-600" />
-          <p>No completed generations yet. Dispatch a prompt from Studio to populate your gallery.</p>
+        <div className="flex flex-col items-center justify-center rounded-lg border border-zinc-800 bg-[#111114] py-16 text-xs text-zinc-500">
+          <Images className="mb-2 h-8 w-8 text-zinc-600" />
+          <p>No completed generations yet. Dispatch a prompt from Studio to populate outputs.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+        <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
           {items.map((item) => {
             const first = item.outputs[0];
             if (!first?.previewUrl) return null;
@@ -100,7 +100,7 @@ export default function HistoryPage() {
               <div
                 key={item.id}
                 onClick={() => setSelected(item)}
-                className="glass-card group cursor-pointer overflow-hidden rounded-2xl transition hover:border-indigo-400/50 hover:bg-white/[0.06]"
+                className="group cursor-pointer overflow-hidden rounded-lg border border-zinc-800 bg-[#111114] transition hover:border-zinc-600"
               >
                 <div className="aspect-square overflow-hidden bg-zinc-900">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -110,7 +110,7 @@ export default function HistoryPage() {
                     className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
                   />
                 </div>
-                <div className="space-y-1 p-3">
+                <div className="space-y-1 p-2.5">
                   <p className="line-clamp-2 text-xs text-zinc-200">{item.prompt}</p>
                   <div className="flex items-center justify-between font-mono text-[10px] text-zinc-500">
                     <span>{item.target.toUpperCase()}</span>

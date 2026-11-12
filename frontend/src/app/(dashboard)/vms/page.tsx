@@ -16,7 +16,6 @@ import {
   Sparkles,
   Settings,
   Loader2,
-  Clock,
 } from "lucide-react";
 import type { PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
 import type { KaggleAccountSummary, ColabAccountSummary } from "@/app/api/vm/accounts/route";
@@ -355,138 +354,109 @@ function VmClusterContent() {
   const callbackUrl = `${origin}/api/auth/google/colab/callback`;
 
   return (
-    <div className="space-y-6">
-      {/* Telemetry & Quick Actions Header */}
-      <div className="glass-panel rounded-2xl p-5">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-bold tracking-tight text-white">
-              VM Cluster Orchestrator
-            </h1>
-            <p className="text-xs text-zinc-400">
-              Manage Dual-T4 Kaggle notebooks, on-demand Colab GPUs, boot profiles, pre-warmed models &amp; CPU Drive backups.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={handleTestWebhook}
-              disabled={testingWebhook}
-              className={`glass-pill flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium transition ${
-                webhookStatus?.ok === true
-                  ? "border-emerald-400/35 text-emerald-300"
-                  : webhookStatus?.ok === false
-                  ? "border-rose-400/35 text-rose-300"
-                  : "text-zinc-200 hover:bg-white/10"
-              }`}
-              title={webhookStatus?.detail || "Ping public callback URL"}
-            >
-              {testingWebhook ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Wifi className="h-3.5 w-3.5 text-cyan-400" />
-              )}
-              <span>
-                {webhookStatus
-                  ? webhookStatus.ok
-                    ? "Webhook Ready"
-                    : "Webhook Issue"
-                  : "Ping Webhook"}
-              </span>
-            </button>
-
-            <button
-              type="button"
-              onClick={handleForceProbe}
-              disabled={probing}
-              className="glass-pill flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium text-zinc-200 hover:bg-white/10"
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${probing ? "animate-spin" : ""}`} />
-              <span>Probe Cluster</span>
-            </button>
-
-            <Link
-              href="/settings"
-              className="glass-pill flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium text-zinc-200 hover:bg-white/10"
-            >
-              <Settings className="h-3.5 w-3.5" />
-              <span>Settings</span>
-            </Link>
-
-            <Link
-              href="/studio"
-              className="flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 px-3.5 py-2 text-xs font-semibold text-white shadow-md shadow-indigo-600/25 hover:from-indigo-500 hover:to-violet-500"
-            >
-              <Sparkles className="h-3.5 w-3.5" />
-              <span>Open Agentic Studio</span>
-            </Link>
-          </div>
+    <div className="space-y-4">
+      {/* Compact Header Action Row */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-base font-semibold text-white">GPU Compute Cluster</h1>
+          <p className="text-xs text-zinc-500">
+            Kaggle Dual-T4 &amp; Colab T4 worker slots, boot profiles, and Drive model mirror.
+          </p>
         </div>
 
-        {/* 4 Telemetry Metrics */}
-        <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <div className="rounded-xl border border-white/10 bg-black/25 px-4 py-3">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
-              Online GPUs
-            </div>
-            <div className="mt-1 flex items-baseline gap-2">
-              <span className="text-xl font-bold text-emerald-400">{onlineVms.length}</span>
-              <span className="text-xs text-zinc-500">/ {vms.length || 6} slots ready</span>
-            </div>
-          </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={handleTestWebhook}
+            disabled={testingWebhook}
+            className={`inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition ${
+              webhookStatus?.ok === true
+                ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                : webhookStatus?.ok === false
+                ? "border-rose-500/40 bg-rose-500/10 text-rose-300"
+                : "border-zinc-800 bg-zinc-900 text-zinc-300 hover:bg-zinc-800"
+            }`}
+            title={webhookStatus?.detail || "Ping public callback URL"}
+          >
+            {testingWebhook ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Wifi className="h-3.5 w-3.5 text-zinc-400" />
+            )}
+            <span>
+              {webhookStatus ? (webhookStatus.ok ? "Webhook OK" : "Webhook Fail") : "Ping Webhook"}
+            </span>
+          </button>
 
-          <div className="rounded-xl border border-white/10 bg-black/25 px-4 py-3">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
-              Active Cluster VRAM
-            </div>
-            <div className="mt-1 flex items-baseline gap-2">
-              <span className="text-xl font-bold text-cyan-300">
-                {totalOnlineVram.toFixed(0)} GB
-              </span>
-              <span className="text-xs text-zinc-500">
-                ({usedOnlineVram.toFixed(1)} GB in use)
-              </span>
-            </div>
-          </div>
+          <button
+            type="button"
+            onClick={handleForceProbe}
+            disabled={probing}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-900 px-2.5 text-xs font-medium text-zinc-300 hover:bg-zinc-800"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${probing ? "animate-spin" : ""}`} />
+            <span>Probe</span>
+          </button>
 
-          <div className="rounded-xl border border-white/10 bg-black/25 px-4 py-3">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
-              Kaggle Weekly T4 Quota
-            </div>
-            <div className="mt-1 flex items-center gap-2">
-              <Clock className="h-4 w-4 text-cyan-400" />
-              <span className="text-xl font-bold text-white">
-                {hasAnyQuota ? formatQuotaHours(combinedQuotaSec) : "--"}
-              </span>
-            </div>
-          </div>
+          <Link
+            href="/settings"
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-900 px-2.5 text-xs font-medium text-zinc-300 hover:bg-zinc-800"
+          >
+            <Settings className="h-3.5 w-3.5" />
+            <span>Settings</span>
+          </Link>
 
-          <div className="rounded-xl border border-white/10 bg-black/25 px-4 py-3">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
-              Global Idle Watchdog
-            </div>
-            <div className="mt-1 flex items-baseline gap-2">
-              <span className="text-xl font-bold text-zinc-100">
-                {globalIdleTimeout === 0 ? "Off" : `${globalIdleTimeout}m`}
-              </span>
-              <span className="text-xs text-zinc-500">
-                default: {settingsData?.settings.defaultWorkerProfile || "BASE_COMFY"}
-              </span>
-            </div>
-          </div>
+          <Link
+            href="/studio"
+            className="inline-flex h-8 items-center gap-1.5 rounded-md bg-indigo-600 px-3 text-xs font-medium text-white hover:bg-indigo-500"
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            <span>Open Studio</span>
+          </Link>
+        </div>
+      </div>
+
+      {/* Single Compact Segmented Telemetry Strip (No 4 Big Boxes) */}
+      <div className="grid grid-cols-2 divide-y divide-zinc-800 overflow-hidden rounded-lg border border-zinc-800 bg-[#111114] lg:grid-cols-4 lg:divide-x lg:divide-y-0">
+        <div className="flex items-center justify-between px-3.5 py-2.5">
+          <span className="text-[11px] font-medium text-zinc-500">Online Slots</span>
+          <span className="font-mono text-sm font-semibold tabular-nums text-emerald-400">
+            {onlineVms.length} <span className="text-xs font-normal text-zinc-500">/ {vms.length || 6}</span>
+          </span>
+        </div>
+
+        <div className="flex items-center justify-between px-3.5 py-2.5">
+          <span className="text-[11px] font-medium text-zinc-500">Active VRAM</span>
+          <span className="font-mono text-sm font-semibold tabular-nums text-zinc-100">
+            {totalOnlineVram.toFixed(0)}G{" "}
+            <span className="text-xs font-normal text-zinc-500">({usedOnlineVram.toFixed(1)}G used)</span>
+          </span>
+        </div>
+
+        <div className="flex items-center justify-between px-3.5 py-2.5">
+          <span className="text-[11px] font-medium text-zinc-500">Kaggle Quota</span>
+          <span className="font-mono text-sm font-semibold tabular-nums text-zinc-100">
+            {hasAnyQuota ? formatQuotaHours(combinedQuotaSec) : "--"}
+          </span>
+        </div>
+
+        <div className="flex items-center justify-between px-3.5 py-2.5">
+          <span className="text-[11px] font-medium text-zinc-500">Idle Watchdog</span>
+          <span className="font-mono text-sm font-semibold tabular-nums text-zinc-100">
+            {globalIdleTimeout === 0 ? "Off" : `${globalIdleTimeout}m`}
+          </span>
         </div>
       </div>
 
       {/* Expanded 2-Column VM Cards */}
       {vmsLoading && vms.length === 0 ? (
-        <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           {[1, 2, 3, 4].map((idx) => (
-            <div key={idx} className="glass-panel h-72 animate-pulse rounded-2xl" />
+            <div key={idx} className="h-56 animate-pulse rounded-lg border border-zinc-800 bg-[#111114]" />
           ))}
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           {kaggleAccounts.map((acc) => {
             const accVms = vms.filter(
               (v) => v.provider === "kaggle" && v.accountAlias === acc.accountAlias
@@ -526,21 +496,17 @@ function VmClusterContent() {
         </div>
       )}
 
-      {/* 0-GPU CPU Drive Mirror Bar */}
-      <div className="glass-panel flex flex-wrap items-center justify-between gap-4 rounded-2xl px-5 py-4">
-        <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-violet-400/30 bg-violet-500/15 text-violet-300">
-            <HardDriveUpload className="h-4 w-4" />
-          </div>
-          <div>
-            <div className="text-sm font-semibold text-white">
-              Zero-GPU CPU Drive Mirror Worker
-            </div>
-            <p className="text-xs text-zinc-400">
+      {/* Compact 0-GPU CPU Drive Mirror Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-zinc-800 bg-[#111114] px-3.5 py-2.5">
+        <div className="flex items-center gap-2.5">
+          <HardDriveUpload className="h-4 w-4 text-zinc-400" />
+          <div className="text-xs">
+            <span className="font-medium text-zinc-200">Zero-GPU CPU Drive Mirror:</span>{" "}
+            <span className="text-zinc-400">
               {unbackedCount > 0
-                ? `${unbackedCount} catalog model(s) ready to mirror directly from HuggingFace / Civitai into your 5 TB Google Drive using 0 GPU quota.`
-                : "All seeded/registered remote catalog models are already backed up to your 5 TB Drive."}
-            </p>
+                ? `${unbackedCount} model(s) ready to mirror from HF/Civitai into 5 TB Drive`
+                : "All registered remote catalog models backed up."}
+            </span>
           </div>
         </div>
 
@@ -548,13 +514,13 @@ function VmClusterContent() {
           <select
             value={mirrorAccount}
             onChange={(e) => setMirrorAccount(e.target.value)}
-            className="glass-input rounded-xl px-2.5 py-2 text-xs text-zinc-200"
+            className="h-7 rounded-md border border-zinc-800 bg-zinc-950 px-2 font-mono text-[11px] text-zinc-300"
           >
             <option value="acc1" className="bg-zinc-900">
-              Kaggle acc1 (CPU)
+              acc1 (CPU)
             </option>
             <option value="acc2" className="bg-zinc-900">
-              Kaggle acc2 (CPU)
+              acc2 (CPU)
             </option>
           </select>
 
@@ -562,20 +528,20 @@ function VmClusterContent() {
             type="button"
             disabled={mirroring || unbackedCount === 0}
             onClick={handleTriggerCpuMirror}
-            className="flex items-center gap-1.5 rounded-xl border border-violet-400/35 bg-violet-600/80 px-4 py-2 text-xs font-semibold text-white transition hover:bg-violet-500 disabled:opacity-40"
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800 px-2.5 text-xs font-medium text-zinc-100 hover:bg-zinc-700 disabled:opacity-40"
           >
             {mirroring ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              <Loader2 className="h-3 w-3 animate-spin" />
             ) : (
-              <Cpu className="h-3.5 w-3.5" />
+              <Cpu className="h-3 w-3" />
             )}
-            <span>Mirror Missing Models (0 GPU)</span>
+            <span>Mirror Missing (0 GPU)</span>
           </button>
         </div>
       </div>
 
-      {/* Live Expanded Console */}
-      <LiveConsole defaultExpanded />
+      {/* Collapsible Console */}
+      <LiveConsole />
 
       {/* Connect Google Account Modal */}
       <Dialog

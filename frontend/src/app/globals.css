@@ -122,7 +122,7 @@
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-[#05070e] text-foreground antialiased selection:bg-indigo-500/30 selection:text-white;
+    @apply bg-[#09090b] text-zinc-100 antialiased selection:bg-indigo-500/30 selection:text-white;
   }
   html {
     @apply font-sans;
@@ -131,49 +131,31 @@
 
 @layer utilities {
   .glass-panel {
-    background: linear-gradient(
-      145deg,
-      rgba(255, 255, 255, 0.06) 0%,
-      rgba(17, 22, 38, 0.52) 100%
-    );
-    backdrop-filter: blur(22px) saturate(145%);
-    -webkit-backdrop-filter: blur(22px) saturate(145%);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    box-shadow:
-      0 12px 38px -14px rgba(0, 0, 0, 0.7),
-      inset 0 1px 0 0 rgba(255, 255, 255, 0.08);
+    background: #111114;
+    border: 1px solid #27272a;
+    border-radius: 0.5rem;
   }
 
   .glass-card {
-    background: rgba(255, 255, 255, 0.035);
-    backdrop-filter: blur(14px) saturate(135%);
-    -webkit-backdrop-filter: blur(14px) saturate(135%);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
+    background: #141418;
+    border: 1px solid #27272a;
+    border-radius: 0.5rem;
   }
 
   .glass-pill {
-    background: rgba(255, 255, 255, 0.055);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    border: 1px solid rgba(255, 255, 255, 0.11);
+    background: #18181b;
+    border: 1px solid #27272a;
   }
 
   .glass-popover {
-    background: rgba(10, 14, 26, 0.92);
-    backdrop-filter: blur(26px) saturate(160%);
-    -webkit-backdrop-filter: blur(26px) saturate(160%);
-    border: 1px solid rgba(255, 255, 255, 0.14);
-    box-shadow:
-      0 22px 50px -12px rgba(0, 0, 0, 0.85),
-      inset 0 1px 0 0 rgba(255, 255, 255, 0.1);
+    background: #111114;
+    border: 1px solid #3f3f46;
+    box-shadow: 0 18px 40px -12px rgba(0, 0, 0, 0.85);
   }
 
   .glass-input {
-    background: rgba(4, 7, 15, 0.55);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: #09090b;
+    border: 1px solid #27272a;
   }
 }
 

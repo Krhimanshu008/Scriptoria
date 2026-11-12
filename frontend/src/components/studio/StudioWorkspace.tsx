@@ -309,8 +309,8 @@ export function StudioWorkspace() {
 
   return (
     <div className="space-y-4">
-      {/* Glass Studio Header & Quick Controls */}
-      <div className="glass-panel flex flex-wrap items-center justify-between gap-3 rounded-2xl px-4 py-3">
+      {/* Prompt Studio Header & Quick Controls */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-zinc-800 bg-[#111114] px-3.5 py-2.5">
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center gap-2 pr-2">
             <Sparkles className="h-4 w-4 text-indigo-400" />
@@ -474,7 +474,7 @@ export function StudioWorkspace() {
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
         <form
           onSubmit={handleRun}
-          className="glass-panel space-y-3.5 rounded-2xl p-5 lg:col-span-5"
+          className="space-y-3 rounded-lg border border-zinc-800 bg-[#111114] p-4 lg:col-span-5"
         >
           {studio.customJsonMode ? (
             <div className="space-y-2">
@@ -769,7 +769,7 @@ export function StudioWorkspace() {
           <Button
             type="submit"
             disabled={studio.submitting || !isTargetOnline}
-            className="w-full bg-gradient-to-r from-indigo-600 to-violet-600 text-xs font-semibold text-white shadow-lg shadow-indigo-600/25 hover:from-indigo-500 hover:to-violet-500 disabled:opacity-40"
+            className="h-9 w-full bg-indigo-600 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40"
           >
             {studio.submitting ? (
               <>
@@ -791,8 +791,8 @@ export function StudioWorkspace() {
           </Button>
         </form>
 
-        {/* Glass Render Canvas */}
-        <div className="glass-panel flex flex-col justify-between rounded-2xl p-5 lg:col-span-7">
+        {/* Render Canvas */}
+        <div className="flex flex-col justify-between rounded-lg border border-zinc-800 bg-[#111114] p-4 lg:col-span-7">
           <div className="mb-3 flex items-center justify-between text-xs text-zinc-400">
             <span className="font-semibold text-zinc-100">Render Canvas</span>
             <div className="flex items-center gap-3">

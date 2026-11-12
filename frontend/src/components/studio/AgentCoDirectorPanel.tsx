@@ -133,16 +133,14 @@ export function AgentCoDirectorPanel() {
   }
 
   return (
-    <div className="glass-panel flex h-full min-h-[640px] flex-col rounded-2xl p-4">
+    <div className="flex h-[620px] flex-col rounded-lg border border-zinc-800 bg-[#111114] p-3.5">
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-3">
+      <div className="flex items-center justify-between gap-2 border-b border-zinc-800 pb-2.5">
         <div className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-tr from-violet-600 to-indigo-500 text-white shadow">
-            <Bot className="h-4 w-4" />
-          </div>
+          <Bot className="h-4 w-4 text-indigo-400" />
           <div>
-            <div className="text-xs font-bold text-white">Agentic AI Co-Director</div>
-            <div className="text-[10px] text-zinc-400">Tool-Calling Cluster &amp; Catalog Brain</div>
+            <div className="text-xs font-semibold text-white">AI Co-Director</div>
+            <div className="text-[10px] text-zinc-500">Tool-Calling Orchestrator</div>
           </div>
         </div>
 
@@ -151,10 +149,10 @@ export function AgentCoDirectorPanel() {
             type="button"
             onClick={() => setMode((m) => (m === "COPILOT" ? "AUTONOMOUS" : "COPILOT"))}
             title="Switch Co-Pilot (Approve) vs Autonomous"
-            className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[10px] font-semibold transition ${
+            className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] font-medium transition ${
               mode === "AUTONOMOUS"
-                ? "border-amber-400/40 bg-amber-500/15 text-amber-200"
-                : "border-emerald-400/35 bg-emerald-500/15 text-emerald-200"
+                ? "border-amber-500/40 bg-amber-500/10 text-amber-300"
+                : "border-emerald-500/35 bg-emerald-500/10 text-emerald-300"
             }`}
           >
             {mode === "AUTONOMOUS" ? (
@@ -162,14 +160,14 @@ export function AgentCoDirectorPanel() {
             ) : (
               <ShieldAlert className="h-3 w-3" />
             )}
-            {mode === "AUTONOMOUS" ? "Autonomous" : "Co-Pilot"}
+            {mode === "AUTONOMOUS" ? "Auto" : "Co-Pilot"}
           </button>
 
           <button
             type="button"
             onClick={handleNewSession}
             title="New conversation"
-            className="glass-pill rounded-lg p-1.5 text-zinc-300 hover:bg-white/10"
+            className="rounded border border-zinc-800 bg-zinc-900 p-1 text-zinc-400 hover:bg-zinc-800 hover:text-white"
           >
             <Plus className="h-3.5 w-3.5" />
           </button>
@@ -177,23 +175,20 @@ export function AgentCoDirectorPanel() {
       </div>
 
       {/* Messages Feed */}
-      <div className="my-3 flex-1 space-y-3 overflow-y-auto pr-1 text-xs">
+      <div className="my-2.5 flex-1 space-y-2.5 overflow-y-auto pr-1 text-xs">
         {messages.length === 0 ? (
-          <div className="space-y-3 pt-4">
-            <div className="rounded-xl border border-white/10 bg-black/30 p-3 text-[11px] text-zinc-300">
-              <Sparkles className="mb-1 h-4 w-4 text-violet-400" />
-              I can inspect your live GPUs, check cached `/tmp/models`, search your 5 TB Drive &amp; HF/Civitai catalog, enforce T4 VRAM limits, and schedule multi-GPU batch renders.
+          <div className="space-y-2.5 pt-2">
+            <div className="rounded-md border border-zinc-800 bg-zinc-950/70 p-2.5 text-[11px] text-zinc-400">
+              <Sparkles className="mb-1 h-3.5 w-3.5 text-indigo-400" />
+              Inspect live GPUs, check cached `/tmp/models`, design T4 workflows, or launch multi-GPU batches.
             </div>
             <div className="space-y-1.5">
-              <div className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
-                Try asking:
-              </div>
               {STARTER_PROMPTS.map((p) => (
                 <button
                   key={p}
                   type="button"
                   onClick={() => handleSend(p)}
-                  className="block w-full rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-left text-[11px] text-zinc-300 transition hover:border-indigo-400/40 hover:bg-white/[0.07]"
+                  className="block w-full rounded-md border border-zinc-800 bg-zinc-950/50 px-2.5 py-2 text-left text-[11px] text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-900"
                 >
                   {p}
                 </button>
@@ -204,31 +199,31 @@ export function AgentCoDirectorPanel() {
           messages.map((m) => (
             <div
               key={m.id}
-              className={`space-y-2 rounded-xl p-3 ${
+              className={`space-y-1.5 rounded-md border p-2.5 ${
                 m.role === "user"
-                  ? "ml-6 border border-indigo-400/30 bg-indigo-500/15 text-zinc-100"
-                  : "mr-2 border border-white/10 bg-black/35 text-zinc-200"
+                  ? "ml-4 border-indigo-500/30 bg-indigo-500/10 text-zinc-100"
+                  : "mr-1 border-zinc-800 bg-zinc-950/80 text-zinc-200"
               }`}
             >
-              <div className="flex items-center justify-between text-[10px] text-zinc-400">
+              <div className="flex items-center justify-between text-[10px] text-zinc-500">
                 <span className="font-semibold uppercase">
-                  {m.role === "user" ? "You" : "Co-Director"}
+                  {m.role === "user" ? "You" : "Director"}
                 </span>
                 <span>{new Date(m.createdAt).toLocaleTimeString()}</span>
               </div>
 
-              <div className="whitespace-pre-wrap leading-relaxed text-[11.5px]">
+              <div className="whitespace-pre-wrap text-[11.5px] leading-relaxed">
                 {m.content}
               </div>
 
               {m.toolCalls && m.toolCalls.length > 0 && (
-                <div className="flex flex-wrap gap-1 pt-1">
+                <div className="flex flex-wrap gap-1 pt-0.5">
                   {m.toolCalls.map((tc, idx) => (
                     <span
                       key={`${tc.name}-${idx}`}
-                      className="inline-flex items-center gap-1 rounded-md border border-cyan-400/25 bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[9.5px] text-cyan-200"
+                      className="inline-flex items-center gap-1 rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 font-mono text-[9.5px] text-zinc-300"
                     >
-                      <Wrench className="h-2.5 w-2.5" />
+                      <Wrench className="h-2.5 w-2.5 text-zinc-500" />
                       {tc.name}
                     </span>
                   ))}
@@ -236,35 +231,35 @@ export function AgentCoDirectorPanel() {
               )}
 
               {m.proposedAction && (
-                <div className="mt-2 space-y-2 rounded-xl border border-amber-400/30 bg-amber-500/[0.08] p-2.5">
+                <div className="mt-1.5 space-y-2 rounded-md border border-amber-500/35 bg-amber-500/10 p-2">
                   <div className="flex items-center justify-between text-[10px] font-semibold text-amber-200">
-                    <span>Proposed Action: {m.proposedAction.toolName}</span>
+                    <span>{m.proposedAction.toolName}</span>
                     <span className="uppercase">{m.proposedAction.status}</span>
                   </div>
-                  <pre className="max-h-28 overflow-auto rounded bg-black/50 p-2 font-mono text-[10px] text-zinc-300">
+                  <pre className="max-h-24 overflow-auto rounded border border-zinc-800 bg-zinc-950 p-1.5 font-mono text-[10px] text-zinc-300">
                     {JSON.stringify(m.proposedAction.args, null, 2)}
                   </pre>
 
                   {m.proposedAction.status === "PENDING_APPROVAL" && (
-                    <div className="flex gap-2">
+                    <div className="flex gap-1.5">
                       <button
                         type="button"
                         disabled={approvingId === m.id}
                         onClick={() => handleDecision(m.id, "approve")}
-                        className="flex flex-1 items-center justify-center gap-1 rounded-lg bg-emerald-600 py-1.5 text-[11px] font-semibold text-white hover:bg-emerald-500"
+                        className="flex flex-1 items-center justify-center gap-1 rounded bg-emerald-600 py-1 text-[11px] font-medium text-white hover:bg-emerald-500"
                       >
                         {approvingId === m.id ? (
                           <Loader2 className="h-3 w-3 animate-spin" />
                         ) : (
                           <CheckCircle2 className="h-3 w-3" />
                         )}
-                        Approve &amp; Execute
+                        Approve
                       </button>
                       <button
                         type="button"
                         disabled={approvingId === m.id}
                         onClick={() => handleDecision(m.id, "reject")}
-                        className="flex items-center justify-center gap-1 rounded-lg border border-white/15 bg-white/[0.05] px-3 py-1.5 text-[11px] text-zinc-300 hover:bg-white/10"
+                        className="flex items-center justify-center gap-1 rounded border border-zinc-700 bg-zinc-900 px-2.5 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800"
                       >
                         <XCircle className="h-3 w-3" />
                         Reject
@@ -273,7 +268,7 @@ export function AgentCoDirectorPanel() {
                   )}
 
                   {m.proposedAction.result !== undefined && (
-                    <pre className="max-h-24 overflow-auto rounded bg-emerald-950/40 p-2 font-mono text-[10px] text-emerald-200">
+                    <pre className="max-h-20 overflow-auto rounded border border-zinc-800 bg-zinc-950 p-1.5 font-mono text-[10px] text-emerald-300">
                       {JSON.stringify(m.proposedAction.result, null, 2)}
                     </pre>
                   )}
@@ -290,21 +285,21 @@ export function AgentCoDirectorPanel() {
           e.preventDefault();
           handleSend();
         }}
-        className="flex items-center gap-2 border-t border-white/10 pt-3"
+        className="flex items-center gap-1.5 border-t border-zinc-800 pt-2.5"
       >
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
           disabled={sending}
-          placeholder="Ask AI Co-Director to plan, optimize, or launch workflows..."
-          className="glass-input flex-1 rounded-xl px-3 py-2 text-xs text-white placeholder:text-zinc-500"
+          placeholder="Ask AI Co-Director..."
+          className="h-8 flex-1 rounded-md border border-zinc-800 bg-zinc-950 px-2.5 text-xs text-white placeholder:text-zinc-500 focus:border-zinc-600 focus:outline-none"
         />
         <button
           type="submit"
           disabled={sending || !input.trim()}
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-indigo-600 text-white transition hover:bg-indigo-500 disabled:opacity-40"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-40"
         >
-          {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+          {sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
         </button>
       </form>
     </div>

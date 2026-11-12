@@ -499,7 +499,7 @@ export default function ModelsPage() {
 
       {/* Add Model via HF / Civitai URL */}
       {showAddForm && (
-        <form onSubmit={handleSaveCustomModel} className="glass-panel space-y-4 rounded-2xl p-5">
+        <form onSubmit={handleSaveCustomModel} className="space-y-4 rounded-lg border border-zinc-800 bg-[#111114] p-4">
           <div className="flex items-center justify-between">
             <span className="flex items-center gap-2 text-sm font-semibold text-white">
               <Sparkles className="h-4 w-4 text-amber-400" />
@@ -696,7 +696,7 @@ export default function ModelsPage() {
             </div>
           </div>
 
-          <div className="glass-panel divide-y divide-white/10 rounded-2xl p-4">
+          <div className="divide-y divide-zinc-800/80 rounded-lg border border-zinc-800 bg-[#111114] px-4 py-1">
             {catalogLoading ? (
               <div className="flex items-center justify-center py-12 text-xs text-zinc-400">
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading Master Catalog...
@@ -817,7 +817,7 @@ export default function ModelsPage() {
           </div>
 
           {/* Loaded Models Inside Active VM (/tmp/models) */}
-          <div className="glass-panel rounded-2xl p-5">
+          <div className="rounded-lg border border-zinc-800 bg-[#111114] p-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-3 border-b border-white/10 pb-3 text-xs">
               <div className="flex items-center gap-2 font-semibold text-zinc-200">
                 <HardDrive className="h-4 w-4 text-emerald-400" />
@@ -884,7 +884,7 @@ export default function ModelsPage() {
           </div>
 
           {/* Drive File List */}
-          <div className="glass-panel rounded-2xl p-5">
+          <div className="rounded-lg border border-zinc-800 bg-[#111114] p-4">
             <div className="mb-4 flex items-center justify-between border-b border-white/10 pb-3 text-xs text-zinc-400">
               <div className="flex items-center gap-2">
                 <FolderOpen className="h-4 w-4 text-indigo-400" />

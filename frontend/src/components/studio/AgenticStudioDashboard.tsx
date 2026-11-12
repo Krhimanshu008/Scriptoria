@@ -3,7 +3,7 @@
 import React, { useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { Cpu, Sparkles, Wand2, Film, Layers, LayoutGrid, Server } from "lucide-react";
+import { Bot, Cpu, PanelRightClose, PanelRightOpen, Server } from "lucide-react";
 import type { PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
 import { StudioWorkspace } from "@/components/studio/StudioWorkspace";
 import { SmartWorkflowCreator } from "@/components/studio/SmartWorkflowCreator";
@@ -14,8 +14,17 @@ import { LiveConsole } from "@/components/logs/LiveConsole";
 
 type StudioTabId = "single" | "creator" | "scenes" | "batch" | "gallery";
 
+const STUDIO_TABS: Array<{ id: StudioTabId; label: string }> = [
+  { id: "single", label: "Prompt" },
+  { id: "creator", label: "Workflow Creator" },
+  { id: "scenes", label: "5-Track Scenes" },
+  { id: "batch", label: "Batch & Ingest" },
+  { id: "gallery", label: "Templates" },
+];
+
 export function AgenticStudioDashboard() {
   const [activeTab, setActiveTab] = useState<StudioTabId>("single");
+  const [agentDrawerOpen, setAgentDrawerOpen] = useState(false);
 
   const { data: vmData } = useQuery<{ vms: PublicVmInstance[] }>({
     queryKey: ["vm-status"],
@@ -32,84 +41,33 @@ export function AgenticStudioDashboard() {
 
   return (
     <div className="space-y-4">
-      {/* Compact GPU Readiness & Tab Bar */}
-      <div className="glass-panel flex flex-wrap items-center justify-between gap-3 rounded-2xl px-4 py-3">
-        <div className="flex flex-wrap items-center gap-1 rounded-xl border border-white/10 bg-black/30 p-1">
-          <button
-            type="button"
-            onClick={() => setActiveTab("single")}
-            className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-              activeTab === "single"
-                ? "bg-indigo-600 text-white shadow"
-                : "text-zinc-400 hover:text-white"
-            }`}
-          >
-            <Sparkles className="h-3.5 w-3.5" />
-            Single-Pass Studio
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab("creator")}
-            className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-              activeTab === "creator"
-                ? "bg-indigo-600 text-white shadow"
-                : "text-zinc-400 hover:text-white"
-            }`}
-          >
-            <Wand2 className="h-3.5 w-3.5" />
-            Smart Workflow Creator
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab("scenes")}
-            className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-              activeTab === "scenes"
-                ? "bg-indigo-600 text-white shadow"
-                : "text-zinc-400 hover:text-white"
-            }`}
-          >
-            <Film className="h-3.5 w-3.5" />
-            5-Track Scene Studio
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab("batch")}
-            className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-              activeTab === "batch"
-                ? "bg-indigo-600 text-white shadow"
-                : "text-zinc-400 hover:text-white"
-            }`}
-          >
-            <Layers className="h-3.5 w-3.5" />
-            Batch &amp; Book Ingest
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab("gallery")}
-            className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-              activeTab === "gallery"
-                ? "bg-indigo-600 text-white shadow"
-                : "text-zinc-400 hover:text-white"
-            }`}
-          >
-            <LayoutGrid className="h-3.5 w-3.5" />
-            Workflow Gallery
-          </button>
+      {/* Clean Underline Tab Bar + Online GPU Strip + Co-Director Toggle */}
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 pb-2.5">
+        <div className="flex flex-wrap items-center gap-5 text-xs font-medium">
+          {STUDIO_TABS.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveTab(tab.id)}
+              className={`-mb-[11px] border-b-2 pb-2.5 transition ${
+                activeTab === tab.id
+                  ? "border-indigo-500 text-white"
+                  : "border-transparent text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
 
-        {/* Compact GPU Strip */}
-        <div className="flex flex-wrap items-center gap-2 text-[11px]">
+        <div className="flex flex-wrap items-center gap-2">
           {onlineVms.length === 0 ? (
             <Link
               href="/vms"
-              className="flex items-center gap-1.5 rounded-xl border border-amber-400/35 bg-amber-500/15 px-3 py-1.5 font-semibold text-amber-200 hover:bg-amber-500/25"
+              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-900 px-2.5 text-[11px] font-medium text-amber-300 hover:bg-zinc-800"
             >
-              <Server className="h-3.5 w-3.5" />
-              All GPUs Offline — Boot on VM Cluster
+              <Server className="h-3 w-3" />
+              Boot GPUs
             </Link>
           ) : (
             onlineVms.map((v) => {
@@ -118,24 +76,39 @@ export function AgenticStudioDashboard() {
               return (
                 <span
                   key={v.target}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-400/30 bg-emerald-500/15 px-2.5 py-1 font-mono text-[10px] text-emerald-200"
+                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 font-mono text-[10px] text-emerald-300"
                 >
-                  <Cpu className="h-3 w-3 text-emerald-400" />
+                  <Cpu className="h-3 w-3" />
                   <strong>{v.target.toUpperCase()}</strong>
-                  <span className="text-emerald-300/80">{free.toFixed(1)}G free</span>
-                  <span className="rounded bg-black/30 px-1 text-[9px] text-zinc-300">
-                    {v.workerProfile}
-                  </span>
+                  <span className="text-emerald-200/75">{free.toFixed(1)}G</span>
                 </span>
               );
             })
           )}
+
+          <button
+            type="button"
+            onClick={() => setAgentDrawerOpen((v) => !v)}
+            className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition ${
+              agentDrawerOpen
+                ? "border-indigo-500/50 bg-indigo-500/15 text-indigo-200"
+                : "border-zinc-800 bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
+            }`}
+          >
+            <Bot className="h-3.5 w-3.5 text-indigo-400" />
+            <span>AI Co-Director</span>
+            {agentDrawerOpen ? (
+              <PanelRightClose className="h-3 w-3 text-zinc-400" />
+            ) : (
+              <PanelRightOpen className="h-3 w-3 text-zinc-400" />
+            )}
+          </button>
         </div>
       </div>
 
-      {/* Main Split: Workspace Tabs (left) + Docked Agentic AI Co-Director (right) */}
-      <div className="grid grid-cols-1 gap-5 xl:grid-cols-12">
-        <div className="min-w-0 space-y-4 xl:col-span-8">
+      {/* Main Workspace + Toggleable Co-Director Right Drawer */}
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-start">
+        <div className="min-w-0 flex-1 space-y-4">
           {activeTab === "single" && <StudioWorkspace />}
           {activeTab === "creator" && <SmartWorkflowCreator vms={vms} />}
           {activeTab === "scenes" && <SceneBatchStudio subView="scenes" />}
@@ -144,13 +117,12 @@ export function AgenticStudioDashboard() {
           <LiveConsole />
         </div>
 
-        <aside className="xl:col-span-4">
-          <div className="xl:sticky xl:top-20">
+        {agentDrawerOpen && (
+          <aside className="w-full shrink-0 xl:sticky xl:top-16 xl:w-[360px]">
             <AgentCoDirectorPanel />
-          </div>
-        </aside>
+          </aside>
+        )}
       </div>
     </div>
   );
 }
-
