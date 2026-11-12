@@ -1,5 +1,11 @@
 import { VmInstance } from "@prisma/client";
 
+export interface PrewarmModelRef {
+  slug?: string;
+  category: string;
+  filename: string;
+}
+
 export interface PublicVmInstance {
   id: string;
   target: string;
@@ -8,6 +14,8 @@ export interface PublicVmInstance {
   accountAlias: string;
   sessionGroup: string;
   workerProfile: string;
+  idleTimeoutMinutes: number | null;
+  prewarmModels: PrewarmModelRef[];
   internalPort: number;
   publicUrl: string;
   useRouteLess: boolean;
@@ -39,6 +47,21 @@ export function sanitizeVmForClient(vm: VmInstance): PublicVmInstance {
     uptimeSeconds = Math.max(0, Math.floor((Date.now() - vm.onlineSince.getTime()) / 1000));
   }
 
+  let prewarmModels: PrewarmModelRef[] = [];
+  if (vm.prewarmModelsJson) {
+    try {
+      const parsed = JSON.parse(vm.prewarmModelsJson);
+      if (Array.isArray(parsed)) {
+        prewarmModels = parsed.filter(
+          (item): item is PrewarmModelRef =>
+            Boolean(item && typeof item.category === "string" && typeof item.filename === "string")
+        );
+      }
+    } catch {
+      prewarmModels = [];
+    }
+  }
+
   return {
     id: vm.id,
     target: vm.target,
@@ -47,6 +70,8 @@ export function sanitizeVmForClient(vm: VmInstance): PublicVmInstance {
     accountAlias: vm.accountAlias,
     sessionGroup: vm.sessionGroup,
     workerProfile: vm.workerProfile || "BASE_COMFY",
+    idleTimeoutMinutes: vm.idleTimeoutMinutes ?? null,
+    prewarmModels,
     internalPort: vm.internalPort,
     publicUrl: vm.publicUrl,
     useRouteLess: vm.useRouteLess,

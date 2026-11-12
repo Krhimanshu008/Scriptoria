@@ -5,6 +5,7 @@ import { generateVmSecret } from "@/lib/crypto/vault";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
 import { buildUnifiedNotebookPythonCode } from "@/lib/orchestrator/notebook-builder";
 import { getWorkerProfile } from "@/lib/catalog/worker-profiles";
+import { getOrCreateWorkspaceSettings } from "@/lib/settings/workspace-settings";
 import { verifyColabRunnerToken } from "@/lib/orchestrator/colab-runner";
 import { resolveReachableWebhookBaseUrl } from "@/lib/orchestrator/webhook-tunnel";
 import { appendSystemLog } from "@/lib/logs/logger";
@@ -56,17 +57,32 @@ export async function POST(req: NextRequest) {
     const webhook = await resolveReachableWebhookBaseUrl(req);
     const appWebhookUrl = webhook.url;
     const profileSpec = getWorkerProfile(vm.workerProfile);
+    const workspaceSettings = await getOrCreateWorkspaceSettings(verified.userId);
+    const effectiveIdleMinutes =
+      vm.idleTimeoutMinutes ?? workspaceSettings.idleTimeoutMinutes ?? 15;
+    let prewarmModels: Array<{ category: string; filename: string }> = [];
+    if (vm.prewarmModelsJson) {
+      try {
+        const parsed = JSON.parse(vm.prewarmModelsJson);
+        if (Array.isArray(parsed)) prewarmModels = parsed;
+      } catch {
+        prewarmModels = [];
+      }
+    }
+
     const pythonCode = buildUnifiedNotebookPythonCode({
       provider: "colab",
       appWebhookUrl,
       registrationJwt,
       vmSecret,
       gdriveTokenJson: gdriveCred.rawTokenJson,
-      gdriveBaseFolder: gdriveCred.baseFolder,
+      gdriveBaseFolder: gdriveCred.baseFolder || workspaceSettings.gdriveBaseFolder,
       gpuTargets: [vm.target],
       accountAlias: vm.accountAlias,
       workerProfile: profileSpec.id,
       customNodes: profileSpec.customNodes,
+      idleTimeoutSeconds: effectiveIdleMinutes * 60,
+      prewarmModels,
     });
 
     await prisma.vmInstance.updateMany({

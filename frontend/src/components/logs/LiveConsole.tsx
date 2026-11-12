@@ -33,8 +33,8 @@ function getCategoryColor(category: string, level: string): string {
   }
 }
 
-export function LiveConsole() {
-  const [expanded, setExpanded] = useState(false);
+export function LiveConsole({ defaultExpanded = false }: { defaultExpanded?: boolean }) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const [category, setCategory] = useState("ALL");
   const [autoScroll, setAutoScroll] = useState(true);
   const bodyRef = useRef<HTMLDivElement>(null);

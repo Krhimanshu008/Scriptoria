@@ -28,14 +28,19 @@ async function main() {
   for (const stmt of statements) {
     await client.execute(stmt);
   }
-  try {
-    await client.execute(
-      `ALTER TABLE "VmInstance" ADD COLUMN "workerProfile" TEXT NOT NULL DEFAULT 'BASE_COMFY'`
-    );
-  } catch (err) {
-    const msg = err instanceof Error ? err.message.toLowerCase() : "";
-    if (!msg.includes("duplicate column")) {
-      throw err;
+  const alterStatements = [
+    `ALTER TABLE "VmInstance" ADD COLUMN "workerProfile" TEXT NOT NULL DEFAULT 'BASE_COMFY'`,
+    `ALTER TABLE "VmInstance" ADD COLUMN "idleTimeoutMinutes" INTEGER`,
+    `ALTER TABLE "VmInstance" ADD COLUMN "prewarmModelsJson" TEXT`,
+  ];
+  for (const alterSql of alterStatements) {
+    try {
+      await client.execute(alterSql);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message.toLowerCase() : "";
+      if (!msg.includes("duplicate column")) {
+        throw err;
+      }
     }
   }
   console.log("Turso schema initialized successfully.");

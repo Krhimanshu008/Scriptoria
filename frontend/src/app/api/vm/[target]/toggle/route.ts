@@ -6,6 +6,7 @@ import { getDecryptedCredential, saveUserCredential } from "@/lib/crypto/credent
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
 import { buildUnifiedNotebookPythonCode } from "@/lib/orchestrator/notebook-builder";
 import { getWorkerProfile } from "@/lib/catalog/worker-profiles";
+import { getOrCreateWorkspaceSettings } from "@/lib/settings/workspace-settings";
 import { KaggleOrchestrator } from "@/lib/orchestrator/kaggle-client";
 import { VmGateway } from "@/lib/orchestrator/vm-gateway";
 import { resolveReachableWebhookBaseUrl } from "@/lib/orchestrator/webhook-tunnel";
@@ -140,17 +141,32 @@ export async function POST(
       }
 
       const profileSpec = getWorkerProfile(vm.workerProfile);
+      const workspaceSettings = await getOrCreateWorkspaceSettings(user.userId);
+      const effectiveIdleMinutes =
+        vm.idleTimeoutMinutes ?? workspaceSettings.idleTimeoutMinutes ?? 15;
+      let prewarmModels: Array<{ category: string; filename: string }> = [];
+      if (vm.prewarmModelsJson) {
+        try {
+          const parsed = JSON.parse(vm.prewarmModelsJson);
+          if (Array.isArray(parsed)) prewarmModels = parsed;
+        } catch {
+          prewarmModels = [];
+        }
+      }
+
       const pythonCode = buildUnifiedNotebookPythonCode({
         provider: "kaggle",
         appWebhookUrl,
         registrationJwt,
         vmSecret,
         gdriveTokenJson: gdriveCred.rawTokenJson,
-        gdriveBaseFolder: gdriveCred.baseFolder,
+        gdriveBaseFolder: gdriveCred.baseFolder || workspaceSettings.gdriveBaseFolder,
         gpuTargets: groupTargets,
         accountAlias: vm.accountAlias,
         workerProfile: profileSpec.id,
         customNodes: profileSpec.customNodes,
+        idleTimeoutSeconds: effectiveIdleMinutes * 60,
+        prewarmModels,
         enableOfflineDatasetScan: vm.accountAlias === "acc1",
       });
 

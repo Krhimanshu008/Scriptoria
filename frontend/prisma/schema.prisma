@@ -22,6 +22,7 @@ model User {
   systemLogs        SystemLog[]
   modelAssets       ModelAsset[]
   workflowTemplates WorkflowTemplate[]
+  workspaceSettings WorkspaceSettings?
 }
 
 model Credential {
@@ -51,9 +52,11 @@ model VmInstance {
   displayName   String    @default("")
   provider      String    // "kaggle", "colab"
   accountAlias  String    // Bound to Credential.accountAlias ("acc1", "acc2")
-  sessionGroup  String    // Shared VM container group e.g. "kaggle-acc1", "kaggle-acc2", "colab-acc1"
-  workerProfile String    @default("BASE_COMFY") // BASE_COMFY, IMAGE_CORE, IMAGE_GGUF_EDIT, AUDIO_LIPSYNC, VIDEO_MOTION
-  internalPort  Int       @default(8188) // 8188 or 8189 inside VM
+  sessionGroup       String    // Shared VM container group e.g. "kaggle-acc1", "kaggle-acc2", "colab-acc1"
+  workerProfile      String    @default("BASE_COMFY") // BASE_COMFY, IMAGE_CORE, IMAGE_GGUF_EDIT, AUDIO_LIPSYNC, VIDEO_MOTION
+  idleTimeoutMinutes Int?      // Optional per-slot override; null falls back to WorkspaceSettings.idleTimeoutMinutes
+  prewarmModelsJson  String?   // Optional JSON array [{ category, filename }] to pre-stream while ComfyUI boots
+  internalPort       Int       @default(8188) // 8188 or 8189 inside VM
   publicUrl     String    @default("")   // Live trycloudflare.com URL (Caddy :8000) or named tunnel
   vmSecret      String?   // Per-session X-VM-Secret verified by Caddy
   useRouteLess  Boolean   @default(true) // True: Caddy + X-Target-Port; False: legacy direct tunnel
@@ -174,4 +177,23 @@ model WorkflowTemplate {
 
   @@unique([userId, slug])
   @@index([userId, modality, targetProfile])
+}
+
+model WorkspaceSettings {
+  id                     String   @id @default(cuid())
+  userId                 String   @unique
+  user                   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  defaultDashboard       String   @default("vms") // "vms" | "studio"
+  gdriveBaseFolder       String   @default("NovelVisualizer/ComfyUI_Storage")
+  autoBackupToDrive      Boolean  @default(true)
+  diskCleanupThresholdGb Float    @default(6.0)
+  idleTimeoutMinutes     Int      @default(15)
+  defaultWorkerProfile   String   @default("BASE_COMFY")
+  autoVaeFixSdxl         Boolean  @default(true)
+  preferredLlmProvider   String   @default("gemini")
+  preferredLlmModel      String   @default("gemini-2.5-flash")
+  agentMode              String   @default("COPILOT") // "COPILOT" | "AUTONOMOUS"
+  systemInstructions     String   @default("")
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
 }

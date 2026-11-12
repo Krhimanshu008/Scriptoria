@@ -39,6 +39,8 @@ const SCHEMA_DDL_STATEMENTS: string[] = [
     "accountAlias" TEXT NOT NULL,
     "sessionGroup" TEXT NOT NULL,
     "workerProfile" TEXT NOT NULL DEFAULT 'BASE_COMFY',
+    "idleTimeoutMinutes" INTEGER,
+    "prewarmModelsJson" TEXT,
     "internalPort" INTEGER NOT NULL DEFAULT 8188,
     "publicUrl" TEXT NOT NULL DEFAULT '',
     "vmSecret" TEXT,
@@ -153,18 +155,40 @@ const SCHEMA_DDL_STATEMENTS: string[] = [
   `CREATE INDEX IF NOT EXISTS "ModelAsset_userId_modality_category_idx" ON "ModelAsset"("userId", "modality", "category")`,
   `CREATE UNIQUE INDEX IF NOT EXISTS "WorkflowTemplate_userId_slug_key" ON "WorkflowTemplate"("userId", "slug")`,
   `CREATE INDEX IF NOT EXISTS "WorkflowTemplate_userId_modality_targetProfile_idx" ON "WorkflowTemplate"("userId", "modality", "targetProfile")`,
+  `CREATE TABLE IF NOT EXISTS "WorkspaceSettings" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "userId" TEXT NOT NULL,
+    "defaultDashboard" TEXT NOT NULL DEFAULT 'vms',
+    "gdriveBaseFolder" TEXT NOT NULL DEFAULT 'NovelVisualizer/ComfyUI_Storage',
+    "autoBackupToDrive" BOOLEAN NOT NULL DEFAULT true,
+    "diskCleanupThresholdGb" REAL NOT NULL DEFAULT 6.0,
+    "idleTimeoutMinutes" INTEGER NOT NULL DEFAULT 15,
+    "defaultWorkerProfile" TEXT NOT NULL DEFAULT 'BASE_COMFY',
+    "autoVaeFixSdxl" BOOLEAN NOT NULL DEFAULT true,
+    "preferredLlmProvider" TEXT NOT NULL DEFAULT 'gemini',
+    "preferredLlmModel" TEXT NOT NULL DEFAULT 'gemini-2.5-flash',
+    "agentMode" TEXT NOT NULL DEFAULT 'COPILOT',
+    "systemInstructions" TEXT NOT NULL DEFAULT '',
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "WorkspaceSettings_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS "WorkspaceSettings_userId_key" ON "WorkspaceSettings"("userId")`,
 ];
 
 async function runSchemaSync(): Promise<void> {
   const [vmCols, existingTables] = await Promise.all([
     prisma.$queryRawUnsafe<Array<{ name: string }>>(`PRAGMA table_info("VmInstance")`),
     prisma.$queryRawUnsafe<Array<{ name: string }>>(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name IN ('User','Credential','VmInstance','Job','SystemLog','ModelAsset','WorkflowTemplate')`
+      `SELECT name FROM sqlite_master WHERE type='table' AND name IN ('User','Credential','VmInstance','Job','SystemLog','ModelAsset','WorkflowTemplate','WorkspaceSettings')`
     ),
   ]);
 
   const tableSet = new Set(existingTables.map((t) => t.name));
-  const hasWorkerProfile = vmCols.some((c) => c.name === "workerProfile");
+  const vmColSet = new Set(vmCols.map((c) => c.name));
+  const hasWorkerProfile = vmColSet.has("workerProfile");
+  const hasIdleTimeout = vmColSet.has("idleTimeoutMinutes");
+  const hasPrewarmModels = vmColSet.has("prewarmModelsJson");
   const allTablesExist =
     tableSet.has("User") &&
     tableSet.has("Credential") &&
@@ -172,9 +196,10 @@ async function runSchemaSync(): Promise<void> {
     tableSet.has("Job") &&
     tableSet.has("SystemLog") &&
     tableSet.has("ModelAsset") &&
-    tableSet.has("WorkflowTemplate");
+    tableSet.has("WorkflowTemplate") &&
+    tableSet.has("WorkspaceSettings");
 
-  if (allTablesExist && hasWorkerProfile) {
+  if (allTablesExist && hasWorkerProfile && hasIdleTimeout && hasPrewarmModels) {
     globalForSchema.__scriptoriaSchemaReady = true;
     return;
   }
@@ -183,15 +208,31 @@ async function runSchemaSync(): Promise<void> {
     await prisma.$executeRawUnsafe(stmt);
   }
 
-  if (tableSet.has("VmInstance") && !hasWorkerProfile) {
-    try {
-      await prisma.$executeRawUnsafe(
-        `ALTER TABLE "VmInstance" ADD COLUMN "workerProfile" TEXT NOT NULL DEFAULT 'BASE_COMFY'`
-      );
-    } catch (err) {
-      const msg = err instanceof Error ? err.message.toLowerCase() : "";
-      if (!msg.includes("duplicate column")) {
-        throw err;
+  if (tableSet.has("VmInstance")) {
+    const missingVmCols: Array<{ present: boolean; sql: string }> = [
+      {
+        present: hasWorkerProfile,
+        sql: `ALTER TABLE "VmInstance" ADD COLUMN "workerProfile" TEXT NOT NULL DEFAULT 'BASE_COMFY'`,
+      },
+      {
+        present: hasIdleTimeout,
+        sql: `ALTER TABLE "VmInstance" ADD COLUMN "idleTimeoutMinutes" INTEGER`,
+      },
+      {
+        present: hasPrewarmModels,
+        sql: `ALTER TABLE "VmInstance" ADD COLUMN "prewarmModelsJson" TEXT`,
+      },
+    ];
+
+    for (const col of missingVmCols) {
+      if (col.present) continue;
+      try {
+        await prisma.$executeRawUnsafe(col.sql);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message.toLowerCase() : "";
+        if (!msg.includes("duplicate column")) {
+          throw err;
+        }
       }
     }
   }

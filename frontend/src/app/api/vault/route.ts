@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getAuthUser } from "@/lib/auth/session";
-import { getDecryptedCredential, saveUserCredential } from "@/lib/crypto/credentials";
+import { decryptSecret } from "@/lib/crypto/vault";
+import {
+  buildRedactedSecretHint,
+  getDecryptedCredential,
+  saveUserCredential,
+  updateUserCredential,
+} from "@/lib/crypto/credentials";
 import { invalidateColabMetaIfEmailChanged } from "@/lib/orchestrator/colab-runner";
 import { appendSystemLog } from "@/lib/logs/logger";
 
@@ -20,6 +26,9 @@ export async function GET(req: NextRequest) {
         provider: true,
         accountAlias: true,
         username: true,
+        encryptedKey: true,
+        iv: true,
+        authTag: true,
         authType: true,
         metadataJson: true,
         updatedAt: true,
@@ -41,16 +50,41 @@ export async function GET(req: NextRequest) {
     });
 
     return NextResponse.json({
-      credentials: creds.map((c) => ({
-        id: c.id,
-        provider: c.provider,
-        accountAlias: c.accountAlias,
-        username: c.username,
-        authType: c.authType,
-        metadata: c.metadataJson ? JSON.parse(c.metadataJson) : null,
-        updatedAt: c.updatedAt.toISOString(),
-        configured: true,
-      })),
+      credentials: creds.map((c) => {
+        let meta: Record<string, unknown> | null = null;
+        if (c.metadataJson) {
+          try {
+            meta = JSON.parse(c.metadataJson) as Record<string, unknown>;
+          } catch {
+            meta = null;
+          }
+        }
+        let secretHint =
+          typeof meta?.secretHint === "string" ? (meta.secretHint as string) : null;
+        if (!secretHint) {
+          try {
+            const plain = decryptSecret({
+              ciphertext: c.encryptedKey,
+              iv: c.iv,
+              authTag: c.authTag,
+            });
+            secretHint = buildRedactedSecretHint(c.provider, plain);
+          } catch {
+            secretHint = "••••";
+          }
+        }
+        return {
+          id: c.id,
+          provider: c.provider,
+          accountAlias: c.accountAlias,
+          username: c.username,
+          authType: c.authType,
+          secretHint,
+          metadata: meta,
+          updatedAt: c.updatedAt.toISOString(),
+          configured: true,
+        };
+      }),
       vms,
     });
   } catch (error) {
@@ -104,6 +138,18 @@ export async function POST(req: NextRequest) {
       metadata,
     });
 
+    if (provider === "gdrive" && metadata && typeof metadata.baseFolder === "string") {
+      const folder = String(metadata.baseFolder).trim().replace(/^\/+|\/+$/g, "");
+      if (folder) {
+        await prisma.workspaceSettings
+          .updateMany({
+            where: { userId: user.userId },
+            data: { gdriveBaseFolder: folder },
+          })
+          .catch(() => null);
+      }
+    }
+
     if (provider === "colab") {
       await invalidateColabMetaIfEmailChanged(
         user.userId,
@@ -130,6 +176,106 @@ export async function POST(req: NextRequest) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to save vault credential";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
+
+export async function PATCH(req: NextRequest) {
+  try {
+    const user = await getAuthUser(req);
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const body = await req.json();
+    const provider = String(body.provider || "").trim().toLowerCase();
+    const accountAlias = String(body.accountAlias || "default").trim();
+    const newAccountAlias = body.newAccountAlias
+      ? String(body.newAccountAlias).trim()
+      : undefined;
+    const username =
+      body.username !== undefined
+        ? body.username === null
+          ? null
+          : String(body.username).trim() || null
+        : undefined;
+    const rawSecret = body.rawSecret ? String(body.rawSecret).trim() : undefined;
+    const metadata =
+      body.metadata && typeof body.metadata === "object"
+        ? (body.metadata as Record<string, unknown>)
+        : undefined;
+
+    if (!provider || !accountAlias) {
+      return NextResponse.json(
+        { error: "provider and accountAlias are required." },
+        { status: 400 }
+      );
+    }
+
+    if (rawSecret && provider === "gdrive") {
+      try {
+        JSON.parse(rawSecret);
+      } catch {
+        return NextResponse.json(
+          { error: "Google Drive secret must be a valid Rclone / OAuth JSON string." },
+          { status: 400 }
+        );
+      }
+    }
+
+    const prevColab =
+      provider === "colab"
+        ? await getDecryptedCredential(user.userId, "colab", accountAlias).catch(() => null)
+        : null;
+
+    const updated = await updateUserCredential(user.userId, {
+      provider,
+      accountAlias,
+      newAccountAlias,
+      username,
+      rawSecret,
+      metadata,
+    });
+
+    if (provider === "gdrive" && metadata && typeof metadata.baseFolder === "string") {
+      const folder = String(metadata.baseFolder).trim().replace(/^\/+|\/+$/g, "");
+      if (folder) {
+        await prisma.workspaceSettings
+          .updateMany({
+            where: { userId: user.userId },
+            data: { gdriveBaseFolder: folder },
+          })
+          .catch(() => null);
+      }
+    }
+
+    if (provider === "colab" && username !== undefined) {
+      await invalidateColabMetaIfEmailChanged(
+        user.userId,
+        newAccountAlias || accountAlias,
+        prevColab?.username,
+        username
+      );
+    }
+
+    await appendSystemLog({
+      userId: user.userId,
+      category: "SYSTEM",
+      level: "SUCCESS",
+      message: `Edited Vault credential for ${provider} (${newAccountAlias || accountAlias})${rawSecret ? " [secret rotated]" : " [metadata updated]"}.`,
+    });
+
+    return NextResponse.json({
+      ok: true,
+      id: updated.id,
+      provider: updated.provider,
+      accountAlias: updated.accountAlias,
+      username: updated.username,
+      authType: updated.authType,
+      updatedAt: updated.updatedAt.toISOString(),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to update credential";
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

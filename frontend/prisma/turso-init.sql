@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS "VmInstance" (
     "accountAlias" TEXT NOT NULL,
     "sessionGroup" TEXT NOT NULL,
     "workerProfile" TEXT NOT NULL DEFAULT 'BASE_COMFY',
+    "idleTimeoutMinutes" INTEGER,
+    "prewarmModelsJson" TEXT,
     "internalPort" INTEGER NOT NULL DEFAULT 8188,
     "publicUrl" TEXT NOT NULL DEFAULT '',
     "vmSecret" TEXT,
@@ -155,4 +157,25 @@ CREATE UNIQUE INDEX IF NOT EXISTS "ModelAsset_userId_slug_key" ON "ModelAsset"("
 CREATE INDEX IF NOT EXISTS "ModelAsset_userId_modality_category_idx" ON "ModelAsset"("userId", "modality", "category");
 CREATE UNIQUE INDEX IF NOT EXISTS "WorkflowTemplate_userId_slug_key" ON "WorkflowTemplate"("userId", "slug");
 CREATE INDEX IF NOT EXISTS "WorkflowTemplate_userId_modality_targetProfile_idx" ON "WorkflowTemplate"("userId", "modality", "targetProfile");
+
+CREATE TABLE IF NOT EXISTS "WorkspaceSettings" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "userId" TEXT NOT NULL,
+    "defaultDashboard" TEXT NOT NULL DEFAULT 'vms',
+    "gdriveBaseFolder" TEXT NOT NULL DEFAULT 'NovelVisualizer/ComfyUI_Storage',
+    "autoBackupToDrive" BOOLEAN NOT NULL DEFAULT true,
+    "diskCleanupThresholdGb" REAL NOT NULL DEFAULT 6.0,
+    "idleTimeoutMinutes" INTEGER NOT NULL DEFAULT 15,
+    "defaultWorkerProfile" TEXT NOT NULL DEFAULT 'BASE_COMFY',
+    "autoVaeFixSdxl" BOOLEAN NOT NULL DEFAULT true,
+    "preferredLlmProvider" TEXT NOT NULL DEFAULT 'gemini',
+    "preferredLlmModel" TEXT NOT NULL DEFAULT 'gemini-2.5-flash',
+    "agentMode" TEXT NOT NULL DEFAULT 'COPILOT',
+    "systemInstructions" TEXT NOT NULL DEFAULT '',
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "WorkspaceSettings_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS "WorkspaceSettings_userId_key" ON "WorkspaceSettings"("userId");
 

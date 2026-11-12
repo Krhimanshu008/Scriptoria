@@ -8,11 +8,12 @@ import {
   Server,
   HardDriveDownload,
   Images,
-  KeyRound,
+  Settings,
   PowerOff,
   LogOut,
   Loader2,
   Sparkles,
+  Cpu,
   X,
 } from "lucide-react";
 import type { SessionUser } from "@/lib/auth/session";
@@ -22,10 +23,11 @@ import { formatStreamSummary } from "@/lib/format";
 import { toast } from "sonner";
 
 const NAV_ITEMS = [
-  { href: "/", label: "Command Center", icon: Sparkles },
-  { href: "/models", label: "Models", icon: HardDriveDownload },
-  { href: "/history", label: "History", icon: Images },
-  { href: "/settings/vault", label: "Vault", icon: KeyRound },
+  { href: "/vms", label: "VM Cluster", icon: Cpu },
+  { href: "/studio", label: "Agentic Studio", icon: Sparkles },
+  { href: "/models", label: "Catalog & Drive", icon: HardDriveDownload },
+  { href: "/history", label: "Outputs", icon: Images },
+  { href: "/settings", label: "Settings & Keys", icon: Settings },
 ];
 
 export function DashboardShell({
@@ -283,10 +285,7 @@ export function DashboardShell({
             <nav className="flex items-center gap-1 rounded-xl border border-white/10 bg-white/[0.04] p-1 backdrop-blur-md">
               {NAV_ITEMS.map((item) => {
                 const Icon = item.icon;
-                const active =
-                  item.href === "/"
-                    ? pathname === "/" || pathname.startsWith("/studio")
-                    : pathname.startsWith(item.href);
+                const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
                 return (
                   <Link
                     key={item.href}
