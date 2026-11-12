@@ -131,13 +131,13 @@ export async function GET(req: NextRequest) {
           };
 
           try {
-            const st = await KaggleOrchestrator.getKernelStatus(creds, "kaggle-dual-gpu-runner");
+            const st = await KaggleOrchestrator.getKernelStatus(creds, `kaggle-dual-gpu-runner-${alias}`);
             const kStatus = String(st.status || "").toLowerCase();
 
             if (kStatus === "error" || kStatus === "cancelacknowledged" || kStatus === "complete") {
               const logLines = await KaggleOrchestrator.getKernelOutput(
                 creds,
-                "kaggle-dual-gpu-runner"
+                `kaggle-dual-gpu-runner-${alias}`
               );
               const detail =
                 kStatus === "cancelacknowledged"

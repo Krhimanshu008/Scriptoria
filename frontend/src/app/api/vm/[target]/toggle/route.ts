@@ -213,7 +213,7 @@ export async function POST(
             key: kaggleCred.secret,
             authType: (kaggleCred.authType === "bearer" ? "bearer" : "basic"),
           },
-          kernelSlug: "kaggle-dual-gpu-runner",
+          kernelSlug: `kaggle-dual-gpu-runner-${vm.accountAlias}`,
           pythonCode,
           datasetDataSources: [],
         });
