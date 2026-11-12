@@ -355,6 +355,13 @@ async function runSchemaSync(): Promise<void> {
     tableSet.has("LlmChatMessage");
 
   if (allTablesExist && hasWorkerProfile && hasIdleTimeout && hasPrewarmModels && hasBootMetadata) {
+    try {
+      await prisma.$queryRawUnsafe(`PRAGMA journal_mode = WAL;`);
+      await prisma.$queryRawUnsafe(`PRAGMA synchronous = NORMAL;`);
+      await prisma.$queryRawUnsafe(`PRAGMA busy_timeout = 5000;`);
+    } catch {
+      // Ignore if PRAGMAs are not supported on remote endpoints
+    }
     globalForSchema.__scriptoriaSchemaReady = true;
     return;
   }

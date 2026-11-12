@@ -18,36 +18,37 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const creds = await prisma.credential.findMany({
-      where: { userId: user.userId },
-      orderBy: [{ provider: "asc" }, { accountAlias: "asc" }],
-      select: {
-        id: true,
-        provider: true,
-        accountAlias: true,
-        username: true,
-        encryptedKey: true,
-        iv: true,
-        authTag: true,
-        authType: true,
-        metadataJson: true,
-        updatedAt: true,
-      },
-    });
-
-    const vms = await prisma.vmInstance.findMany({
-      where: { userId: user.userId },
-      select: {
-        id: true,
-        target: true,
-        displayName: true,
-        provider: true,
-        accountAlias: true,
-        sessionGroup: true,
-        internalPort: true,
-        useRouteLess: true,
-      },
-    });
+    const [creds, vms] = await Promise.all([
+      prisma.credential.findMany({
+        where: { userId: user.userId },
+        orderBy: [{ provider: "asc" }, { accountAlias: "asc" }],
+        select: {
+          id: true,
+          provider: true,
+          accountAlias: true,
+          username: true,
+          encryptedKey: true,
+          iv: true,
+          authTag: true,
+          authType: true,
+          metadataJson: true,
+          updatedAt: true,
+        },
+      }),
+      prisma.vmInstance.findMany({
+        where: { userId: user.userId },
+        select: {
+          id: true,
+          target: true,
+          displayName: true,
+          provider: true,
+          accountAlias: true,
+          sessionGroup: true,
+          internalPort: true,
+          useRouteLess: true,
+        },
+      }),
+    ]);
 
     return NextResponse.json({
       credentials: creds.map((c) => {

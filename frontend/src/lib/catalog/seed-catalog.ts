@@ -963,11 +963,17 @@ export const SEED_WORKFLOW_TEMPLATES: SeedWorkflowSpec[] = [
   },
 ];
 
+const userCatalogSeeded = new Set<string>();
+
 /**
  * Idempotently seeds the curated Image, Audio, and Video ModelAsset catalog and WorkflowTemplates
  * for a user if they don't exist yet (never overwrites user modifications).
  */
 export async function ensureUserCatalogSeeded(userId: string): Promise<void> {
+  if (userCatalogSeeded.has(userId)) {
+    return;
+  }
+
   const existingCount = await prisma.modelAsset.count({ where: { userId } });
   const existingWfCount = await prisma.workflowTemplate.count({ where: { userId } });
 
@@ -1028,5 +1034,7 @@ export async function ensureUserCatalogSeeded(userId: string): Promise<void> {
       });
     }
   }
+
+  userCatalogSeeded.add(userId);
 }
 

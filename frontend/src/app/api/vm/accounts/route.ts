@@ -30,6 +30,9 @@ export interface ColabAccountSummary {
   targets: string[];
 }
 
+const quotaCache = new Map<string, { quota: KaggleQuotaInfo; cachedAt: number }>();
+const QUOTA_CACHE_TTL_MS = 60_000;
+
 export async function GET(req: NextRequest) {
   try {
     const user = await getAuthUser(req);
@@ -100,12 +103,26 @@ export async function GET(req: NextRequest) {
           };
         }
 
+        const cacheKey = `${cred.username}:${cred.authType}`;
+        const cached = quotaCache.get(cacheKey);
+        const now = Date.now();
+        if (cached && now - cached.cachedAt < QUOTA_CACHE_TTL_MS) {
+          return {
+            accountAlias: alias,
+            username: cred.username,
+            configured: true,
+            targets,
+            quota: cached.quota,
+          };
+        }
+
         try {
           const quota = await KaggleOrchestrator.getQuota({
             username: cred.username,
             key: cred.secret,
             authType: cred.authType === "bearer" ? "bearer" : "basic",
           });
+          quotaCache.set(cacheKey, { quota, cachedAt: Date.now() });
           return {
             accountAlias: alias,
             username: cred.username,

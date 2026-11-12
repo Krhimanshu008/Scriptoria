@@ -183,8 +183,12 @@ export async function getSessionUserFast(req?: NextRequest): Promise<SessionUser
   return verifySessionToken(token);
 }
 
+const authUserCache = new Map<string, { user: SessionUser; expiresAt: number }>();
+const AUTH_CACHE_TTL_MS = 60_000;
+
 /**
  * Extracts and verifies the authenticated user from cookies and ensures user exists in DB.
+ * Uses an in-memory TTL cache to avoid redundant database roundtrips on rapid dashboard polls.
  */
 export async function getAuthUser(req?: NextRequest): Promise<SessionUser | null> {
   let token: string | undefined;
@@ -199,6 +203,12 @@ export async function getAuthUser(req?: NextRequest): Promise<SessionUser | null
   const parsed = verifySessionToken(token);
   if (!parsed) return null;
 
+  const now = Date.now();
+  const cached = authUserCache.get(parsed.userId);
+  if (cached && cached.expiresAt > now) {
+    return cached.user;
+  }
+
   await ensureDbSchemaReady();
 
   const user = await prisma.user.findUnique({
@@ -207,12 +217,19 @@ export async function getAuthUser(req?: NextRequest): Promise<SessionUser | null
   });
 
   if (!user) return null;
-  return {
+  const sessionUser: SessionUser = {
     userId: user.id,
     email: user.email,
     role: user.role,
     name: user.name,
   };
+
+  authUserCache.set(user.id, {
+    user: sessionUser,
+    expiresAt: now + AUTH_CACHE_TTL_MS,
+  });
+
+  return sessionUser;
 }
 
 export function shouldUseSecureCookie(req: NextRequest): boolean {
@@ -220,29 +237,49 @@ export function shouldUseSecureCookie(req: NextRequest): boolean {
   return proto.replace(/:$/, "") === "https";
 }
 
+const userSlotsProvisioned = new Set<string>();
+
 /**
- * Provisions the 6 default GPU slots for a newly created user.
+ * Provisions default GPU slots for a user.
+ * Optimizes network roundtrips by checking in-memory status and inserting missing slots in parallel.
  */
 export async function ensureUserVmSlots(userId: string): Promise<void> {
-  await ensureDbSchemaReady();
-  for (const slot of DEFAULT_VM_SLOTS) {
-    await prisma.vmInstance.upsert({
-      where: { userId_target: { userId, target: slot.target } },
-      update: {},
-      create: {
-        userId,
-        target: slot.target,
-        displayName: slot.displayName,
-        provider: slot.provider,
-        accountAlias: slot.accountAlias,
-        sessionGroup: slot.sessionGroup,
-        workerProfile: slot.workerProfile,
-        internalPort: slot.internalPort,
-        publicUrl: "",
-        status: "OFFLINE",
-        stepProgress: 0,
-      },
-    });
+  if (userSlotsProvisioned.has(userId)) {
+    return;
   }
+
+  await ensureDbSchemaReady();
+
+  const existing = await prisma.vmInstance.findMany({
+    where: { userId },
+    select: { target: true },
+  });
+
+  const existingTargets = new Set(existing.map((e) => e.target));
+  const missingSlots = DEFAULT_VM_SLOTS.filter((s) => !existingTargets.has(s.target));
+
+  if (missingSlots.length > 0) {
+    await Promise.all(
+      missingSlots.map((slot) =>
+        prisma.vmInstance.create({
+          data: {
+            userId,
+            target: slot.target,
+            displayName: slot.displayName,
+            provider: slot.provider,
+            accountAlias: slot.accountAlias,
+            sessionGroup: slot.sessionGroup,
+            workerProfile: slot.workerProfile,
+            internalPort: slot.internalPort,
+            publicUrl: "",
+            status: "OFFLINE",
+            stepProgress: 0,
+          },
+        })
+      )
+    );
+  }
+
+  userSlotsProvisioned.add(userId);
 }
 
