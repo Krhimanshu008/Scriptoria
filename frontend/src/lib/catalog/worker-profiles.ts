@@ -5,7 +5,8 @@ export type WorkerProfileId =
   | "AUDIO_LIPSYNC"
   | "VIDEO_MOTION"
   | "LLM_QWEN_VLM"
-  | "LLM_QWEN_TEXT_TURBO";
+  | "LLM_QWEN_TEXT_TURBO"
+  | "TPU_QWEN27B_V5E";
 
 export interface CustomNodeSpec {
   name: string;
@@ -19,6 +20,7 @@ export interface WorkerProfileSpec {
   description: string;
   recommendedTargets: string[];
   customNodes: CustomNodeSpec[];
+  accelerator?: "gpu" | "tpu";
 }
 
 export const WORKER_PROFILES: Record<WorkerProfileId, WorkerProfileSpec> = {
@@ -141,6 +143,16 @@ export const WORKER_PROFILES: Record<WorkerProfileId, WorkerProfileSpec> = {
     recommendedTargets: ["gpu0", "gpu1", "gpu2", "gpu3", "gpu4", "gpu5"],
     customNodes: [],
   },
+  TPU_QWEN27B_V5E: {
+    id: "TPU_QWEN27B_V5E",
+    label: "Qwen 27B BF16 (TPU v5e-8 · 130 tok/s · 262k)",
+    shortTag: "TPU-V5E",
+    description:
+      "Full unquantized Qwen3.8-27B BF16 on 8 TPU chips (128 GB HBM). Native Vision, 262K context, MTP speculative decoding (~130 tok/s), OpenAI-compatible /v1 API.",
+    recommendedTargets: ["gpu4", "gpu5", "gpu2", "gpu3", "gpu0", "gpu1"],
+    customNodes: [],
+    accelerator: "tpu",
+  },
 };
 
 export const WORKER_PROFILE_LIST: WorkerProfileSpec[] = Object.values(WORKER_PROFILES);
@@ -150,7 +162,7 @@ export function isValidWorkerProfile(id?: string | null): id is WorkerProfileId 
 }
 
 export function isLlmWorkerProfile(id?: string | null): boolean {
-  return id === "LLM_QWEN_VLM" || id === "LLM_QWEN_TEXT_TURBO";
+  return id === "LLM_QWEN_VLM" || id === "LLM_QWEN_TEXT_TURBO" || id === "TPU_QWEN27B_V5E";
 }
 
 export function getWorkerProfile(id?: string | null): WorkerProfileSpec {

@@ -5,6 +5,7 @@ import { generateVmSecret } from "@/lib/crypto/vault";
 import { getDecryptedCredential, saveUserCredential } from "@/lib/crypto/credentials";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
 import { buildUnifiedNotebookPythonCode } from "@/lib/orchestrator/notebook-builder";
+import { buildTpuNotebookPythonCode } from "@/lib/orchestrator/tpu-notebook-builder";
 import { getWorkerProfile, isLlmWorkerProfile } from "@/lib/catalog/worker-profiles";
 import { getOrCreateWorkspaceSettings } from "@/lib/settings/workspace-settings";
 import { KaggleOrchestrator } from "@/lib/orchestrator/kaggle-client";
@@ -179,21 +180,31 @@ export async function POST(
         }
       }
 
-      const pythonCode = buildUnifiedNotebookPythonCode({
-        provider: "kaggle",
-        appWebhookUrl,
-        registrationJwt,
-        vmSecret,
-        gdriveTokenJson: gdriveCred?.rawTokenJson || "",
-        gdriveBaseFolder: gdriveCred?.baseFolder || workspaceSettings.gdriveBaseFolder,
-        gpuTargets: groupTargets,
-        accountAlias: vm.accountAlias,
-        workerProfile: profileSpec.id,
-        customNodes: profileSpec.customNodes,
-        idleTimeoutSeconds: effectiveIdleMinutes * 60,
-        prewarmModels,
-        enableOfflineDatasetScan: vm.accountAlias === "acc1",
-      });
+      const isTpu = profileSpec.accelerator === "tpu";
+      const pythonCode = isTpu
+        ? buildTpuNotebookPythonCode({
+            appWebhookUrl,
+            registrationJwt,
+            vmSecret,
+            accountAlias: vm.accountAlias,
+            gpuTargets: groupTargets,
+            idleTimeoutSeconds: effectiveIdleMinutes * 60,
+          })
+        : buildUnifiedNotebookPythonCode({
+            provider: "kaggle",
+            appWebhookUrl,
+            registrationJwt,
+            vmSecret,
+            gdriveTokenJson: gdriveCred?.rawTokenJson || "",
+            gdriveBaseFolder: gdriveCred?.baseFolder || workspaceSettings.gdriveBaseFolder,
+            gpuTargets: groupTargets,
+            accountAlias: vm.accountAlias,
+            workerProfile: profileSpec.id,
+            customNodes: profileSpec.customNodes,
+            idleTimeoutSeconds: effectiveIdleMinutes * 60,
+            prewarmModels,
+            enableOfflineDatasetScan: vm.accountAlias === "acc1",
+          });
 
       await prisma.vmInstance.updateMany({
         where: { userId: user.userId, sessionGroup: vm.sessionGroup },
@@ -207,15 +218,24 @@ export async function POST(
       });
 
       try {
+        const kernelSlug = isTpu
+          ? `kaggle-tpu-runner-${vm.accountAlias}`
+          : `kaggle-dual-gpu-runner-${vm.accountAlias}`;
+
         const pushRes = await KaggleOrchestrator.pushKernel({
           credentials: {
             username: kaggleCred.username,
             key: kaggleCred.secret,
             authType: (kaggleCred.authType === "bearer" ? "bearer" : "basic"),
           },
-          kernelSlug: `kaggle-dual-gpu-runner-${vm.accountAlias}`,
+          kernelSlug,
           pythonCode,
-          datasetDataSources: [],
+          datasetDataSources: isTpu
+            ? ["rahim3/qwen3-8-27b-bf16", "rahim3/qwen38-tpu-env-v5e8"]
+            : [],
+          enableTpu: isTpu,
+          enableGpu: !isTpu,
+          accelerator: isTpu ? "tpuV5e" : "nvidiaTeslaT4",
         });
 
         if (pushRes.kernelSessionId) {
@@ -237,7 +257,9 @@ export async function POST(
           vmInstanceId: vm.id,
           category: "KAGGLE",
           level: "SUCCESS",
-          message: `Pushed Kaggle Dual-T4 kernel (${vm.accountAlias}, callback=${webhook.mode}) for ${groupTargets.join(" & ")} -> ${pushRes.url}`,
+          message: isTpu
+            ? `Pushed Kaggle TPU v5e-8 kernel (${vm.accountAlias}, callback=${webhook.mode}) for ${groupTargets.join(" & ")} -> ${pushRes.url}`
+            : `Pushed Kaggle Dual-T4 kernel (${vm.accountAlias}, callback=${webhook.mode}) for ${groupTargets.join(" & ")} -> ${pushRes.url}`,
         });
 
         const refreshed = await prisma.vmInstance.findMany({

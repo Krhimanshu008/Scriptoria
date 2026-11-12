@@ -130,14 +130,19 @@ export async function GET(req: NextRequest) {
             authType: (kc.authType === "bearer" ? "bearer" : "basic") as "bearer" | "basic",
           };
 
+          const isTpu = groupRows.some((r) => r.workerProfile === "TPU_QWEN27B_V5E");
+          const kernelSlug = isTpu
+            ? `kaggle-tpu-runner-${alias}`
+            : `kaggle-dual-gpu-runner-${alias}`;
+
           try {
-            const st = await KaggleOrchestrator.getKernelStatus(creds, `kaggle-dual-gpu-runner-${alias}`);
+            const st = await KaggleOrchestrator.getKernelStatus(creds, kernelSlug);
             const kStatus = String(st.status || "").toLowerCase();
 
             if (kStatus === "error" || kStatus === "cancelacknowledged" || kStatus === "complete") {
               const logLines = await KaggleOrchestrator.getKernelOutput(
                 creds,
-                `kaggle-dual-gpu-runner-${alias}`
+                kernelSlug
               );
               const detail =
                 kStatus === "cancelacknowledged"

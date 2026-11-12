@@ -91,7 +91,7 @@ const DEFAULT_JSON_SCHEMA = JSON.stringify(
   2
 );
 
-async function downscaleImageToDataUrl(file: File, maxEdge = 896): Promise<string> {
+async function downscaleImageToDataUrl(file: File, targetSize = 1024): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error("Failed to read image"));
@@ -99,20 +99,27 @@ async function downscaleImageToDataUrl(file: File, maxEdge = 896): Promise<strin
       const img = new Image();
       img.onerror = () => reject(new Error("Invalid image file"));
       img.onload = () => {
-        const longest = Math.max(img.width, img.height);
-        const scale = longest > maxEdge ? maxEdge / longest : 1;
-        const w = Math.max(64, Math.round(img.width * scale));
-        const h = Math.max(64, Math.round(img.height * scale));
+        // Pad & resize to fixed 1024x1024 square to avoid XLA ViT graph recompilation on TPU
         const canvas = document.createElement("canvas");
-        canvas.width = w;
-        canvas.height = h;
+        canvas.width = targetSize;
+        canvas.height = targetSize;
         const ctx = canvas.getContext("2d");
         if (!ctx) {
           resolve(String(reader.result));
           return;
         }
-        ctx.drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL("image/png"));
+
+        ctx.fillStyle = "#FFFFFF";
+        ctx.fillRect(0, 0, targetSize, targetSize);
+
+        const scale = Math.min(targetSize / img.width, targetSize / img.height);
+        const w = Math.round(img.width * scale);
+        const h = Math.round(img.height * scale);
+        const x = Math.round((targetSize - w) / 2);
+        const y = Math.round((targetSize - h) / 2);
+
+        ctx.drawImage(img, x, y, w, h);
+        resolve(canvas.toDataURL("image/jpeg", 0.92));
       };
       img.src = String(reader.result);
     };

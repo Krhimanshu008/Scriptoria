@@ -10,6 +10,8 @@ export interface PushKernelParams {
   pythonCode: string;
   datasetDataSources?: string[];
   enableGpu?: boolean;
+  enableTpu?: boolean;
+  accelerator?: "nvidiaTeslaT4" | "tpuV5e";
 }
 
 export interface KernelStatusResult {
@@ -87,22 +89,30 @@ export class KaggleOrchestrator {
       pythonCode,
       datasetDataSources = [],
       enableGpu = true,
+      enableTpu = false,
+      accelerator,
     } = params;
     const notebookJson = this.wrapPythonAsNotebookJson(pythonCode);
     const fullSlug = `${credentials.username}/${kernelSlug}`;
 
-    const payload = {
+    const isTpu = Boolean(enableTpu || accelerator === "tpuV5e");
+
+    const payload: Record<string, unknown> = {
       slug: fullSlug,
       newTitle: kernelSlug,
       text: JSON.stringify(notebookJson),
       language: "python",
       kernelType: "notebook",
       isPrivate: true,
-      enableGpu,
-      enableTpu: false,
+      enableGpu: isTpu ? false : enableGpu,
+      enableTpu: isTpu,
       enableInternet: true,
-      ...(enableGpu ? { machineShape: "NvidiaTeslaT4" } : {}),
-      datasetDataSources, // Empty by default to avoid cross-user 409 conflicts
+      ...(isTpu
+        ? { accelerator: "tpuV5e" }
+        : enableGpu
+        ? { machineShape: "NvidiaTeslaT4" }
+        : {}),
+      datasetDataSources,
       competitionDataSources: [],
       kernelDataSources: [],
       modelDataSources: [],
