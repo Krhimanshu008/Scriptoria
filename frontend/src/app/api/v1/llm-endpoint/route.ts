@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
     const llmVms = await prisma.vmInstance.findMany({
       where: {
         userId: auth.userId,
-        workerProfile: "LLM_QWEN_VLM",
+        workerProfile: { in: ["LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"] },
       },
       orderBy: { lastHeartbeat: "desc" },
     });
@@ -26,6 +26,7 @@ export async function GET(req: NextRequest) {
         online: false,
         status: llmVms[0]?.status || "OFFLINE",
         target: llmVms[0]?.target || null,
+        workerProfile: llmVms[0]?.workerProfile || null,
         baseUrl: null,
         apiKey: null,
       });
@@ -36,6 +37,7 @@ export async function GET(req: NextRequest) {
       status: onlineVm.status,
       target: onlineVm.target,
       accountAlias: onlineVm.accountAlias,
+      workerProfile: onlineVm.workerProfile,
       baseUrl: `${onlineVm.publicUrl.replace(/\/$/, "")}/v1`,
       apiKey: onlineVm.vmSecret || "EMPTY",
       gpuName: onlineVm.gpuName,

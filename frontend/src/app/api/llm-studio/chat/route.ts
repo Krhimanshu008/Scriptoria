@@ -60,7 +60,7 @@ export async function POST(req: NextRequest) {
     const onlineVm = await prisma.vmInstance.findFirst({
       where: {
         userId: user.userId,
-        workerProfile: "LLM_QWEN_VLM",
+        workerProfile: { in: ["LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"] },
         status: "ONLINE",
       },
       orderBy: { lastHeartbeat: "desc" },

@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 import type { PrewarmModelRef, PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
 import type { KaggleAccountSummary, ColabAccountSummary } from "@/app/api/vm/accounts/route";
-import { WORKER_PROFILE_LIST, getWorkerProfile } from "@/lib/catalog/worker-profiles";
+import { WORKER_PROFILE_LIST, getWorkerProfile, isLlmWorkerProfile } from "@/lib/catalog/worker-profiles";
 import { VmLogsDialog } from "@/components/gpu/VmLogsDialog";
 import {
   Dialog,
@@ -601,10 +601,10 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
         <span className="inline-flex max-w-[200px] items-center gap-1.5 truncate font-mono text-[10px] text-zinc-500">
           <span className="truncate">
             {firstTunnel
-              ? `${firstTunnel.replace(/^https?:\/\//, "")}${activeProfile.id === "LLM_QWEN_VLM" ? "/v1" : ""}`
+              ? `${firstTunnel.replace(/^https?:\/\//, "")}${isLlmWorkerProfile(activeProfile.id) ? "/v1" : ""}`
               : "Caddy Route-less"}
           </span>
-          {firstTunnel && activeProfile.id === "LLM_QWEN_VLM" && (
+          {firstTunnel && isLlmWorkerProfile(activeProfile.id) && (
             <button
               type="button"
               onClick={() => {

@@ -121,12 +121,12 @@ export async function resolveCandidateLlmConfigs(
     candidates.push(cfg);
   };
 
-  // Prefer live self-hosted Kaggle QWEN-LLM VM when ONLINE and no explicit Vault alias overrides it
+  // Prefer live self-hosted Kaggle Qwen LLM VM when ONLINE and no explicit Vault alias overrides it
   if (!preferredAlias) {
     const onlineQwen = await prisma.vmInstance.findFirst({
       where: {
         userId,
-        workerProfile: "LLM_QWEN_VLM",
+        workerProfile: { in: ["LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"] },
         status: "ONLINE",
       },
       orderBy: { lastHeartbeat: "desc" },

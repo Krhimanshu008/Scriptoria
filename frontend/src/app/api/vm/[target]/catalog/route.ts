@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getAuthUser } from "@/lib/auth/session";
 import { ComfyClient } from "@/lib/orchestrator/comfy-client";
+import { isLlmWorkerProfile } from "@/lib/catalog/worker-profiles";
 
 export async function GET(
   req: NextRequest,
@@ -22,17 +23,18 @@ export async function GET(
       return NextResponse.json({ error: `VM ${target} is offline.` }, { status: 400 });
     }
 
-    if (vm.workerProfile === "LLM_QWEN_VLM") {
+    if (isLlmWorkerProfile(vm.workerProfile)) {
+      const isTurbo = vm.workerProfile === "LLM_QWEN_TEXT_TURBO";
       return NextResponse.json({
         target,
         totalNodesAvailable: 0,
         models: {
-          checkpoints: ["Qwen3.8-27B-UD-Q4_K_M.gguf"],
+          checkpoints: [isTurbo ? "Qwen3.8-27B-EXL3-4.00bpw" : "Qwen3.8-27B-UD-Q4_K_M.gguf"],
           loras: [],
           vaes: [],
           controlnets: [],
           ipadapters: [],
-          clip_visions: ["mmproj-F16.gguf"],
+          clip_visions: isTurbo ? [] : ["mmproj-F16.gguf"],
           upscale_models: [],
         },
       });

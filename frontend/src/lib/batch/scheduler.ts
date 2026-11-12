@@ -6,6 +6,7 @@ import { compileResourceAwareWorkflow, type WorkflowBuildSpec } from "@/lib/work
 import { ensureModelReadyOnVm } from "@/lib/catalog/ensure-helper";
 import { appendSystemLog } from "@/lib/logs/logger";
 import type { ScriptoriaSceneSpecV1, BatchTrackKind } from "@/lib/batch/ingestion-spec";
+import { isLlmWorkerProfile } from "@/lib/catalog/worker-profiles";
 import type { VmInstance, BatchTask } from "@prisma/client";
 
 export interface GpuAffinityScore {
@@ -354,7 +355,7 @@ export async function rankOnlineGpusForTask(
   task: BatchTask
 ): Promise<GpuAffinityScore[]> {
   const online = vms.filter(
-    (v) => v.status === "ONLINE" && v.publicUrl && v.workerProfile !== "LLM_QWEN_VLM"
+    (v) => v.status === "ONLINE" && v.publicUrl && !isLlmWorkerProfile(v.workerProfile)
   );
   const scores: GpuAffinityScore[] = [];
 

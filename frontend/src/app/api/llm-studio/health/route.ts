@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getAuthUser } from "@/lib/auth/session";
 import { resolveCandidateLlmConfigs } from "@/lib/agent/llm-client";
+import { isLlmWorkerProfile } from "@/lib/catalog/worker-profiles";
 
 export async function GET() {
   try {
@@ -15,14 +16,14 @@ export async function GET() {
       orderBy: { target: "asc" },
     });
 
-    const llmVms = allVms.filter((v) => v.workerProfile === "LLM_QWEN_VLM");
+    const llmVms = allVms.filter((v) => isLlmWorkerProfile(v.workerProfile));
     const onlineLlm = llmVms.find((v) => v.status === "ONLINE" && v.publicUrl);
     const startingLlm = llmVms.find((v) => v.status === "STARTING");
     const acc2WrongProfile = allVms.find(
       (v) =>
         v.accountAlias === "acc2" &&
         v.provider === "kaggle" &&
-        v.workerProfile !== "LLM_QWEN_VLM" &&
+        !isLlmWorkerProfile(v.workerProfile) &&
         (v.status === "ONLINE" || v.status === "STARTING")
     );
 

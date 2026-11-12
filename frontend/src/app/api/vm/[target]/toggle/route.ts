@@ -5,7 +5,7 @@ import { generateVmSecret } from "@/lib/crypto/vault";
 import { getDecryptedCredential, saveUserCredential } from "@/lib/crypto/credentials";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
 import { buildUnifiedNotebookPythonCode } from "@/lib/orchestrator/notebook-builder";
-import { getWorkerProfile } from "@/lib/catalog/worker-profiles";
+import { getWorkerProfile, isLlmWorkerProfile } from "@/lib/catalog/worker-profiles";
 import { getOrCreateWorkspaceSettings } from "@/lib/settings/workspace-settings";
 import { KaggleOrchestrator } from "@/lib/orchestrator/kaggle-client";
 import { VmGateway } from "@/lib/orchestrator/vm-gateway";
@@ -108,7 +108,7 @@ export async function POST(
         err instanceof Error ? err.message : "Failed to decrypt Google Drive credential";
     }
 
-    const isLlmProfile = vm.workerProfile === "LLM_QWEN_VLM";
+    const isLlmProfile = isLlmWorkerProfile(vm.workerProfile);
     if (!gdriveCred && !isLlmProfile) {
       return NextResponse.json(
         {

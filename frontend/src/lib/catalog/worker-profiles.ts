@@ -4,7 +4,8 @@ export type WorkerProfileId =
   | "IMAGE_GGUF_EDIT"
   | "AUDIO_LIPSYNC"
   | "VIDEO_MOTION"
-  | "LLM_QWEN_VLM";
+  | "LLM_QWEN_VLM"
+  | "LLM_QWEN_TEXT_TURBO";
 
 export interface CustomNodeSpec {
   name: string;
@@ -124,10 +125,19 @@ export const WORKER_PROFILES: Record<WorkerProfileId, WorkerProfileSpec> = {
   },
   LLM_QWEN_VLM: {
     id: "LLM_QWEN_VLM",
-    label: "Qwen 27B LLM + VLM (Dual-T4)",
+    label: "Qwen 27B Vision + LLM (Dual-T4)",
     shortTag: "QWEN-LLM",
     description:
-      "Dedicated Dual-T4 OpenAI-compatible /v1 LLM + Vision QA server (llama-server Q4_K_M + mmproj) cached in Google Drive for Book Graph.",
+      "Dual-T4 llama-server + DFlash2 speculative drafter + mmproj vision. Best for Visual QA, multi-modal frame auditing, and mixed storyboarding (~35-85 tok/s).",
+    recommendedTargets: ["gpu2", "gpu3"],
+    customNodes: [],
+  },
+  LLM_QWEN_TEXT_TURBO: {
+    id: "LLM_QWEN_TEXT_TURBO",
+    label: "Qwen 27B Ultra Text (ExLlamaV3 55-154 tok/s)",
+    shortTag: "QWEN-TURBO",
+    description:
+      "Dual-T4 ExLlamaV3 + DFlash2 drafter + Tensor Parallelism. Fastest single-user text throughput (55-154 tok/s) for ingesting 100s of novel chapters without vision.",
     recommendedTargets: ["gpu2", "gpu3"],
     customNodes: [],
   },
@@ -137,6 +147,10 @@ export const WORKER_PROFILE_LIST: WorkerProfileSpec[] = Object.values(WORKER_PRO
 
 export function isValidWorkerProfile(id?: string | null): id is WorkerProfileId {
   return Boolean(id && id in WORKER_PROFILES);
+}
+
+export function isLlmWorkerProfile(id?: string | null): boolean {
+  return id === "LLM_QWEN_VLM" || id === "LLM_QWEN_TEXT_TURBO";
 }
 
 export function getWorkerProfile(id?: string | null): WorkerProfileSpec {
