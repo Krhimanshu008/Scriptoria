@@ -82,18 +82,26 @@ export function DashboardShell({
     const modelName = activeStream.modelName;
     const category = activeStream.category;
     const jobId = activeStream.jobId;
+    const fetchJobId = activeStream.fetchJobId;
 
     let cancelled = false;
     const timer = setInterval(async () => {
       if (cancelled) return;
       try {
-        const qs = new URLSearchParams();
-        if (jobId) qs.set("jobId", String(jobId));
-        if (modelName) qs.set("file", modelName);
+        let res: Response;
+        if (fetchJobId) {
+          res = await fetch(
+            `/api/catalog/ensure-status/${encodeURIComponent(target)}?fetchJobId=${encodeURIComponent(fetchJobId)}`
+          );
+        } else {
+          const qs = new URLSearchParams();
+          if (jobId) qs.set("jobId", String(jobId));
+          if (modelName) qs.set("file", modelName);
 
-        const res = await fetch(
-          `/api/models/stream-status/${encodeURIComponent(target)}?${qs.toString()}`
-        );
+          res = await fetch(
+            `/api/models/stream-status/${encodeURIComponent(target)}?${qs.toString()}`
+          );
+        }
         if (!res.ok || cancelled) return;
 
         const stats = await res.json();
@@ -107,6 +115,8 @@ export function DashboardShell({
           setActiveStream({
             target,
             jobId,
+            fetchJobId,
+            transport: fetchJobId ? "sidecar-fetch" : "rclone-gdrive",
             modelName,
             category,
             percentage,
@@ -123,6 +133,8 @@ export function DashboardShell({
           setActiveStream({
             target,
             jobId,
+            fetchJobId,
+            transport: fetchJobId ? "sidecar-fetch" : "rclone-gdrive",
             modelName,
             category,
             percentage: 100,
@@ -130,7 +142,7 @@ export function DashboardShell({
             bytesDone: stats.totalBytes || stats.bytes || 0,
             totalBytes: stats.totalBytes || stats.bytes || 0,
             etaSeconds: 0,
-            speedText: "Ready on /tmp",
+            speedText: fetchJobId ? "Cached on /tmp (Drive backup queued)" : "Ready on /tmp",
             active: true,
             completed: true,
             error: null,
@@ -138,6 +150,7 @@ export function DashboardShell({
           toast.success(`${modelName} loaded into /tmp/models/${category} on ${target.toUpperCase()}`);
           queryClient.invalidateQueries({ queryKey: ["vm-catalog", target] });
           queryClient.invalidateQueries({ queryKey: ["vm-storage", target] });
+          queryClient.invalidateQueries({ queryKey: ["master-catalog"] });
           setTimeout(() => {
             const cur = useClusterStore.getState().activeStream;
             if (cur?.completed && cur.modelName === modelName) {
@@ -145,7 +158,7 @@ export function DashboardShell({
             }
           }, 4000);
         } else if (stats.failed) {
-          toast.error(stats.error || `Failed streaming ${modelName}`);
+          toast.error(stats.error || `Failed fetching ${modelName}`);
           setActiveStream(null);
         }
       } catch {
@@ -164,6 +177,7 @@ export function DashboardShell({
     activeStream?.modelName,
     activeStream?.category,
     activeStream?.jobId,
+    activeStream?.fetchJobId,
     queryClient,
     setActiveStream,
   ]);

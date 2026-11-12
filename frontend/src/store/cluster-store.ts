@@ -6,6 +6,8 @@ import { WORKFLOW_PRESETS, type WorkflowPreset } from "@/lib/orchestrator/workfl
 export interface ActiveStreamState {
   target: string;
   jobId?: number | null;
+  fetchJobId?: string | null;
+  transport?: "rclone-gdrive" | "sidecar-fetch";
   modelName: string;
   category: string;
   percentage: number;
@@ -63,6 +65,8 @@ interface ClusterUiState {
   startStream: (params: {
     target: string;
     jobId?: number | null;
+    fetchJobId?: string | null;
+    transport?: "rclone-gdrive" | "sidecar-fetch";
     modelName: string;
     category: string;
   }) => void;
@@ -101,11 +105,13 @@ export const useClusterStore = create<ClusterUiState>((set, get) => ({
   },
 
   activeStream: null,
-  startStream: ({ target, jobId, modelName, category }) =>
+  startStream: ({ target, jobId, fetchJobId, transport, modelName, category }) =>
     set({
       activeStream: {
         target,
         jobId: jobId ?? null,
+        fetchJobId: fetchJobId ?? null,
+        transport: transport ?? (fetchJobId ? "sidecar-fetch" : "rclone-gdrive"),
         modelName,
         category,
         percentage: 1,
@@ -113,7 +119,7 @@ export const useClusterStore = create<ClusterUiState>((set, get) => ({
         bytesDone: 0,
         totalBytes: 0,
         etaSeconds: null,
-        speedText: "Starting Rclone...",
+        speedText: fetchJobId ? "Starting HF/Civitai aria2c fetch..." : "Starting Rclone...",
         active: true,
         completed: false,
         error: null,

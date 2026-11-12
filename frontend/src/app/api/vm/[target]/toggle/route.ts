@@ -5,6 +5,7 @@ import { generateVmSecret } from "@/lib/crypto/vault";
 import { getDecryptedCredential, saveUserCredential } from "@/lib/crypto/credentials";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
 import { buildUnifiedNotebookPythonCode } from "@/lib/orchestrator/notebook-builder";
+import { getWorkerProfile } from "@/lib/catalog/worker-profiles";
 import { KaggleOrchestrator } from "@/lib/orchestrator/kaggle-client";
 import { VmGateway } from "@/lib/orchestrator/vm-gateway";
 import { resolveReachableWebhookBaseUrl } from "@/lib/orchestrator/webhook-tunnel";
@@ -138,6 +139,7 @@ export async function POST(
         );
       }
 
+      const profileSpec = getWorkerProfile(vm.workerProfile);
       const pythonCode = buildUnifiedNotebookPythonCode({
         provider: "kaggle",
         appWebhookUrl,
@@ -147,6 +149,8 @@ export async function POST(
         gdriveBaseFolder: gdriveCred.baseFolder,
         gpuTargets: groupTargets,
         accountAlias: vm.accountAlias,
+        workerProfile: profileSpec.id,
+        customNodes: profileSpec.customNodes,
         enableOfflineDatasetScan: vm.accountAlias === "acc1",
       });
 

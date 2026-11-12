@@ -3,6 +3,11 @@ export interface PrewarmModelItem {
   filename: string;
 }
 
+export interface CustomNodeBootstrapItem {
+  name: string;
+  repoUrl: string;
+}
+
 export interface NotebookBuildConfig {
   provider: "kaggle" | "colab";
   appWebhookUrl: string;
@@ -12,9 +17,30 @@ export interface NotebookBuildConfig {
   gdriveBaseFolder: string;
   gpuTargets: string[]; // ["gpu0", "gpu1"] for Kaggle Dual-T4, ["gcgpu"] for Colab
   accountAlias: string;
+  workerProfile?: string;
+  customNodes?: CustomNodeBootstrapItem[];
   idleTimeoutSeconds?: number;
   enableOfflineDatasetScan?: boolean;
   prewarmModels?: PrewarmModelItem[];
+}
+
+export interface CpuMirrorModelItem {
+  slug: string;
+  category: string;
+  subdir?: string;
+  filename: string;
+  url: string;
+  authHeader?: string;
+  expectedSizeBytes?: number;
+  sha256?: string;
+}
+
+export interface CpuMirrorConfig {
+  appWebhookUrl: string;
+  registrationJwt: string;
+  gdriveTokenJson: string;
+  gdriveBaseFolder: string;
+  models: CpuMirrorModelItem[];
 }
 
 /**
@@ -35,8 +61,10 @@ export function buildUnifiedNotebookPythonCode(cfg: NotebookBuildConfig): string
   const rcloneBuffer = isKaggle ? "16M" : "8M";
   const rcloneTransfers = isKaggle ? "2" : "1";
   const prewarmModels = cfg.prewarmModels ?? [];
+  const profileId = (cfg.workerProfile || "IMAGE_CORE").replace(/[^a-zA-Z0-9_-]/g, "_");
+  const customNodes = cfg.customNodes ?? [];
 
-  return `import os, sys, re, time, json, shutil, zipfile, tarfile, sysconfig, subprocess, threading, urllib.request, urllib.parse, urllib.error
+  return `import os, sys, re, time, json, uuid, hashlib, shutil, zipfile, tarfile, sysconfig, subprocess, threading, urllib.request, urllib.parse, urllib.error
 from collections import deque
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
@@ -45,6 +73,8 @@ REG_JWT = ${JSON.stringify(cfg.registrationJwt)}
 VM_SECRET = ${JSON.stringify(cfg.vmSecret)}
 PROVIDER = ${JSON.stringify(cfg.provider)}
 ACCOUNT_ALIAS = ${JSON.stringify(cfg.accountAlias)}
+PROFILE_ID = ${JSON.stringify(profileId)}
+CUSTOM_NODES = ${JSON.stringify(customNodes)}
 TARGETS = ${JSON.stringify(cfg.gpuTargets)}
 PORTS = ${JSON.stringify(ports)}
 WORK_DIR = ${JSON.stringify(workDir)}
@@ -58,6 +88,9 @@ LAST_ACTIVE = time.time()
 BOOT_LOGS = deque(maxlen=150)
 LOG_LOCK = threading.Lock()
 PENDING_LOGS = []
+FETCH_JOBS = {}
+FETCH_LOCK = threading.Lock()
+RCLONE_READY = False
 TUNNEL_URL = None
 CURRENT_STEP = 1
 EVER_CONNECTED = False
@@ -66,7 +99,7 @@ LAST_HB_SENT = 0.0
 COMFY_DIR = "/tmp/ComfyUI"
 FASTBOOT_SITE = "/tmp/sc_site_packages"
 PY_VER_TAG = f"{sys.version_info.major}{sys.version_info.minor}"
-FASTBOOT_REMOTE = f"{GDRIVE_BASE}/cache/fastboot_{PROVIDER}_py{PY_VER_TAG}_v2.tar.gz"
+FASTBOOT_REMOTE = f"{GDRIVE_BASE}/cache/fastboot_{PROVIDER}_{PROFILE_ID}_py{PY_VER_TAG}_v2.tar.gz"
 
 def log_event(msg, category="SYSTEM", level="INFO"):
     line = f"[{category}] {msg}"
@@ -144,7 +177,9 @@ post_heartbeat(2, "STARTING")
 # -------------------------------------------------------------
 CATEGORIES = [
     "checkpoints", "loras", "vae", "unet", "clip",
-    "clip_vision", "controlnet", "ipadapter", "text_encoders", "upscale_models", "diffusion_models"
+    "clip_vision", "controlnet", "ipadapter", "text_encoders",
+    "upscale_models", "diffusion_models", "ultralytics", "sams",
+    "tts", "audio_sfx", "audio_bgm", "lipsync"
 ]
 
 try:
@@ -182,6 +217,12 @@ with open("/tmp/extra_model_paths.yaml", "w", encoding="utf-8") as f:
     text_encoders: text_encoders/
     upscale_models: upscale_models/
     diffusion_models: diffusion_models/
+    ultralytics: ultralytics/
+    sams: sams/
+    tts: tts/
+    audio_sfx: audio_sfx/
+    audio_bgm: audio_bgm/
+    lipsync: lipsync/
 """)
 
 def rc_post(action, payload, timeout=60):
@@ -208,6 +249,183 @@ def rc_copy_async(payload, max_wait=240, label="transfer"):
             raise RuntimeError(st.get("error") or f"{label} failed")
         time.sleep(0.5)
     raise TimeoutError(f"{label} timed out after {max_wait}s")
+
+def _safe_model_target(category, filename, subdir=""):
+    clean_cat = os.path.basename(str(category or "checkpoints").strip())
+    if clean_cat not in CATEGORIES:
+        clean_cat = "checkpoints"
+    base_real = os.path.realpath("/tmp/models")
+    rel_parts = [p for p in str(subdir or "").replace("\\\\", "/").split("/") if p and p not in (".", "..")]
+    clean_name = os.path.basename(str(filename or "").strip())
+    target_path = os.path.realpath(os.path.join(base_real, clean_cat, *rel_parts, clean_name))
+    if not clean_name or not target_path.startswith(base_real + os.sep):
+        return None, None, None
+    rel_sub = "/".join(rel_parts)
+    return clean_cat, rel_sub, target_path
+
+def _evict_lru_models_if_needed(required_bytes=0, min_free_gb=6.0):
+    try:
+        du = shutil.disk_usage("/tmp/models")
+        min_keep = max(int(min_free_gb * (1024 ** 3)), int(required_bytes or 0) + (2 * (1024 ** 3)))
+        if du.free >= min_keep:
+            return
+        candidates = []
+        for root, _, files in os.walk("/tmp/models"):
+            for fname in files:
+                fpath = os.path.join(root, fname)
+                if os.path.isfile(fpath) and not os.path.islink(fpath):
+                    try:
+                        st = os.stat(fpath)
+                        candidates.append((st.st_atime or st.st_mtime, st.st_size, fpath))
+                    except Exception:
+                        pass
+        candidates.sort(key=lambda x: x[0])
+        for _, sz, fpath in candidates:
+            du = shutil.disk_usage("/tmp/models")
+            if du.free >= min_keep:
+                break
+            try:
+                os.remove(fpath)
+                log_event(f"LRU evicted {os.path.basename(fpath)} ({round(sz / (1024**3), 2)} GB) to keep /tmp free.", category="SYSTEM", level="WARN")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+def _post_backup_callback(slug, status, gdrive_path="", gdrive_file_id="", size_bytes=None, error_msg=""):
+    if not slug:
+        return
+    try:
+        payload = {
+            "token": REG_JWT,
+            "slug": slug,
+            "status": status,
+            "gdrivePath": gdrive_path,
+            "gdriveFileId": gdrive_file_id,
+            "sizeBytes": size_bytes,
+            "error": error_msg,
+        }
+        req = urllib.request.Request(
+            f"{APP_URL}/api/catalog/backup-callback",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json", "User-Agent": "Scriptoria-VM/3.0"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            resp.read()
+    except Exception:
+        pass
+
+def _run_fetch_job(job_id, url, category, subdir, filename, target_path, expected_size, sha256_hex, auth_header, backup_to_gdrive, asset_slug):
+    def _upd(**kw):
+        with FETCH_LOCK:
+            if job_id in FETCH_JOBS:
+                FETCH_JOBS[job_id].update(kw)
+
+    tmp_dl = target_path + ".part"
+    try:
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        _evict_lru_models_if_needed(expected_size or 0)
+        _upd(status="downloading", startedAt=time.time())
+        t0 = time.time()
+
+        used_aria2 = False
+        if shutil.which("aria2c"):
+            cmd = [
+                "aria2c", "-x", "16", "-s", "16", "-k", "4M",
+                "--file-allocation=none", "--allow-overwrite=true",
+                "--auto-file-renaming=false", "--summary-interval=1",
+                "-d", os.path.dirname(tmp_dl), "-o", os.path.basename(tmp_dl),
+            ]
+            if auth_header:
+                cmd.extend(["--header", f"Authorization: {auth_header}"])
+            cmd.append(url)
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            while proc.poll() is None:
+                if os.path.exists(tmp_dl):
+                    done = os.path.getsize(tmp_dl)
+                    elapsed = max(0.1, time.time() - t0)
+                    spd = done / elapsed
+                    pct = min(99, round((done / expected_size) * 100)) if expected_size else 0
+                    eta = max(1, round((expected_size - done) / spd)) if (expected_size and spd > 0 and expected_size > done) else None
+                    _upd(bytesDone=done, totalBytes=expected_size or 0, percentage=pct, speedMbps=round(spd / (1024 ** 2), 1), etaSeconds=eta)
+                time.sleep(0.7)
+            if proc.returncode == 0 and os.path.exists(tmp_dl):
+                used_aria2 = True
+
+        if not used_aria2:
+            headers = {"User-Agent": "Scriptoria-Fetcher/3.0"}
+            if auth_header:
+                headers["Authorization"] = auth_header
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                hdr_len = int(resp.headers.get("Content-Length") or 0)
+                tot = expected_size or hdr_len
+                done = 0
+                with open(tmp_dl, "wb") as out:
+                    while True:
+                        chunk = resp.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                        done += len(chunk)
+                        elapsed = max(0.1, time.time() - t0)
+                        spd = done / elapsed
+                        pct = min(99, round((done / tot) * 100)) if tot else 0
+                        eta = max(1, round((tot - done) / spd)) if (tot and spd > 0 and tot > done) else None
+                        _upd(bytesDone=done, totalBytes=tot, percentage=pct, speedMbps=round(spd / (1024 ** 2), 1), etaSeconds=eta)
+
+        if sha256_hex:
+            h = hashlib.sha256()
+            with open(tmp_dl, "rb") as hf:
+                while True:
+                    b = hf.read(4 * 1024 * 1024)
+                    if not b:
+                        break
+                    h.update(b)
+            actual_hash = h.hexdigest().lower()
+            if actual_hash != sha256_hex.lower():
+                raise RuntimeError(f"SHA256 mismatch (expected {sha256_hex[:12]}..., got {actual_hash[:12]}...)")
+
+        os.replace(tmp_dl, target_path)
+        final_size = os.path.getsize(target_path)
+        _upd(status="completed", bytesDone=final_size, totalBytes=final_size, percentage=100, speedMbps=0, etaSeconds=0)
+        log_event(f"Direct fetch complete: {filename} ({round(final_size / (1024**3), 2)} GB) in {round(time.time() - t0, 1)}s", category="RCLONE", level="SUCCESS")
+
+        if backup_to_gdrive and RCLONE_READY:
+            def _bg_backup():
+                remote_dir = f"{GDRIVE_BASE}/models/{category}" + (f"/{subdir}" if subdir else "")
+                remote_path = f"{remote_dir}/{filename}"
+                try:
+                    _upd(backupStatus="BACKING_UP")
+                    try:
+                        rc_post("operations/mkdir", {"fs": "gdrive:", "remote": remote_dir})
+                    except Exception:
+                        pass
+                    rc_copy_async({
+                        "srcFs": os.path.dirname(target_path),
+                        "srcRemote": filename,
+                        "dstFs": f"gdrive:{remote_dir}",
+                        "dstRemote": filename,
+                    }, max_wait=600, label=f"Drive backup {filename}")
+                    stat = rc_post("operations/stat", {"fs": f"gdrive:{remote_dir}", "remote": filename}, timeout=15)
+                    fid = (stat.get("item") or {}).get("ID", "")
+                    _upd(backupStatus="BACKED_UP")
+                    log_event(f"Backed up {filename} -> gdrive:{remote_path}", category="RCLONE", level="SUCCESS")
+                    _post_backup_callback(asset_slug, "BACKED_UP", remote_path, fid, final_size)
+                except Exception as be:
+                    _upd(backupStatus="FAILED")
+                    log_event(f"Drive backup warning ({filename}): {be}", category="RCLONE", level="WARN")
+                    _post_backup_callback(asset_slug, "FAILED", remote_path, "", final_size, str(be))
+            threading.Thread(target=_bg_backup, daemon=True).start()
+    except Exception as fe:
+        try:
+            if os.path.exists(tmp_dl):
+                os.remove(tmp_dl)
+        except Exception:
+            pass
+        _upd(status="failed", error=str(fe))
+        log_event(f"Direct fetch failed ({filename}): {fe}", category="ERROR", level="ERROR")
 
 # -------------------------------------------------------------
 # 2. Start Sidecar (:9999) Immediately + Prepare Rclone / Caddy Config
@@ -239,18 +457,24 @@ class SidecarHandler(BaseHTTPRequestHandler):
         elif self.path.startswith("/storage"):
             du = shutil.disk_usage("/tmp")
             files = []
-            for cat in os.listdir("/tmp/models"):
-                cat_dir = os.path.join("/tmp/models", cat)
-                if not os.path.isdir(cat_dir):
+            base_models = "/tmp/models"
+            for root, _, fnames in os.walk(base_models):
+                rel_root = os.path.relpath(root, base_models)
+                if rel_root == ".":
                     continue
-                for fname in os.listdir(cat_dir):
-                    fpath = os.path.join(cat_dir, fname)
+                parts = rel_root.replace("\\\\", "/").split("/")
+                cat = parts[0]
+                sub = "/".join(parts[1:])
+                for fname in fnames:
+                    if fname.endswith(".part"):
+                        continue
+                    fpath = os.path.join(root, fname)
                     if os.path.isfile(fpath) or os.path.islink(fpath):
                         try:
                             st = os.stat(fpath)
                             files.append({
                                 "category": cat,
-                                "name": fname,
+                                "name": f"{sub}/{fname}" if sub else fname,
                                 "sizeBytes": st.st_size,
                                 "modifiedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(st.st_mtime)),
                             })
@@ -267,6 +491,18 @@ class SidecarHandler(BaseHTTPRequestHandler):
                 },
                 "files": files,
             }).encode())
+        elif self.path.startswith("/fetch-status"):
+            parsed = urllib.parse.urlparse(self.path)
+            qs = urllib.parse.parse_qs(parsed.query)
+            jid = (qs.get("jobId") or [""])[0]
+            with FETCH_LOCK:
+                info = dict(FETCH_JOBS.get(jid) or {}) if jid else {"jobs": list(FETCH_JOBS.values())}
+            if jid and not info:
+                self.send_response(404); self.end_headers(); return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(info).encode())
         else:
             self.send_response(404); self.end_headers()
 
@@ -279,13 +515,14 @@ class SidecarHandler(BaseHTTPRequestHandler):
             parsed = urllib.parse.urlparse(self.path)
             qs = urllib.parse.parse_qs(parsed.query)
             cat = os.path.basename((qs.get("category") or [""])[0])
-            name = os.path.basename((qs.get("name") or [""])[0])
+            raw_name = str((qs.get("name") or [""])[0]).replace("\\\\", "/").lstrip("/")
+            rel_parts = [p for p in raw_name.split("/") if p and p not in (".", "..")]
             base_real = os.path.realpath("/tmp/models")
-            target_real = os.path.realpath(os.path.join("/tmp/models", cat, name))
-            if not cat or not name or not target_real.startswith(base_real + os.sep) or not os.path.exists(target_real):
+            target_real = os.path.realpath(os.path.join(base_real, cat, *rel_parts))
+            if not cat or not rel_parts or not target_real.startswith(base_real + os.sep) or not os.path.exists(target_real):
                 self.send_response(404); self.end_headers(); return
             os.remove(target_real)
-            log_event(f"Deleted cached model /tmp/models/{cat}/{name}", category="SYSTEM")
+            log_event(f"Deleted cached model /tmp/models/{cat}/{'/'.join(rel_parts)}", category="SYSTEM")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -335,6 +572,63 @@ class SidecarHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"ok": True, "path": f"workflows/{fname}"}).encode())
+            return
+
+        if self.path == "/fetch-url":
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length) or b"{}")
+            url = str(body.get("url") or "").strip()
+            raw_cat = str(body.get("category") or "checkpoints")
+            subdir = str(body.get("subdir") or "")
+            filename = str(body.get("filename") or "").strip()
+            expected_size = int(body.get("expectedSizeBytes") or 0)
+            sha256_hex = str(body.get("sha256") or "").strip()
+            auth_header = str(body.get("authHeader") or "").strip()
+            backup_to_gdrive = bool(body.get("backupToGdrive", True))
+            asset_slug = str(body.get("assetSlug") or "").strip()
+
+            clean_cat, rel_sub, target_path = _safe_model_target(raw_cat, filename, subdir)
+            if not url or not target_path:
+                self.send_response(400); self.end_headers(); return
+
+            if os.path.exists(target_path):
+                sz = os.path.getsize(target_path)
+                if sz > 0 and (expected_size == 0 or sz == expected_size):
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({
+                        "status": "skipped",
+                        "alreadyCached": True,
+                        "sizeBytes": sz,
+                        "path": target_path,
+                    }).encode())
+                    return
+
+            job_id = str(uuid.uuid4())[:12]
+            with FETCH_LOCK:
+                FETCH_JOBS[job_id] = {
+                    "jobId": job_id,
+                    "filename": filename,
+                    "category": clean_cat,
+                    "status": "queued",
+                    "bytesDone": 0,
+                    "totalBytes": expected_size,
+                    "percentage": 1,
+                    "speedMbps": 0,
+                    "etaSeconds": None,
+                    "backupStatus": "PENDING" if backup_to_gdrive else "NONE",
+                    "error": None,
+                }
+            threading.Thread(
+                target=_run_fetch_job,
+                args=(job_id, url, clean_cat, rel_sub, filename, target_path, expected_size, sha256_hex, auth_header, backup_to_gdrive, asset_slug),
+                daemon=True,
+            ).start()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "started", "jobId": job_id, "filename": filename, "category": clean_cat}).encode())
             return
 
         if self.path == "/sync-output":
@@ -469,6 +763,7 @@ with open("/tmp/Caddyfile", "w", encoding="utf-8") as f:
 # 3. Parallel Stage: Rclone + Caddy + Cloudflared + uv Binary
 # -------------------------------------------------------------
 def setup_rclone():
+    global RCLONE_READY
     t0 = time.time()
     try:
         if not os.path.exists("/usr/local/bin/rclone"):
@@ -518,6 +813,7 @@ def setup_rclone():
     for _ in range(40):
         try:
             rc_post("rc/noop", {}, timeout=2)
+            RCLONE_READY = True
             log_event(f"Rclone RC (:5572) ready in {round(time.time() - t0, 1)}s (HTTP/1.1 multi-thread)", category="RCLONE", level="SUCCESS")
             for pw in PREWARM_MODELS:
                 pw_cat = pw.get("category", "checkpoints")
@@ -643,8 +939,16 @@ def setup_uv():
         except Exception as ue:
             log_event(f"uv binary download failed ({ue}); will fall back to pip if needed", category="COMFYUI", level="WARN")
 
+def setup_aria2():
+    if shutil.which("aria2c") is None:
+        try:
+            subprocess.run(["bash", "-lc", "apt-get update -qq && apt-get install -y -qq aria2 >/dev/null 2>&1"], check=False, timeout=45)
+        except Exception:
+            pass
+
 threading.Thread(target=setup_caddy, daemon=True).start()
 threading.Thread(target=setup_cloudflared, daemon=True).start()
+threading.Thread(target=setup_aria2, daemon=True).start()
 uv_thread = threading.Thread(target=setup_uv, daemon=True)
 uv_thread.start()
 rclone_ok = setup_rclone()
@@ -691,7 +995,7 @@ if not os.path.exists(os.path.join(COMFY_DIR, "main.py")):
 
     if not cache_restored:
         t_cold = time.time()
-        log_event("Cloning ComfyUI (shallow) & installing delta packages via uv (no custom nodes)...", category="COMFYUI")
+        log_event(f"Cloning ComfyUI (shallow) & installing {PROFILE_ID} delta packages via uv...", category="COMFYUI")
         subprocess.run(["git", "clone", "--depth", "1", "--single-branch", "https://github.com/comfyanonymous/ComfyUI.git", COMFY_DIR], check=True)
         req_file = os.path.join(COMFY_DIR, "requirements.txt")
         filtered_reqs = "/tmp/comfy_reqs_delta.txt"
@@ -718,22 +1022,53 @@ if not os.path.exists(os.path.join(COMFY_DIR, "main.py")):
                 snap[sd] = entries
             return snap
 
+        def _uv_or_pip_install(req_path, check_err=True):
+            if os.path.exists("/tmp/uv"):
+                res = subprocess.run(["/tmp/uv", "pip", "install", "--system", "--break-system-packages", "--no-cache", "--quiet", "-r", req_path])
+                if res.returncode != 0:
+                    res = subprocess.run(["/tmp/uv", "pip", "install", "--system", "--no-cache", "--quiet", "-r", req_path])
+                if res.returncode == 0:
+                    return True
+                log_event(f"/tmp/uv exited with {res.returncode}; falling back to pip...", category="COMFYUI", level="WARN")
+            res_pip = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", req_path], check=check_err)
+            return res_pip.returncode == 0
+
         site_dirs = list({sysconfig.get_paths()["purelib"], sysconfig.get_paths()["platlib"]})
         before_snap = _snap_site_dirs(site_dirs)
         uv_thread.join(timeout=45)
-        if os.path.exists("/tmp/uv"):
-            log_event("Installing ComfyUI delta packages using /tmp/uv...", category="COMFYUI")
-            uv_res = subprocess.run(["/tmp/uv", "pip", "install", "--system", "--break-system-packages", "--no-cache", "--quiet", "-r", filtered_reqs])
-            if uv_res.returncode != 0:
-                uv_res = subprocess.run(["/tmp/uv", "pip", "install", "--system", "--no-cache", "--quiet", "-r", filtered_reqs])
-            if uv_res.returncode != 0:
-                log_event(f"/tmp/uv exited with {uv_res.returncode}; falling back to pip...", category="COMFYUI", level="WARN")
-                subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", filtered_reqs], check=True)
-        else:
-            log_event("/tmp/uv unavailable; using pip installer...", category="COMFYUI", level="WARN")
-            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", filtered_reqs], check=True)
+        log_event("Installing ComfyUI delta packages...", category="COMFYUI")
+        _uv_or_pip_install(filtered_reqs, check_err=True)
 
-        log_event(f"ComfyUI + dependencies ready in {round(time.time() - t_cold, 1)}s", category="COMFYUI", level="SUCCESS")
+        if CUSTOM_NODES:
+            nodes_dir = os.path.join(COMFY_DIR, "custom_nodes")
+            os.makedirs(nodes_dir, exist_ok=True)
+            for cn in CUSTOM_NODES:
+                cn_name = cn.get("name", "")
+                cn_url = cn.get("repoUrl", "")
+                if not cn_name or not cn_url:
+                    continue
+                cn_dst = os.path.join(nodes_dir, cn_name)
+                try:
+                    if not os.path.exists(cn_dst):
+                        subprocess.run(["git", "clone", "--depth", "1", "--single-branch", cn_url, cn_dst], check=True, timeout=60)
+                    cn_req = os.path.join(cn_dst, "requirements.txt")
+                    if os.path.exists(cn_req):
+                        cn_filtered = f"/tmp/req_{cn_name}.txt"
+                        with open(cn_req, "r", encoding="utf-8", errors="ignore") as crf, open(cn_filtered, "w", encoding="utf-8") as cwf:
+                            for line in crf:
+                                clean = line.strip()
+                                if not clean or clean.startswith("#"):
+                                    continue
+                                pkg = re.split(r"[=<>!~;\\s\\[]", clean)[0].lower().replace("_", "-")
+                                if pkg not in skip_pkgs:
+                                    cwf.write(clean + "\\n")
+                        if os.path.getsize(cn_filtered) > 0:
+                            _uv_or_pip_install(cn_filtered, check_err=False)
+                    log_event(f"Installed custom node: {cn_name}", category="COMFYUI")
+                except Exception as cne:
+                    log_event(f"Custom node {cn_name} notice: {cne}", category="COMFYUI", level="WARN")
+
+        log_event(f"ComfyUI ({PROFILE_ID}) + dependencies ready in {round(time.time() - t_cold, 1)}s", category="COMFYUI", level="SUCCESS")
         snapshot_meta = (site_dirs, before_snap)
         should_upload_cache = True
 
@@ -997,5 +1332,144 @@ export function buildColabLauncherNotebookJson(cfg: ColabLauncherConfig) {
 export function buildColabNotebookJson(cfg: NotebookBuildConfig) {
   const pyCode = buildUnifiedNotebookPythonCode({ ...cfg, provider: "colab" });
   return wrapColabNotebookDocument(cfg.gpuTargets[0] || "gcgpu", pyCode);
+}
+
+/**
+ * Generates a zero-GPU-quota CPU Kaggle worker script that fetches catalog models
+ * directly from HuggingFace / Civitai / URLs and mirrors them into the user's 5 TB Google Drive.
+ */
+export function buildCpuMirrorNotebookPythonCode(cfg: CpuMirrorConfig): string {
+  return `import os, sys, time, json, hashlib, shutil, zipfile, subprocess, urllib.request, urllib.parse
+
+APP_URL = ${JSON.stringify(cfg.appWebhookUrl.replace(/\/$/, ""))}
+REG_JWT = ${JSON.stringify(cfg.registrationJwt)}
+GDRIVE_BASE = ${JSON.stringify(cfg.gdriveBaseFolder.replace(/^\/+|\/+$/g, "") || "Scriptoria")}
+GDRIVE_TOKEN_RAW = ${JSON.stringify(cfg.gdriveTokenJson)}
+MODELS = ${JSON.stringify(cfg.models)}
+
+os.makedirs("/tmp/mirror", exist_ok=True)
+
+def post_cb(slug, status, gdrive_path="", gdrive_file_id="", size_bytes=None, error_msg=""):
+    try:
+        req = urllib.request.Request(
+            f"{APP_URL}/api/catalog/backup-callback",
+            data=json.dumps({
+                "token": REG_JWT,
+                "slug": slug,
+                "status": status,
+                "gdrivePath": gdrive_path,
+                "gdriveFileId": gdrive_file_id,
+                "sizeBytes": size_bytes,
+                "error": error_msg,
+            }).encode("utf-8"),
+            headers={"Content-Type": "application/json", "User-Agent": "Scriptoria-Mirror/1.0"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            r.read()
+    except Exception as e:
+        print(f"[CALLBACK] {slug}: {e}", flush=True)
+
+try:
+    gdrive_cfg = json.loads(GDRIVE_TOKEN_RAW)
+except Exception:
+    gdrive_cfg = {}
+
+cid = gdrive_cfg.pop("client_id", "")
+csec = gdrive_cfg.pop("client_secret", "")
+rtok = gdrive_cfg.get("refresh_token", "")
+if rtok and cid and csec:
+    data = urllib.parse.urlencode({
+        "client_id": cid, "client_secret": csec, "refresh_token": rtok, "grant_type": "refresh_token"
+    }).encode("utf-8")
+    with urllib.request.urlopen(urllib.request.Request("https://oauth2.googleapis.com/token", data=data, method="POST"), timeout=15) as resp:
+        res_json = json.loads(resp.read().decode("utf-8"))
+        if res_json.get("access_token"):
+            gdrive_cfg["access_token"] = res_json["access_token"]
+            gdrive_cfg.setdefault("token_type", "Bearer")
+            gdrive_cfg["expiry"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 3300))
+
+lines = ["[gdrive]", "type = drive", "scope = drive"]
+if cid: lines.append(f"client_id = {cid}")
+if csec: lines.append(f"client_secret = {csec}")
+lines.append(f"token = {json.dumps(gdrive_cfg)}")
+with open("/tmp/rclone.conf", "w", encoding="utf-8") as f:
+    f.write("\\n".join(lines) + "\\n")
+
+if not os.path.exists("/usr/local/bin/rclone"):
+    subprocess.run(["curl", "-sSLf", "https://downloads.rclone.org/rclone-current-linux-amd64.zip", "-o", "/tmp/rclone.zip"], check=True)
+    with zipfile.ZipFile("/tmp/rclone.zip", "r") as zf:
+        for m in zf.namelist():
+            if m.endswith("/rclone"):
+                with zf.open(m) as src, open("/usr/local/bin/rclone", "wb") as dst:
+                    dst.write(src.read())
+                break
+    os.chmod("/usr/local/bin/rclone", 0o755)
+    os.remove("/tmp/rclone.zip")
+
+subprocess.run(["bash", "-lc", "apt-get update -qq && apt-get install -y -qq aria2 >/dev/null 2>&1"], check=False)
+
+for item in MODELS:
+    slug = item["slug"]
+    cat = item["category"]
+    sub = item.get("subdir") or ""
+    fname = item["filename"]
+    url = item["url"]
+    auth_hdr = item.get("authHeader") or ""
+    sha_expected = (item.get("sha256") or "").lower()
+    remote_dir = f"{GDRIVE_BASE}/models/{cat}" + (f"/{sub}" if sub else "")
+    remote_path = f"{remote_dir}/{fname}"
+    local_path = os.path.join("/tmp/mirror", fname)
+    try:
+        chk = subprocess.run(["/usr/local/bin/rclone", "lsjson", "--config", "/tmp/rclone.conf", f"gdrive:{remote_path}"], capture_output=True, text=True)
+        if chk.returncode == 0 and chk.stdout.strip().startswith("[") and len(json.loads(chk.stdout)) > 0:
+            info = json.loads(chk.stdout)[0]
+            post_cb(slug, "BACKED_UP", remote_path, info.get("ID", ""), info.get("Size"))
+            print(f"[MIRROR] Already in Drive: {remote_path}", flush=True)
+            continue
+
+        post_cb(slug, "BACKING_UP", remote_path)
+        print(f"[MIRROR] Downloading {fname} from {url}...", flush=True)
+        if shutil.which("aria2c"):
+            cmd = ["aria2c", "-x", "16", "-s", "16", "-k", "4M", "--file-allocation=none", "--allow-overwrite=true", "-d", "/tmp/mirror", "-o", fname]
+            if auth_hdr:
+                cmd.extend(["--header", f"Authorization: {auth_hdr}"])
+            cmd.append(url)
+            subprocess.run(cmd, check=True)
+        else:
+            headers = {"User-Agent": "Scriptoria-Mirror/1.0"}
+            if auth_hdr: headers["Authorization"] = auth_hdr
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120) as r, open(local_path, "wb") as out:
+                shutil.copyfileobj(r, out, 1024 * 1024)
+
+        if sha_expected:
+            h = hashlib.sha256()
+            with open(local_path, "rb") as hf:
+                for blk in iter(lambda: hf.read(4 * 1024 * 1024), b""):
+                    h.update(blk)
+            if h.hexdigest().lower() != sha_expected:
+                raise RuntimeError("SHA256 mismatch")
+
+        sz = os.path.getsize(local_path)
+        subprocess.run(["/usr/local/bin/rclone", "mkdir", "--config", "/tmp/rclone.conf", f"gdrive:{remote_dir}"], check=False)
+        subprocess.run(["/usr/local/bin/rclone", "copyto", "--config", "/tmp/rclone.conf", "--disable-http2", "--drive-chunk-size=64M", local_path, f"gdrive:{remote_path}"], check=True)
+        ls_res = subprocess.run(["/usr/local/bin/rclone", "lsjson", "--config", "/tmp/rclone.conf", f"gdrive:{remote_path}"], capture_output=True, text=True)
+        fid = ""
+        if ls_res.returncode == 0 and ls_res.stdout.strip().startswith("["):
+            arr = json.loads(ls_res.stdout)
+            if arr: fid = arr[0].get("ID", "")
+        post_cb(slug, "BACKED_UP", remote_path, fid, sz)
+        print(f"[MIRROR] Backed up {fname} -> gdrive:{remote_path}", flush=True)
+    except Exception as err:
+        post_cb(slug, "FAILED", remote_path, "", None, str(err))
+        print(f"[MIRROR] Failed {fname}: {err}", flush=True)
+    finally:
+        if os.path.exists(local_path):
+            try:
+                os.remove(local_path)
+            except Exception:
+                pass
+print("[MIRROR] Batch mirror finished.", flush=True)
+`;
 }
 

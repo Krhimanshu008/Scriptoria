@@ -9,6 +9,7 @@ export interface PushKernelParams {
   kernelSlug: string;
   pythonCode: string;
   datasetDataSources?: string[];
+  enableGpu?: boolean;
 }
 
 export interface KernelStatusResult {
@@ -80,7 +81,13 @@ export class KaggleOrchestrator {
   public static async pushKernel(
     params: PushKernelParams
   ): Promise<{ status: string; url: string; kernelSessionId?: number }> {
-    const { credentials, kernelSlug, pythonCode, datasetDataSources = [] } = params;
+    const {
+      credentials,
+      kernelSlug,
+      pythonCode,
+      datasetDataSources = [],
+      enableGpu = true,
+    } = params;
     const notebookJson = this.wrapPythonAsNotebookJson(pythonCode);
     const fullSlug = `${credentials.username}/${kernelSlug}`;
 
@@ -91,10 +98,10 @@ export class KaggleOrchestrator {
       language: "python",
       kernelType: "notebook",
       isPrivate: true,
-      enableGpu: true,
+      enableGpu,
       enableTpu: false,
       enableInternet: true,
-      machineShape: "NvidiaTeslaT4",
+      ...(enableGpu ? { machineShape: "NvidiaTeslaT4" } : {}),
       datasetDataSources, // Empty by default to avoid cross-user 409 conflicts
       competitionDataSources: [],
       kernelDataSources: [],

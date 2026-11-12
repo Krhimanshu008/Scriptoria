@@ -25,6 +25,7 @@ export interface DefaultVmSlotSpec {
   provider: "kaggle" | "colab";
   accountAlias: string;
   sessionGroup: string;
+  workerProfile: string;
   internalPort: number;
 }
 
@@ -35,6 +36,7 @@ export const DEFAULT_VM_SLOTS: DefaultVmSlotSpec[] = [
     provider: "kaggle",
     accountAlias: "acc1",
     sessionGroup: "kaggle-acc1",
+    workerProfile: "IMAGE_CORE",
     internalPort: 8188,
   },
   {
@@ -43,6 +45,7 @@ export const DEFAULT_VM_SLOTS: DefaultVmSlotSpec[] = [
     provider: "kaggle",
     accountAlias: "acc1",
     sessionGroup: "kaggle-acc1",
+    workerProfile: "IMAGE_CORE",
     internalPort: 8189,
   },
   {
@@ -51,6 +54,7 @@ export const DEFAULT_VM_SLOTS: DefaultVmSlotSpec[] = [
     provider: "kaggle",
     accountAlias: "acc2",
     sessionGroup: "kaggle-acc2",
+    workerProfile: "IMAGE_GGUF_EDIT",
     internalPort: 8188,
   },
   {
@@ -59,6 +63,7 @@ export const DEFAULT_VM_SLOTS: DefaultVmSlotSpec[] = [
     provider: "kaggle",
     accountAlias: "acc2",
     sessionGroup: "kaggle-acc2",
+    workerProfile: "VIDEO_MOTION",
     internalPort: 8189,
   },
   {
@@ -67,6 +72,7 @@ export const DEFAULT_VM_SLOTS: DefaultVmSlotSpec[] = [
     provider: "colab",
     accountAlias: "acc1",
     sessionGroup: "colab-acc1",
+    workerProfile: "AUDIO_LIPSYNC",
     internalPort: 8188,
   },
   {
@@ -75,6 +81,7 @@ export const DEFAULT_VM_SLOTS: DefaultVmSlotSpec[] = [
     provider: "colab",
     accountAlias: "acc2",
     sessionGroup: "colab-acc2",
+    workerProfile: "AUDIO_LIPSYNC",
     internalPort: 8188,
   },
 ];
@@ -189,6 +196,7 @@ export async function ensureUserVmSlots(userId: string): Promise<void> {
         provider: slot.provider,
         accountAlias: slot.accountAlias,
         sessionGroup: slot.sessionGroup,
+        workerProfile: slot.workerProfile,
         internalPort: slot.internalPort,
         publicUrl: "",
         status: "OFFLINE",

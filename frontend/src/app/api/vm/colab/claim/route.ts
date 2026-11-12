@@ -4,6 +4,7 @@ import { signVmRegistrationToken } from "@/lib/auth/session";
 import { generateVmSecret } from "@/lib/crypto/vault";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
 import { buildUnifiedNotebookPythonCode } from "@/lib/orchestrator/notebook-builder";
+import { getWorkerProfile } from "@/lib/catalog/worker-profiles";
 import { verifyColabRunnerToken } from "@/lib/orchestrator/colab-runner";
 import { resolveReachableWebhookBaseUrl } from "@/lib/orchestrator/webhook-tunnel";
 import { appendSystemLog } from "@/lib/logs/logger";
@@ -54,6 +55,7 @@ export async function POST(req: NextRequest) {
 
     const webhook = await resolveReachableWebhookBaseUrl(req);
     const appWebhookUrl = webhook.url;
+    const profileSpec = getWorkerProfile(vm.workerProfile);
     const pythonCode = buildUnifiedNotebookPythonCode({
       provider: "colab",
       appWebhookUrl,
@@ -63,6 +65,8 @@ export async function POST(req: NextRequest) {
       gdriveBaseFolder: gdriveCred.baseFolder,
       gpuTargets: [vm.target],
       accountAlias: vm.accountAlias,
+      workerProfile: profileSpec.id,
+      customNodes: profileSpec.customNodes,
     });
 
     await prisma.vmInstance.updateMany({

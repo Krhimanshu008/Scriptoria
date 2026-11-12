@@ -16,10 +16,12 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  credentials Credential[]
-  vmInstances VmInstance[]
-  jobs        Job[]
-  systemLogs  SystemLog[]
+  credentials       Credential[]
+  vmInstances       VmInstance[]
+  jobs              Job[]
+  systemLogs        SystemLog[]
+  modelAssets       ModelAsset[]
+  workflowTemplates WorkflowTemplate[]
 }
 
 model Credential {
@@ -50,6 +52,7 @@ model VmInstance {
   provider      String    // "kaggle", "colab"
   accountAlias  String    // Bound to Credential.accountAlias ("acc1", "acc2")
   sessionGroup  String    // Shared VM container group e.g. "kaggle-acc1", "kaggle-acc2", "colab-acc1"
+  workerProfile String    @default("IMAGE_CORE") // BASE_COMFY, IMAGE_CORE, IMAGE_GGUF_EDIT, AUDIO_LIPSYNC, VIDEO_MOTION
   internalPort  Int       @default(8188) // 8188 or 8189 inside VM
   publicUrl     String    @default("")   // Live trycloudflare.com URL (Caddy :8000) or named tunnel
   vmSecret      String?   // Per-session X-VM-Secret verified by Caddy
@@ -115,4 +118,60 @@ model SystemLog {
   createdAt    DateTime    @default(now())
 
   @@index([userId, createdAt])
+}
+
+model ModelAsset {
+  id                      String    @id @default(cuid())
+  userId                  String
+  user                    User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  slug                    String
+  displayName             String
+  modality                String    // "IMAGE" | "AUDIO" | "VIDEO" | "SHARED"
+  category                String    // checkpoints, unet, text_encoders, clip, vae, loras, controlnet, ipadapter, clip_vision, upscale_models, ultralytics, sams, tts, audio_sfx, audio_bgm, lipsync
+  subdir                  String    @default("")
+  filename                String
+  sizeBytes               Float?
+  vramEstimateGb          Float     @default(0)
+  compatibleBase          String    @default("SDXL")
+  requiredCustomNodesJson String?
+  recommendedConfigJson   String?
+  hfRepoId                String?
+  hfFilePath              String?
+  civitaiModelId          String?
+  civitaiVersionId        String?
+  directUrl               String?
+  sha256                  String?
+  gdrivePath              String?
+  gdriveFileId            String?
+  backupStatus            String    @default("NONE") // NONE, BACKING_UP, BACKED_UP, FAILED
+  isSeeded                Boolean   @default(false)
+  lastVerifiedAt          DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  @@unique([userId, slug])
+  @@index([userId, modality, category])
+}
+
+model WorkflowTemplate {
+  id                   String   @id @default(cuid())
+  userId               String
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  slug                 String
+  name                 String
+  modality             String   // "IMAGE" | "AUDIO" | "VIDEO" | "MULTIMODAL"
+  categoryTag          String
+  targetProfile        String   @default("IMAGE_CORE")
+  description          String
+  vramRequiredGb       Float    @default(8.0)
+  requiredModelsJson   String
+  requiredNodesJson    String
+  apiGraphTemplateJson String
+  inputSchemaJson      String
+  isSeeded             Boolean  @default(false)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@unique([userId, slug])
+  @@index([userId, modality, targetProfile])
 }

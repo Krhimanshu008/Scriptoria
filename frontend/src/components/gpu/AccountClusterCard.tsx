@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import type { PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
 import type { KaggleAccountSummary, ColabAccountSummary } from "@/app/api/vm/accounts/route";
+import { WORKER_PROFILE_LIST, getWorkerProfile } from "@/lib/catalog/worker-profiles";
 import { VmLogsDialog } from "@/components/gpu/VmLogsDialog";
 import { toast } from "sonner";
 
@@ -73,6 +74,7 @@ export const AccountClusterCard: React.FC<AccountClusterCardProps> = ({
 }) => {
   const [actionLoading, setActionLoading] = useState(false);
   const [catalogLoading, setCatalogLoading] = useState(false);
+  const [savingProfile, setSavingProfile] = useState(false);
   const [logsTarget, setLogsTarget] = useState<string | null>(null);
   const [pinnedOpen, setPinnedOpen] = useState(false);
 
@@ -97,6 +99,27 @@ export const AccountClusterCard: React.FC<AccountClusterCardProps> = ({
   const firstTunnel = vms.find((v) => v.publicUrl)?.publicUrl;
   const latency = vms.find((v) => v.latencyMs != null)?.latencyMs ?? null;
   const uptime = vms.reduce((acc, v) => Math.max(acc, v.uptimeSeconds || 0), 0);
+  const activeProfile = getWorkerProfile(primaryVm?.workerProfile);
+
+  async function handleProfileChange(nextProfile: string) {
+    setSavingProfile(true);
+    try {
+      const res = await fetch(`/api/vm/${encodeURIComponent(primaryTarget)}/profile`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workerProfile: nextProfile }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        toast.error(body.error || "Failed to update worker profile");
+        return;
+      }
+      toast.success(`Profile set to ${getWorkerProfile(nextProfile).shortTag} for next boot`);
+      onRefresh();
+    } finally {
+      setSavingProfile(false);
+    }
+  }
 
   const totalSec = kaggleAccount?.quota?.totalAllowedSeconds ?? 108000;
   const remainSec = kaggleAccount?.quota?.remainingSeconds ?? totalSec;
@@ -299,7 +322,25 @@ export const AccountClusterCard: React.FC<AccountClusterCardProps> = ({
           </div>
         )}
 
-        {/* Row 3: Primary Controls (ONLY Boot/Kill on Kaggle; Open Colab/Kill/Setup on Colab) */}
+        {/* Row 3: Worker Modality Profile Selector */}
+        <div className="mt-2 flex items-center justify-between gap-2 text-[10px]">
+          <span className="text-zinc-500">Profile</span>
+          <select
+            value={activeProfile.id}
+            disabled={anyActive || savingProfile}
+            onChange={(e) => handleProfileChange(e.target.value)}
+            title={activeProfile.description}
+            className="max-w-[195px] truncate rounded-lg border border-white/10 bg-black/30 px-2 py-0.5 font-mono text-[10px] text-zinc-200 disabled:opacity-60"
+          >
+            {WORKER_PROFILE_LIST.map((p) => (
+              <option key={p.id} value={p.id} className="bg-zinc-900">
+                {p.shortTag} · {p.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Row 4: Primary Controls (ONLY Boot/Kill on Kaggle; Open Colab/Kill/Setup on Colab) */}
         <div className="mt-3 flex items-center gap-1.5">
           {kind === "kaggle" ? (
             <>

@@ -14,7 +14,7 @@ interface RedactedCredential {
   accountAlias: string;
   username: string | null;
   authType: string;
-  metadata: { baseFolder?: string } | null;
+  metadata: { baseFolder?: string; model?: string; baseUrl?: string; llmProvider?: string } | null;
   updatedAt: string;
 }
 
@@ -31,6 +31,16 @@ export default function VaultPage() {
   const [gdriveRawJson, setGdriveRawJson] = useState("");
   const [gdriveBaseFolder, setGdriveBaseFolder] = useState("Scriptoria");
   const [savingGdrive, setSavingGdrive] = useState(false);
+
+  const [hfToken, setHfToken] = useState("");
+  const [civitaiKey, setCivitaiKey] = useState("");
+  const [savingSourceKey, setSavingSourceKey] = useState<"huggingface" | "civitai" | null>(null);
+
+  const [llmProvider, setLlmProvider] = useState("gemini");
+  const [llmModel, setLlmModel] = useState("gemini-2.5-flash");
+  const [llmBaseUrl, setLlmBaseUrl] = useState("");
+  const [llmApiKey, setLlmApiKey] = useState("");
+  const [savingLlm, setSavingLlm] = useState(false);
 
   const { data, refetch } = useQuery<{ credentials: RedactedCredential[] }>({
     queryKey: ["vault-credentials"],
@@ -117,6 +127,67 @@ export default function VaultPage() {
     if (res.ok) {
       toast.success(`Removed ${provider} (${accountAlias})`);
       refetch();
+    }
+  }
+
+  async function handleSaveModelSourceKey(provider: "huggingface" | "civitai", rawSecret: string) {
+    if (!rawSecret.trim()) return;
+    setSavingSourceKey(provider);
+    try {
+      const res = await fetch("/api/vault", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider,
+          accountAlias: "default",
+          username: provider,
+          rawSecret: rawSecret.trim(),
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        toast.error(body.error || `Failed to save ${provider} token`);
+        return;
+      }
+      toast.success(`Encrypted & saved ${provider === "huggingface" ? "HuggingFace" : "Civitai"} key`);
+      if (provider === "huggingface") setHfToken("");
+      else setCivitaiKey("");
+      refetch();
+    } finally {
+      setSavingSourceKey(null);
+    }
+  }
+
+  async function handleSaveLlm(e: React.FormEvent) {
+    e.preventDefault();
+    if (!llmApiKey.trim()) return;
+    setSavingLlm(true);
+    try {
+      const res = await fetch("/api/vault", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: "llm",
+          accountAlias: llmProvider,
+          username: llmModel.trim() || llmProvider,
+          rawSecret: llmApiKey.trim(),
+          metadata: {
+            llmProvider,
+            model: llmModel.trim(),
+            baseUrl: llmBaseUrl.trim() || undefined,
+          },
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        toast.error(body.error || "Failed to save LLM API key");
+        return;
+      }
+      toast.success(`Encrypted & saved ${llmProvider.toUpperCase()} AI key`);
+      setLlmApiKey("");
+      refetch();
+    } finally {
+      setSavingLlm(false);
     }
   }
 
@@ -331,6 +402,140 @@ export default function VaultPage() {
           >
             {savingGdrive ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
             Encrypt &amp; Save Google Drive Token
+          </Button>
+        </form>
+
+        {/* HuggingFace & Civitai Direct Fetch Tokens */}
+        <div className="glass-panel space-y-4 rounded-2xl p-5">
+          <div className="flex items-center gap-2 text-sm font-semibold text-white">
+            <KeyRound className="h-4 w-4 text-amber-400" />
+            <span>Model Source Tokens (HuggingFace &amp; Civitai)</span>
+          </div>
+          <p className="text-[11px] text-zinc-400">
+            Optional for public models; required for gated HuggingFace repos (FLUX.1-dev) and Civitai downloads.
+          </p>
+
+          <div className="space-y-1.5">
+            <Label>HuggingFace Read Token (hf_...)</Label>
+            <div className="flex gap-2">
+              <Input
+                type="password"
+                value={hfToken}
+                onChange={(e) => setHfToken(e.target.value)}
+                placeholder="hf_..."
+              />
+              <Button
+                type="button"
+                disabled={savingSourceKey === "huggingface" || !hfToken.trim()}
+                onClick={() => handleSaveModelSourceKey("huggingface", hfToken)}
+                className="shrink-0 bg-amber-600 text-xs font-semibold text-white hover:bg-amber-500"
+              >
+                {savingSourceKey === "huggingface" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Save className="h-4 w-4" />
+                )}
+              </Button>
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label>Civitai API Key</Label>
+            <div className="flex gap-2">
+              <Input
+                type="password"
+                value={civitaiKey}
+                onChange={(e) => setCivitaiKey(e.target.value)}
+                placeholder="Civitai API token"
+              />
+              <Button
+                type="button"
+                disabled={savingSourceKey === "civitai" || !civitaiKey.trim()}
+                onClick={() => handleSaveModelSourceKey("civitai", civitaiKey)}
+                className="shrink-0 bg-amber-600 text-xs font-semibold text-white hover:bg-amber-500"
+              >
+                {savingSourceKey === "civitai" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Save className="h-4 w-4" />
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        {/* Multi-Provider LLM Vault */}
+        <form onSubmit={handleSaveLlm} className="glass-panel space-y-4 rounded-2xl p-5">
+          <div className="flex items-center gap-2 text-sm font-semibold text-white">
+            <KeyRound className="h-4 w-4 text-violet-400" />
+            <span>Agentic AI Co-Director LLM Key</span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label>Provider</Label>
+              <select
+                value={llmProvider}
+                onChange={(e) => {
+                  const p = e.target.value;
+                  setLlmProvider(p);
+                  if (p === "gemini") setLlmModel("gemini-2.5-flash");
+                  else if (p === "openai") setLlmModel("gpt-4.1-mini");
+                  else if (p === "openrouter") setLlmModel("google/gemini-2.5-flash");
+                  else if (p === "ollama") setLlmModel("qwen2.5:14b");
+                }}
+                className="glass-input w-full rounded-xl px-3 py-2 text-xs text-zinc-100"
+              >
+                <option value="gemini" className="bg-zinc-900">Google Gemini</option>
+                <option value="openai" className="bg-zinc-900">OpenAI</option>
+                <option value="openrouter" className="bg-zinc-900">OpenRouter</option>
+                <option value="ollama" className="bg-zinc-900">Ollama / Local OpenAI-Compatible</option>
+              </select>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label>Default Model</Label>
+              <Input
+                value={llmModel}
+                onChange={(e) => setLlmModel(e.target.value)}
+                placeholder="gemini-2.5-flash"
+              />
+            </div>
+          </div>
+
+          {(llmProvider === "openrouter" || llmProvider === "ollama") && (
+            <div className="space-y-1.5">
+              <Label>Custom Base URL</Label>
+              <Input
+                value={llmBaseUrl}
+                onChange={(e) => setLlmBaseUrl(e.target.value)}
+                placeholder={
+                  llmProvider === "ollama"
+                    ? "http://127.0.0.1:11434/v1"
+                    : "https://openrouter.ai/api/v1"
+                }
+              />
+            </div>
+          )}
+
+          <div className="space-y-1.5">
+            <Label>API Key (use &quot;ollama&quot; for local server)</Label>
+            <Input
+              required
+              type="password"
+              value={llmApiKey}
+              onChange={(e) => setLlmApiKey(e.target.value)}
+              placeholder="AIza... / sk-... / ollama"
+            />
+          </div>
+
+          <Button
+            type="submit"
+            disabled={savingLlm}
+            className="w-full bg-violet-600 text-xs font-semibold text-white hover:bg-violet-500"
+          >
+            {savingLlm ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+            Encrypt &amp; Save AI Provider Key
           </Button>
         </form>
       </div>

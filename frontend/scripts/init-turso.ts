@@ -28,6 +28,16 @@ async function main() {
   for (const stmt of statements) {
     await client.execute(stmt);
   }
+  try {
+    await client.execute(
+      `ALTER TABLE "VmInstance" ADD COLUMN "workerProfile" TEXT NOT NULL DEFAULT 'IMAGE_CORE'`
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message.toLowerCase() : "";
+    if (!msg.includes("duplicate column")) {
+      throw err;
+    }
+  }
   console.log("Turso schema initialized successfully.");
 }
 

@@ -52,6 +52,12 @@ const VALID_CATEGORIES = new Set([
   "text_encoders",
   "upscale_models",
   "diffusion_models",
+  "ultralytics",
+  "sams",
+  "tts",
+  "audio_sfx",
+  "audio_bgm",
+  "lipsync",
 ]);
 
 export function sanitizeModelCategory(category: string): string {
@@ -105,9 +111,10 @@ export class GDriveModelStreamer {
       if (item.IsDir) continue;
       const parts = item.Path.split("/").filter(Boolean);
       const category = parts.length > 1 ? parts[0] : "checkpoints";
+      const relName = parts.length > 1 ? parts.slice(1).join("/") : item.Name;
       items.push({
         category,
-        name: item.Name,
+        name: relName,
         sizeBytes: item.Size || 0,
         modifiedAt: item.ModTime,
       });

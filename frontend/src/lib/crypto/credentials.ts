@@ -2,7 +2,15 @@ import { prisma } from "@/lib/db/prisma";
 import { decryptSecret, encryptSecret } from "./vault";
 
 export interface SaveCredentialInput {
-  provider: "kaggle" | "colab" | "cloudflare" | "gdrive" | string;
+  provider:
+    | "kaggle"
+    | "colab"
+    | "cloudflare"
+    | "gdrive"
+    | "huggingface"
+    | "civitai"
+    | "llm"
+    | string;
   accountAlias: string;
   username?: string | null;
   rawSecret: string;
