@@ -133,7 +133,7 @@ export function getWorkerProfile(id?: string | null): WorkerProfileSpec {
   if (id && id in WORKER_PROFILES) {
     return WORKER_PROFILES[id as WorkerProfileId];
   }
-  return WORKER_PROFILES.IMAGE_CORE;
+  return WORKER_PROFILES.BASE_COMFY;
 }
 
 export function defaultWorkerProfileForTarget(target: string): WorkerProfileId {
@@ -146,7 +146,7 @@ export function defaultWorkerProfileForTarget(target: string): WorkerProfileId {
     case "gcgpu1":
       return "AUDIO_LIPSYNC";
     default:
-      return "IMAGE_CORE";
+      return "BASE_COMFY";
   }
 }
 

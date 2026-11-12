@@ -30,9 +30,9 @@ import { toast } from "sonner";
 const STEP_LABELS: Record<number, string> = {
   0: "Idle",
   1: "1/5: Kernel Queued",
-  2: "2/5: FastBoot + Tunnel",
-  3: "3/5: Launching ComfyUI",
-  4: "4/5: Tunnel Ready",
+  2: "2/5: FastBoot & Dependencies",
+  3: "3/5: Installing / Starting",
+  4: "4/5: Tunnel Ready · Booting UI",
   5: "5/5: Online & Ready",
 };
 

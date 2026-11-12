@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { ensureDbSchemaReady } from "@/lib/db/ensure-schema";
 import { verifyVmRegistrationToken } from "@/lib/auth/session";
 import { appendSystemLog } from "@/lib/logs/logger";
 
@@ -25,6 +26,8 @@ export async function POST(req: NextRequest) {
     if (!payload) {
       return NextResponse.json({ error: "Invalid or expired VM registration token" }, { status: 401 });
     }
+
+    await ensureDbSchemaReady();
 
     const tunnelUrl = typeof body.tunnelUrl === "string" ? body.tunnelUrl.trim().replace(/\/$/, "") : "";
     const targets: string[] = Array.isArray(body.targets) ? body.targets : payload.targets;

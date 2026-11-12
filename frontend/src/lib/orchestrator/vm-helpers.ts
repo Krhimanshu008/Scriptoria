@@ -46,7 +46,7 @@ export function sanitizeVmForClient(vm: VmInstance): PublicVmInstance {
     provider: vm.provider,
     accountAlias: vm.accountAlias,
     sessionGroup: vm.sessionGroup,
-    workerProfile: vm.workerProfile || "IMAGE_CORE",
+    workerProfile: vm.workerProfile || "BASE_COMFY",
     internalPort: vm.internalPort,
     publicUrl: vm.publicUrl,
     useRouteLess: vm.useRouteLess,

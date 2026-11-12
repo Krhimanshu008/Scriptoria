@@ -30,7 +30,7 @@ async function main() {
   }
   try {
     await client.execute(
-      `ALTER TABLE "VmInstance" ADD COLUMN "workerProfile" TEXT NOT NULL DEFAULT 'IMAGE_CORE'`
+      `ALTER TABLE "VmInstance" ADD COLUMN "workerProfile" TEXT NOT NULL DEFAULT 'BASE_COMFY'`
     );
   } catch (err) {
     const msg = err instanceof Error ? err.message.toLowerCase() : "";

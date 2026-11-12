@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS "VmInstance" (
     "provider" TEXT NOT NULL,
     "accountAlias" TEXT NOT NULL,
     "sessionGroup" TEXT NOT NULL,
-    "workerProfile" TEXT NOT NULL DEFAULT 'IMAGE_CORE',
+    "workerProfile" TEXT NOT NULL DEFAULT 'BASE_COMFY',
     "internalPort" INTEGER NOT NULL DEFAULT 8188,
     "publicUrl" TEXT NOT NULL DEFAULT '',
     "vmSecret" TEXT,

@@ -2,6 +2,7 @@ import jwt from "jsonwebtoken";
 import { cookies } from "next/headers";
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { ensureDbSchemaReady } from "@/lib/db/ensure-schema";
 
 export const SESSION_COOKIE_NAME = "scriptoria_session";
 
@@ -36,7 +37,7 @@ export const DEFAULT_VM_SLOTS: DefaultVmSlotSpec[] = [
     provider: "kaggle",
     accountAlias: "acc1",
     sessionGroup: "kaggle-acc1",
-    workerProfile: "IMAGE_CORE",
+    workerProfile: "BASE_COMFY",
     internalPort: 8188,
   },
   {
@@ -45,7 +46,7 @@ export const DEFAULT_VM_SLOTS: DefaultVmSlotSpec[] = [
     provider: "kaggle",
     accountAlias: "acc1",
     sessionGroup: "kaggle-acc1",
-    workerProfile: "IMAGE_CORE",
+    workerProfile: "BASE_COMFY",
     internalPort: 8189,
   },
   {
@@ -162,6 +163,8 @@ export async function getAuthUser(req?: NextRequest): Promise<SessionUser | null
   const parsed = verifySessionToken(token);
   if (!parsed) return null;
 
+  await ensureDbSchemaReady();
+
   const user = await prisma.user.findUnique({
     where: { id: parsed.userId },
     select: { id: true, email: true, role: true, name: true },
@@ -185,6 +188,7 @@ export function shouldUseSecureCookie(req: NextRequest): boolean {
  * Provisions the 6 default GPU slots for a newly created user.
  */
 export async function ensureUserVmSlots(userId: string): Promise<void> {
+  await ensureDbSchemaReady();
   for (const slot of DEFAULT_VM_SLOTS) {
     await prisma.vmInstance.upsert({
       where: { userId_target: { userId, target: slot.target } },

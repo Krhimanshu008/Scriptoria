@@ -914,8 +914,7 @@ def setup_cloudflared():
                     if m:
                         TUNNEL_URL = m.group(0)
                         log_event(f"Route-less Quick Tunnel live in {round(time.time() - t_boot_start, 1)}s: {TUNNEL_URL}", category="NETWORK", level="SUCCESS")
-                        if CURRENT_STEP < 4:
-                            post_heartbeat(4, "STARTING")
+                        post_heartbeat(CURRENT_STEP, "STARTING")
                         return TUNNEL_URL
             log_event(f"Quick Tunnel attempt {attempt}/3 timed out; retrying...", category="NETWORK", level="WARN")
         except Exception as te:
@@ -961,53 +960,97 @@ snapshot_meta = None
 if not os.path.exists(os.path.join(COMFY_DIR, "main.py")):
     cache_restored = False
     if rclone_ok:
-        try:
-            cache_dir_remote, cache_file_remote = FASTBOOT_REMOTE.rsplit("/", 1)
-            st = rc_post("operations/stat", {"fs": f"gdrive:{cache_dir_remote}", "remote": cache_file_remote}, timeout=10)
-            if (st.get("item") or {}).get("Size", 0) > 100000:
-                t_fb = time.time()
-                log_event(f"FastBoot cache HIT! Streaming {cache_file_remote} from Google Drive...", category="COMFYUI", level="SUCCESS")
-                rc_copy_async({
-                    "srcFs": f"gdrive:{cache_dir_remote}",
-                    "srcRemote": cache_file_remote,
-                    "dstFs": "/tmp",
-                    "dstRemote": "fastboot.tar.gz",
-                    "_config": {
-                        "MultiThreadCutoff": "32M", "MultiThreadChunkSize": "64M",
-                        "MultiThreadStreams": 8, "DisableHTTP2": True,
-                    },
-                }, max_wait=180, label="FastBoot restore")
-                subprocess.run(["tar", "-xzf", "/tmp/fastboot.tar.gz", "-C", "/tmp"], check=True)
+        candidate_remotes = [FASTBOOT_REMOTE]
+        if PROFILE_ID == "BASE_COMFY":
+            candidate_remotes.append(f"{GDRIVE_BASE}/cache/fastboot_{PROVIDER}_py{PY_VER_TAG}_v1.tar.gz")
+        for remote_candidate in candidate_remotes:
+            try:
+                cache_dir_remote, cache_file_remote = remote_candidate.rsplit("/", 1)
+                st = rc_post("operations/stat", {"fs": f"gdrive:{cache_dir_remote}", "remote": cache_file_remote}, timeout=10)
+                if (st.get("item") or {}).get("Size", 0) > 100000:
+                    t_fb = time.time()
+                    log_event(f"FastBoot cache HIT! Streaming {cache_file_remote} from Google Drive...", category="COMFYUI", level="SUCCESS")
+                    rc_copy_async({
+                        "srcFs": f"gdrive:{cache_dir_remote}",
+                        "srcRemote": cache_file_remote,
+                        "dstFs": "/tmp",
+                        "dstRemote": "fastboot.tar.gz",
+                        "_config": {
+                            "MultiThreadCutoff": "32M", "MultiThreadChunkSize": "64M",
+                            "MultiThreadStreams": 8, "DisableHTTP2": True,
+                        },
+                    }, max_wait=180, label="FastBoot restore")
+                    subprocess.run(["tar", "-xzf", "/tmp/fastboot.tar.gz", "-C", "/tmp"], check=True)
+                    try:
+                        os.remove("/tmp/fastboot.tar.gz")
+                    except Exception:
+                        pass
+                    if os.path.exists(os.path.join(COMFY_DIR, "main.py")):
+                        cache_restored = True
+                        log_event(f"Extracted FastBoot ComfyUI cache in {round(time.time() - t_fb, 1)}s!", category="COMFYUI", level="SUCCESS")
+                        break
+            except Exception as ce:
                 try:
-                    os.remove("/tmp/fastboot.tar.gz")
+                    if os.path.exists("/tmp/fastboot.tar.gz"):
+                        os.remove("/tmp/fastboot.tar.gz")
                 except Exception:
                     pass
-                if os.path.exists(os.path.join(COMFY_DIR, "main.py")):
-                    cache_restored = True
-                    log_event(f"Extracted FastBoot ComfyUI cache in {round(time.time() - t_fb, 1)}s!", category="COMFYUI", level="SUCCESS")
-        except Exception as ce:
-            try:
-                if os.path.exists("/tmp/fastboot.tar.gz"):
-                    os.remove("/tmp/fastboot.tar.gz")
-            except Exception:
-                pass
-            log_event(f"FastBoot cache miss ({ce}); running fresh uv install...", category="COMFYUI")
+                log_event(f"FastBoot lookup ({remote_candidate.rsplit('/', 1)[1]}): {ce}", category="COMFYUI")
 
     if not cache_restored:
         t_cold = time.time()
         log_event(f"Cloning ComfyUI (shallow) & installing {PROFILE_ID} delta packages via uv...", category="COMFYUI")
         subprocess.run(["git", "clone", "--depth", "1", "--single-branch", "https://github.com/comfyanonymous/ComfyUI.git", COMFY_DIR], check=True)
-        req_file = os.path.join(COMFY_DIR, "requirements.txt")
+
+        if CUSTOM_NODES:
+            nodes_dir = os.path.join(COMFY_DIR, "custom_nodes")
+            os.makedirs(nodes_dir, exist_ok=True)
+            def _clone_node(cn):
+                cn_name = cn.get("name", "")
+                cn_url = cn.get("repoUrl", "")
+                if not cn_name or not cn_url:
+                    return
+                cn_dst = os.path.join(nodes_dir, cn_name)
+                try:
+                    if not os.path.exists(cn_dst):
+                        subprocess.run(["git", "clone", "--depth", "1", "--single-branch", cn_url, cn_dst], check=True, timeout=60)
+                    log_event(f"Cloned custom node: {cn_name}", category="COMFYUI")
+                except Exception as cne:
+                    log_event(f"Custom node clone notice ({cn_name}): {cne}", category="COMFYUI", level="WARN")
+            clone_threads = [threading.Thread(target=_clone_node, args=(cn,), daemon=True) for cn in CUSTOM_NODES]
+            for ct in clone_threads:
+                ct.start()
+            for ct in clone_threads:
+                ct.join(timeout=65)
+
+        req_sources = [os.path.join(COMFY_DIR, "requirements.txt")]
+        if CUSTOM_NODES:
+            for cn in CUSTOM_NODES:
+                cn_req = os.path.join(COMFY_DIR, "custom_nodes", cn.get("name", ""), "requirements.txt")
+                if os.path.exists(cn_req):
+                    req_sources.append(cn_req)
+
         filtered_reqs = "/tmp/comfy_reqs_delta.txt"
         skip_pkgs = {"torch", "torchvision", "torchaudio"}
-        with open(req_file, "r", encoding="utf-8") as rf, open(filtered_reqs, "w", encoding="utf-8") as wf:
-            for line in rf:
-                clean = line.strip()
-                if not clean or clean.startswith("#"):
+        seen_lines = set()
+        with open(filtered_reqs, "w", encoding="utf-8") as wf:
+            for rsrc in req_sources:
+                if not os.path.exists(rsrc):
                     continue
-                pkg = re.split(r"[=<>!~;\\s\\[]", clean)[0].lower().replace("_", "-")
-                if pkg not in skip_pkgs:
-                    wf.write(clean + "\\n")
+                with open(rsrc, "r", encoding="utf-8", errors="ignore") as rf:
+                    for line in rf:
+                        clean = line.strip()
+                        if not clean or clean.startswith("#") or clean.startswith("-r "):
+                            continue
+                        pkg = re.split(r"[=<>!~;\\s\\[]", clean)[0].lower().replace("_", "-")
+                        if pkg in skip_pkgs or clean in seen_lines:
+                            continue
+                        seen_lines.add(clean)
+                        wf.write(clean + "\\n")
+            if any("Impact-Pack" in cn.get("name", "") for cn in CUSTOM_NODES):
+                for extra_pkg in ("ultralytics", "segment-anything", "piexif", "scikit-image", "opencv-python-headless"):
+                    if extra_pkg not in seen_lines:
+                        wf.write(extra_pkg + "\\n")
 
         def _snap_site_dirs(dirs):
             snap = {}
@@ -1036,37 +1079,8 @@ if not os.path.exists(os.path.join(COMFY_DIR, "main.py")):
         site_dirs = list({sysconfig.get_paths()["purelib"], sysconfig.get_paths()["platlib"]})
         before_snap = _snap_site_dirs(site_dirs)
         uv_thread.join(timeout=45)
-        log_event("Installing ComfyUI delta packages...", category="COMFYUI")
+        log_event("Installing ComfyUI + profile delta packages in single pass...", category="COMFYUI")
         _uv_or_pip_install(filtered_reqs, check_err=True)
-
-        if CUSTOM_NODES:
-            nodes_dir = os.path.join(COMFY_DIR, "custom_nodes")
-            os.makedirs(nodes_dir, exist_ok=True)
-            for cn in CUSTOM_NODES:
-                cn_name = cn.get("name", "")
-                cn_url = cn.get("repoUrl", "")
-                if not cn_name or not cn_url:
-                    continue
-                cn_dst = os.path.join(nodes_dir, cn_name)
-                try:
-                    if not os.path.exists(cn_dst):
-                        subprocess.run(["git", "clone", "--depth", "1", "--single-branch", cn_url, cn_dst], check=True, timeout=60)
-                    cn_req = os.path.join(cn_dst, "requirements.txt")
-                    if os.path.exists(cn_req):
-                        cn_filtered = f"/tmp/req_{cn_name}.txt"
-                        with open(cn_req, "r", encoding="utf-8", errors="ignore") as crf, open(cn_filtered, "w", encoding="utf-8") as cwf:
-                            for line in crf:
-                                clean = line.strip()
-                                if not clean or clean.startswith("#"):
-                                    continue
-                                pkg = re.split(r"[=<>!~;\\s\\[]", clean)[0].lower().replace("_", "-")
-                                if pkg not in skip_pkgs:
-                                    cwf.write(clean + "\\n")
-                        if os.path.getsize(cn_filtered) > 0:
-                            _uv_or_pip_install(cn_filtered, check_err=False)
-                    log_event(f"Installed custom node: {cn_name}", category="COMFYUI")
-                except Exception as cne:
-                    log_event(f"Custom node {cn_name} notice: {cne}", category="COMFYUI", level="WARN")
 
         log_event(f"ComfyUI ({PROFILE_ID}) + dependencies ready in {round(time.time() - t_cold, 1)}s", category="COMFYUI", level="SUCCESS")
         snapshot_meta = (site_dirs, before_snap)
@@ -1097,16 +1111,51 @@ except Exception:
     gpu_count = 1
 
 active_ports = PORTS[:max(1, gpu_count)] if PROVIDER == "kaggle" else PORTS[:1]
+COMFY_PROCS = {}
+COMFY_LOG_OFFSETS = {}
+
+def _tail_comfy_logs(max_lines=8):
+    for p in active_ports:
+        lpath = f"/tmp/comfy_{p}.log"
+        if not os.path.exists(lpath):
+            continue
+        try:
+            pos = COMFY_LOG_OFFSETS.get(p, 0)
+            with open(lpath, "r", encoding="utf-8", errors="ignore") as lf:
+                lf.seek(pos)
+                chunk = lf.read()
+                COMFY_LOG_OFFSETS[p] = lf.tell()
+            if chunk:
+                lines = [ln.strip() for ln in chunk.splitlines() if ln.strip()]
+                for ln in lines[-max_lines:]:
+                    if any(k in ln.lower() for k in ("error", "traceback", "exception", "starting server", "import times", "cuda")):
+                        log_event(f"[:{p}] {ln[:180]}", category="COMFYUI", level="WARN" if "error" in ln.lower() else "INFO")
+        except Exception:
+            pass
+
 for idx, port in enumerate(active_ports):
     if idx > 0:
-        time.sleep(1.5)
+        # Stagger GPU1 startup until GPU0 binds (or max 30s if custom nodes are present) to avoid Dual-T4 RAM OOM spike
+        stagger_wait = 30 if CUSTOM_NODES else 4
+        t_stg = time.time()
+        while (time.time() - t_stg) < stagger_wait:
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{active_ports[0]}/system_stats", timeout=1.5) as r:
+                    if r.status == 200:
+                        break
+            except Exception:
+                pass
+            _tail_comfy_logs(4)
+            time.sleep(1.5)
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = str(idx)
+    env["PYTHONUNBUFFERED"] = "1"
+    env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
     if os.path.isdir(FASTBOOT_SITE):
         prev_pp = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = f"{FASTBOOT_SITE}:{prev_pp}" if prev_pp else FASTBOOT_SITE
     c_log = open(f"/tmp/comfy_{port}.log", "w")
-    subprocess.Popen([
+    proc = subprocess.Popen([
         sys.executable, os.path.join(COMFY_DIR, "main.py"),
         "--listen", "127.0.0.1",
         "--port", str(port),
@@ -1115,6 +1164,7 @@ for idx, port in enumerate(active_ports):
         "--enable-cors-header",
         "--preview-method", "auto"
     ], cwd=COMFY_DIR, env=env, stdout=c_log, stderr=c_log)
+    COMFY_PROCS[port] = proc
     log_event(f"Launched ComfyUI on CUDA:{idx} -> 127.0.0.1:{port}", category="COMFYUI")
 
 def _upload_fastboot_snapshot():
@@ -1211,10 +1261,19 @@ while True:
     next_step = 5 if all_ready else (4 if (TUNNEL_URL and caddy_ok) else 3)
     next_status = "ONLINE" if all_ready else "STARTING"
 
+    if not all_ready:
+        _tail_comfy_logs(6)
+        dead_ports = [p for p, pr in COMFY_PROCS.items() if pr.poll() is not None]
+        if len(dead_ports) == len(COMFY_PROCS) and len(COMFY_PROCS) > 0:
+            _tail_comfy_logs(15)
+            log_event(f"All ComfyUI processes exited unexpectedly (ports={dead_ports}).", category="ERROR", level="ERROR")
+            post_heartbeat(0, "ERROR", telem)
+            break
+
     if all_ready and CURRENT_STEP < 5:
         log_event(f"ComfyUI ONLINE in {round(time.time() - t_boot_start, 1)}s!", category="COMFYUI", level="SUCCESS")
 
-    if (all_ready or (any_ready and (time.time() - t_loop_start) > 60)) and should_upload_cache and rclone_ok and not upload_started:
+    if (any_ready or (time.time() - t_loop_start) > 45) and should_upload_cache and rclone_ok and not upload_started:
         upload_started = True
         threading.Thread(target=_upload_fastboot_snapshot, daemon=True).start()
 

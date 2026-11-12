@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/db/prisma";
+import { ensureDbSchemaReady } from "@/lib/db/ensure-schema";
 import {
   ensureUserVmSlots,
   SESSION_COOKIE_NAME,
@@ -28,6 +29,8 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
+
+    await ensureDbSchemaReady();
 
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) {

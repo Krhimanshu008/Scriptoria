@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { ensureDbSchemaReady } from "@/lib/db/ensure-schema";
 import { verifyVmRegistrationToken } from "@/lib/auth/session";
 import { appendSystemLog } from "@/lib/logs/logger";
 
@@ -11,6 +12,8 @@ export async function POST(req: NextRequest) {
     if (!payload) {
       return NextResponse.json({ error: "Invalid VM token" }, { status: 401 });
     }
+
+    await ensureDbSchemaReady();
 
     const slug = String(body.slug || "").trim();
     const status = String(body.status || "BACKED_UP").toUpperCase();

@@ -52,7 +52,7 @@ model VmInstance {
   provider      String    // "kaggle", "colab"
   accountAlias  String    // Bound to Credential.accountAlias ("acc1", "acc2")
   sessionGroup  String    // Shared VM container group e.g. "kaggle-acc1", "kaggle-acc2", "colab-acc1"
-  workerProfile String    @default("IMAGE_CORE") // BASE_COMFY, IMAGE_CORE, IMAGE_GGUF_EDIT, AUDIO_LIPSYNC, VIDEO_MOTION
+  workerProfile String    @default("BASE_COMFY") // BASE_COMFY, IMAGE_CORE, IMAGE_GGUF_EDIT, AUDIO_LIPSYNC, VIDEO_MOTION
   internalPort  Int       @default(8188) // 8188 or 8189 inside VM
   publicUrl     String    @default("")   // Live trycloudflare.com URL (Caddy :8000) or named tunnel
   vmSecret      String?   // Per-session X-VM-Secret verified by Caddy

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/db/prisma";
+import { ensureDbSchemaReady } from "@/lib/db/ensure-schema";
 import {
   SESSION_COOKIE_NAME,
   shouldUseSecureCookie,
@@ -16,6 +17,8 @@ export async function POST(req: NextRequest) {
     if (!email || !password) {
       return NextResponse.json({ error: "Email and password are required." }, { status: 400 });
     }
+
+    await ensureDbSchemaReady();
 
     const user = await prisma.user.findUnique({ where: { email } });
     if (!user) {
