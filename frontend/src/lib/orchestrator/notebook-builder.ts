@@ -1144,7 +1144,31 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"):
                 log_event(f"Reusing cached Qwen weights in /tmp: {os.path.basename(m)}", category="SYSTEM", level="SUCCESS")
                 return m, mm, dr, False
 
-        # Primary source: Direct Hugging Face CDN (16 parallel streams)
+        # FastBoot: Check persistent Google Drive mirror BEFORE Hugging Face CDN
+        if rclone_ok:
+            try:
+                ls = rc_post("operations/list", {"fs": f"gdrive:{GDRIVE_BASE}/models/llm", "remote": ""}, timeout=15)
+                items = ls.get("list", []) or []
+                gg_item = next((x for x in items if x.get("Name", "").lower().endswith(".gguf") and "mmproj" not in x.get("Name", "").lower() and "dflash" not in x.get("Name", "").lower()), None)
+                mm_item = next((x for x in items if x.get("Name", "").lower().endswith(".gguf") and "mmproj" in x.get("Name", "").lower()), None) if needs_vision else None
+                dr_item = next((x for x in items if x.get("Name", "").lower().endswith(".gguf") and "dflash" in x.get("Name", "").lower()), None)
+                if gg_item:
+                    log_event(f"FastBoot cache hit! Streaming Qwen GGUF from Google Drive mirror: {gg_item['Name']}...", category="RCLONE", level="SUCCESS")
+                    rc_copy_async({"srcFs": f"gdrive:{GDRIVE_BASE}/models/llm", "srcRemote": gg_item["Name"], "dstFs": "/tmp/models/llm", "dstRemote": gg_item["Name"], "_config": {"MultiThreadStreams": 8, "DisableHTTP2": True}}, max_wait=600, label="Qwen GGUF stream")
+                    m_local = f"/tmp/models/llm/{gg_item['Name']}"
+                    mm_local = None
+                    if mm_item:
+                        rc_copy_async({"srcFs": f"gdrive:{GDRIVE_BASE}/models/llm", "srcRemote": mm_item["Name"], "dstFs": "/tmp/models/llm", "dstRemote": mm_item["Name"]}, max_wait=180, label="mmproj stream")
+                        mm_local = f"/tmp/models/llm/{mm_item['Name']}"
+                    dr_local = None
+                    if dr_item:
+                        rc_copy_async({"srcFs": f"gdrive:{GDRIVE_BASE}/models/llm", "srcRemote": dr_item["Name"], "dstFs": "/tmp/models/llm", "dstRemote": dr_item["Name"]}, max_wait=180, label="DFlash2 stream")
+                        dr_local = f"/tmp/models/llm/{dr_item['Name']}"
+                    return m_local, mm_local, dr_local, False
+            except Exception as de:
+                log_event(f"Drive LLM weights check: {de}", category="RCLONE")
+
+        # Hugging Face CDN (16 parallel streams) fallback
         try:
             uv_thread.join(timeout=30)
             from huggingface_hub import list_repo_files
@@ -1180,33 +1204,9 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"):
             if m and os.path.exists(m):
                 return m, mm, dr, True
         except Exception as hf_err:
-            log_event(f"Hugging Face download failed ({hf_err}); falling back to Google Drive...", category="SYSTEM", level="WARN")
+            log_event(f"Hugging Face download failed: {hf_err}", category="SYSTEM", level="WARN")
 
-        # Fallback to Google Drive if HF failed
-        if rclone_ok:
-            try:
-                ls = rc_post("operations/list", {"fs": f"gdrive:{GDRIVE_BASE}/models/llm", "remote": ""}, timeout=15)
-                items = ls.get("list", []) or []
-                gg_item = next((x for x in items if x.get("Name", "").lower().endswith(".gguf") and "mmproj" not in x.get("Name", "").lower() and "dflash" not in x.get("Name", "").lower()), None)
-                mm_item = next((x for x in items if x.get("Name", "").lower().endswith(".gguf") and "mmproj" in x.get("Name", "").lower()), None) if needs_vision else None
-                dr_item = next((x for x in items if x.get("Name", "").lower().endswith(".gguf") and "dflash" in x.get("Name", "").lower()), None)
-                if gg_item:
-                    log_event(f"Streaming Qwen GGUF from Google Drive fallback: {gg_item['Name']}...", category="RCLONE", level="SUCCESS")
-                    rc_copy_async({"srcFs": f"gdrive:{GDRIVE_BASE}/models/llm", "srcRemote": gg_item["Name"], "dstFs": "/tmp/models/llm", "dstRemote": gg_item["Name"], "_config": {"MultiThreadStreams": 8, "DisableHTTP2": True}}, max_wait=600, label="Qwen GGUF stream")
-                    m_local = f"/tmp/models/llm/{gg_item['Name']}"
-                    mm_local = None
-                    if mm_item:
-                        rc_copy_async({"srcFs": f"gdrive:{GDRIVE_BASE}/models/llm", "srcRemote": mm_item["Name"], "dstFs": "/tmp/models/llm", "dstRemote": mm_item["Name"]}, max_wait=180, label="mmproj stream")
-                        mm_local = f"/tmp/models/llm/{mm_item['Name']}"
-                    dr_local = None
-                    if dr_item:
-                        rc_copy_async({"srcFs": f"gdrive:{GDRIVE_BASE}/models/llm", "srcRemote": dr_item["Name"], "dstFs": "/tmp/models/llm", "dstRemote": dr_item["Name"]}, max_wait=180, label="DFlash2 stream")
-                        dr_local = f"/tmp/models/llm/{dr_item['Name']}"
-                    return m_local, mm_local, dr_local, False
-            except Exception as de:
-                log_event(f"Drive LLM weights check: {de}", category="RCLONE")
-
-        raise RuntimeError("Failed to resolve Qwen weights from Kaggle dataset, Hugging Face, or Google Drive.")
+        raise RuntimeError("Failed to resolve Qwen weights from Kaggle dataset, Google Drive, or Hugging Face.")
 
     llama_bin = _resolve_llama_bin()
     model_gguf, mmproj_gguf, draft_gguf, downloaded_fresh = _resolve_qwen_ggufs()
@@ -1237,8 +1237,8 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"):
         "--fit", "off",
         "--flash-attn", "on",
         "--ctx-size", "8192" if PROFILE_ID == "LLM_QWEN_VLM" else "16384",
-        "-ctk", "f16", "-ctv", "f16",
-        "-ctkd", "f16", "-ctvd", "f16",
+        "-ctk", "q8_0", "-ctv", "q8_0",
+        "-ctkd", "q8_0", "-ctvd", "q8_0",
         "--batch-size", "512",
         "--ubatch-size", "256",
         "--parallel", "1",
@@ -1246,7 +1246,7 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"):
         "--jinja",
     ]
     if draft_gguf and os.path.exists(draft_gguf):
-        ll_cmd.extend(["-md", draft_gguf, "--spec-type", "draft-dflash", "--spec-draft-n-max", "3"])
+        ll_cmd.extend(["-md", draft_gguf, "--spec-draft-n-max", "3"])
         log_event(f"Speculative decoding ACTIVE on CUDA1: {os.path.basename(draft_gguf)} (3-token draft)", category="SYSTEM", level="SUCCESS")
     if mmproj_gguf and PROFILE_ID == "LLM_QWEN_VLM":
         ll_cmd.extend(["--mmproj", mmproj_gguf])
@@ -1255,6 +1255,22 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"):
     ll_proc = subprocess.Popen(ll_cmd, env=ll_env, stdout=ll_log, stderr=ll_log)
     mode_label = "Vision + LLM" if PROFILE_ID == "LLM_QWEN_VLM" else "Ultra Text Turbo"
     log_event(f"Launched llama-server ({mode_label}, 2x T4 split) -> 127.0.0.1:8190 ({os.path.basename(model_gguf)})", category="SYSTEM")
+
+    def _tail_llama_log():
+        time.sleep(2)
+        try:
+            with open("/tmp/llama_server.log", "r") as lf:
+                while True:
+                    line = lf.readline()
+                    if line:
+                        stripped = line.strip()
+                        if stripped and any(k in stripped.lower() for k in ["error", "fail", "listening", "loaded", "eval time", "tokens", "http"]):
+                            log_event(f"llama-server: {stripped[:120]}", category="LLAMA", level="INFO")
+                    else:
+                        time.sleep(0.5)
+        except Exception:
+            pass
+    threading.Thread(target=_tail_llama_log, daemon=True).start()
 
     def _query_nvidia_smi():
         try:
@@ -1315,12 +1331,13 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"):
                 else:
                     self.send_header("Transfer-Encoding", "chunked")
                     self.end_headers()
+                    self.wfile.flush()
                     while True:
-                        chunk = resp.read(1024)
-                        if not chunk:
+                        line = resp.readline()
+                        if not line:
                             break
-                        chunk_hdr = hex(len(chunk))[2:].encode("ascii") + b"\\r\\n"
-                        self.wfile.write(chunk_hdr + chunk + b"\\r\\n")
+                        chunk_hdr = hex(len(line))[2:].encode("ascii") + b"\\r\\n"
+                        self.wfile.write(chunk_hdr + line + b"\\r\\n")
                         self.wfile.flush()
                     self.wfile.write(b"0\\r\\n\\r\\n")
                     self.wfile.flush()

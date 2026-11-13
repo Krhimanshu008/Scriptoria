@@ -233,6 +233,8 @@ export async function POST(
           pythonCode,
           datasetDataSources: isTpu
             ? ["rahim3/qwen3-8-27b-bf16", "rahim3/qwen38-tpu-env-v5e8"]
+            : isLlmProfile
+            ? ["swift15/qwen38-27b-q4km-gguf"]
             : [],
           enableTpu: isTpu,
           enableGpu: !isTpu,

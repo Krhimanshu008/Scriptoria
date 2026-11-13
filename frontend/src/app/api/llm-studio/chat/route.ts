@@ -50,6 +50,9 @@ export async function POST(req: NextRequest) {
     const fallbackToVault = Boolean(body.fallbackToVault);
 
     let systemPrompt = (body.systemPrompt || "You are a helpful AI studio assistant.").trim();
+    if (reasoningEffort === "none") {
+      systemPrompt += "\nDo NOT output internal thought or <think> tags. Answer directly and concisely.";
+    }
     if (mode === "json" || mode === "vision_qa") {
       const schemaNote = body.jsonSchema?.trim()
         ? `\nRespond ONLY with valid JSON conforming to:\n${body.jsonSchema.trim()}`
@@ -60,7 +63,7 @@ export async function POST(req: NextRequest) {
     const onlineVm = await prisma.vmInstance.findFirst({
       where: {
         userId: user.userId,
-        workerProfile: { in: ["LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"] },
+        workerProfile: { in: ["LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "TPU_QWEN27B_V5E"] },
         status: "ONLINE",
       },
       orderBy: { lastHeartbeat: "desc" },
