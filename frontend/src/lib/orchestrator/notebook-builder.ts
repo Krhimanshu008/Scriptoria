@@ -976,16 +976,18 @@ uv_thread.start()
 rclone_ok = setup_rclone()
 
 # -------------------------------------------------------------
-# 3B. Dedicated LLM Nodes (LLM_QWEN_VLM, LLM_QWEN_TEXT_TURBO & LLM_QWEN_MOE_35B on Dual-T4)
+# 3B. Dedicated LLM Nodes (LLM_QWEN_VLM, LLM_QWEN_TEXT_TURBO, LLM_QWEN_MOE_35B & LLM_QWEN_FAST_8B on Dual-T4)
 # -------------------------------------------------------------
-if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B"):
+if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B"):
     import http.client as _hc
     from http.server import ThreadingHTTPServer as _THS, BaseHTTPRequestHandler as _BHRH
     from pathlib import Path
 
     os.makedirs("/tmp/models/llm", exist_ok=True)
     os.makedirs("/tmp/llama_bin", exist_ok=True)
-    if PROFILE_ID == "LLM_QWEN_MOE_35B":
+    if PROFILE_ID == "LLM_QWEN_FAST_8B":
+        LLM_MODEL_REPO = os.environ.get("QWEN_MODEL_REPO", "unsloth/Qwen3-VL-8B-Instruct-GGUF")
+    elif PROFILE_ID == "LLM_QWEN_MOE_35B":
         LLM_MODEL_REPO = os.environ.get("QWEN_MODEL_REPO", "unsloth/Qwen3.6-35B-A3B-GGUF")
     else:
         LLM_MODEL_REPO = os.environ.get("QWEN_MODEL_REPO", "unsloth/Qwen3.8-27B-GGUF")
@@ -1037,10 +1039,24 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B"):
                     break
             if not bin_url:
                 raise RuntimeError("No Ubuntu CUDA-12 release tarball found in ggml-org/llama.cpp")
-            urllib.request.urlretrieve(bin_url, "/tmp/llama_cuda.tar.gz")
+
+            def _dl_fast_bin(url, out_path):
+                os.makedirs(os.path.dirname(out_path), exist_ok=True)
+                if shutil.which("aria2c"):
+                    subprocess.run([
+                        "aria2c", "-x", "16", "-s", "16", "-k", "1M",
+                        "--file-allocation=none", "--allow-overwrite=true",
+                        "--auto-file-renaming=false",
+                        "-d", os.path.dirname(out_path), "-o", os.path.basename(out_path),
+                        url
+                    ], check=True, stdout=subprocess.DEVNULL)
+                else:
+                    subprocess.run(["curl", "-sSL", url, "-o", out_path], check=True)
+
+            _dl_fast_bin(bin_url, "/tmp/llama_cuda.tar.gz")
             subprocess.run(["tar", "-xzf", "/tmp/llama_cuda.tar.gz", "-C", "/tmp/llama_bin"], check=True)
             if cudart_url:
-                urllib.request.urlretrieve(cudart_url, "/tmp/llama_cudart.tar.gz")
+                _dl_fast_bin(cudart_url, "/tmp/llama_cudart.tar.gz")
                 subprocess.run(["tar", "-xzf", "/tmp/llama_cudart.tar.gz", "-C", "/tmp/llama_bin"], check=True)
             for root, _, files in os.walk("/tmp/llama_bin"):
                 for fname in files:
@@ -1057,6 +1073,14 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B"):
                 chk = subprocess.run([dst_srv, "--version"], env=chk_env, capture_output=True, text=True, timeout=15)
                 if chk.returncode == 0:
                     log_event(f"Prebuilt llama-server ready: {(chk.stdout or chk.stderr).strip()[:100]}", category="SYSTEM", level="SUCCESS")
+                    if rclone_ok:
+                        def _pack_and_save_bin():
+                            try:
+                                subprocess.run(["tar", "-czf", "/tmp/llama_server_t4_v1.tar.gz", "-C", "/tmp/llama_bin", "."], check=True)
+                                rc_copy_async({"srcFs": "/tmp", "srcRemote": "llama_server_t4_v1.tar.gz", "dstFs": f"gdrive:{GDRIVE_BASE}/fastboot", "dstRemote": "llama_server_t4_v1.tar.gz"}, max_wait=120, label="Cache llama-server")
+                            except Exception:
+                                pass
+                        threading.Thread(target=_pack_and_save_bin, daemon=True).start()
                     return dst_srv
                 raise RuntimeError(f"llama-server --version failed ({chk.returncode}): {(chk.stderr or chk.stdout)[-240:]}")
         except Exception as pe:
@@ -1123,38 +1147,46 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B"):
 
     def _resolve_qwen_ggufs():
         from pathlib import Path as _P
-        needs_vision = (PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_MOE_35B"))
-        m, mm, dr = None, None, None
+        needs_vision = (PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B"))
+        if PROFILE_ID == "LLM_QWEN_FAST_8B":
+            target_token = "8b"
+        elif PROFILE_ID == "LLM_QWEN_MOE_35B":
+            target_token = "35b"
+        else:
+            target_token = "27b"
+        m, mm = None, None
 
+        def _is_match(fname, token):
+            fn = fname.lower()
+            return token in fn and "mmproj" not in fn and "dflash" not in fn
+
+        # 1. Local Kaggle dataset mount (/kaggle/input) -> Instant NVMe (0s)
         if os.path.exists("/kaggle/input"):
             ggufs = list(_P("/kaggle/input").rglob("*.gguf"))
-            m = next((str(p) for p in ggufs if "mmproj" not in p.name.lower() and "dflash" not in p.name.lower() and "q4" in p.name.lower()), None)
+            m = next((str(p) for p in ggufs if _is_match(p.name, target_token)), None)
             if needs_vision:
                 mm = next((str(p) for p in ggufs if "mmproj" in p.name.lower()), None)
-            dr = next((str(p) for p in ggufs if "dflash" in p.name.lower()), None)
             if m:
                 log_event(f"Mounted Kaggle Dataset Qwen weights: {os.path.basename(m)}", category="SYSTEM", level="SUCCESS")
-                return m, mm, dr, False
+                return m, mm, False
 
-        # Check local /tmp/models/llm first
-        local_files = [str(p) for p in _P("/tmp/models/llm").glob("*.gguf")] if os.path.exists("/tmp/models/llm") else []
-        if local_files:
-            m = next((p for p in local_files if "mmproj" not in p.lower() and "dflash" not in p.lower()), None)
+        # 2. Local /tmp/models/llm cache
+        if os.path.exists("/tmp/models/llm"):
+            local_files = [str(p) for p in _P("/tmp/models/llm").glob("*.gguf")]
+            m = next((p for p in local_files if _is_match(os.path.basename(p), target_token)), None)
             if needs_vision:
-                mm = next((p for p in local_files if "mmproj" in p.lower()), None)
-            dr = next((p for p in local_files if "dflash" in p.lower()), None)
+                mm = next((p for p in local_files if "mmproj" in os.path.basename(p).lower()), None)
             if m:
                 log_event(f"Reusing cached Qwen weights in /tmp: {os.path.basename(m)}", category="SYSTEM", level="SUCCESS")
-                return m, mm, dr, False
+                return m, mm, False
 
-        # FastBoot: Check persistent Google Drive mirror BEFORE Hugging Face CDN
+        # 3. FastBoot: Check persistent Google Drive mirror BEFORE Hugging Face CDN
         if rclone_ok:
             try:
                 ls = rc_post("operations/list", {"fs": f"gdrive:{GDRIVE_BASE}/models/llm", "remote": ""}, timeout=15)
                 items = ls.get("list", []) or []
-                gg_item = next((x for x in items if x.get("Name", "").lower().endswith(".gguf") and "mmproj" not in x.get("Name", "").lower() and "dflash" not in x.get("Name", "").lower()), None)
+                gg_item = next((x for x in items if x.get("Name", "").lower().endswith(".gguf") and _is_match(x.get("Name", ""), target_token)), None)
                 mm_item = next((x for x in items if x.get("Name", "").lower().endswith(".gguf") and "mmproj" in x.get("Name", "").lower()), None) if needs_vision else None
-                dr_item = next((x for x in items if x.get("Name", "").lower().endswith(".gguf") and "dflash" in x.get("Name", "").lower()), None)
                 if gg_item:
                     log_event(f"FastBoot cache hit! Streaming Qwen GGUF from Google Drive mirror: {gg_item['Name']}...", category="RCLONE", level="SUCCESS")
                     rc_copy_async({"srcFs": f"gdrive:{GDRIVE_BASE}/models/llm", "srcRemote": gg_item["Name"], "dstFs": "/tmp/models/llm", "dstRemote": gg_item["Name"], "_config": {"MultiThreadStreams": 8, "DisableHTTP2": True}}, max_wait=600, label="Qwen GGUF stream")
@@ -1163,22 +1195,18 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B"):
                     if mm_item:
                         rc_copy_async({"srcFs": f"gdrive:{GDRIVE_BASE}/models/llm", "srcRemote": mm_item["Name"], "dstFs": "/tmp/models/llm", "dstRemote": mm_item["Name"]}, max_wait=180, label="mmproj stream")
                         mm_local = f"/tmp/models/llm/{mm_item['Name']}"
-                    dr_local = None
-                    if dr_item:
-                        rc_copy_async({"srcFs": f"gdrive:{GDRIVE_BASE}/models/llm", "srcRemote": dr_item["Name"], "dstFs": "/tmp/models/llm", "dstRemote": dr_item["Name"]}, max_wait=180, label="DFlash2 stream")
-                        dr_local = f"/tmp/models/llm/{dr_item['Name']}"
-                    return m_local, mm_local, dr_local, False
+                    return m_local, mm_local, False
             except Exception as de:
                 log_event(f"Drive LLM weights check: {de}", category="RCLONE")
 
-        # Hugging Face CDN (16 parallel streams) fallback
+        # 4. Hugging Face CDN (16 parallel streams)
         try:
             uv_thread.join(timeout=30)
             from huggingface_hub import list_repo_files
             files = list_repo_files(LLM_MODEL_REPO)
             ggufs = [f for f in files if f.lower().endswith(".gguf") and "mmproj" not in f.lower() and not f.lower().startswith("mtp/")]
             chosen_gguf = None
-            for pat in ["Q4_K_M", "UD-Q4_K_XL", "Q4_K_S", "Q4_0"]:
+            for pat in ["UD-Q4_K_M", "Q4_K_M", "UD-Q4_K_XL", "Q4_K_S", "Q4_0"]:
                 hit = [f for f in ggufs if pat.lower() in f.lower() and "-00002-of-" not in f.lower()]
                 if hit:
                     chosen_gguf = hit[0]
@@ -1187,7 +1215,11 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B"):
                 chosen_gguf = ggufs[0] if ggufs else None
 
             if chosen_gguf:
-                m = _fast_download_hf(LLM_MODEL_REPO, chosen_gguf, "/tmp/models/llm", label="Qwen 27B")
+                lbl = (
+                    "Qwen 8B Fast" if PROFILE_ID == "LLM_QWEN_FAST_8B"
+                    else ("Qwen 35B MoE" if PROFILE_ID == "LLM_QWEN_MOE_35B" else "Qwen 27B")
+                )
+                m = _fast_download_hf(LLM_MODEL_REPO, chosen_gguf, "/tmp/models/llm", label=lbl)
 
             if needs_vision:
                 mms = [f for f in files if f.lower().endswith(".gguf") and "mmproj" in f.lower()]
@@ -1195,24 +1227,15 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B"):
                 if chosen_mm:
                     mm = _fast_download_hf(LLM_MODEL_REPO, chosen_mm, "/tmp/models/llm", label="mmproj Vision")
 
-            for dr_repo in ["z-lab/Qwen3.8-27B-DFlash2-GGUF", "Akicou/Qwen3.8-27B-DFlash2-GGUF", "incoai/Qwen3.8-27B-DFlash2-GGUF"]:
-                try:
-                    draft_fname = "Qwen3.8-27B-DFlash2-Q4_K_M.gguf"
-                    dr = _fast_download_hf(dr_repo, draft_fname, "/tmp/models/llm", label="DFlash2 Drafter")
-                    if dr and os.path.exists(dr):
-                        break
-                except Exception as dfe:
-                    log_event(f"Draft repo {dr_repo} skipped ({dfe}); trying next...", category="SYSTEM")
-
             if m and os.path.exists(m):
-                return m, mm, dr, True
+                return m, mm, True
         except Exception as hf_err:
             log_event(f"Hugging Face download failed: {hf_err}", category="SYSTEM", level="WARN")
 
-        raise RuntimeError("Failed to resolve Qwen weights from Kaggle dataset, Google Drive, or Hugging Face.")
+        raise RuntimeError(f"Failed to resolve Qwen weights for {LLM_MODEL_REPO} from Kaggle dataset, Google Drive, or Hugging Face.")
 
     llama_bin = _resolve_llama_bin()
-    model_gguf, mmproj_gguf, draft_gguf, downloaded_fresh = _resolve_qwen_ggufs()
+    model_gguf, mmproj_gguf, downloaded_fresh = _resolve_qwen_ggufs()
     post_heartbeat(3, "STARTING")
 
     if rclone_ok and downloaded_fresh:
@@ -1222,49 +1245,63 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B"):
                 rc_copy_async({"srcFs": "/tmp/models/llm", "srcRemote": os.path.basename(model_gguf), "dstFs": f"gdrive:{GDRIVE_BASE}/models/llm", "dstRemote": os.path.basename(model_gguf)}, max_wait=900, label="Backup Qwen GGUF")
                 if mmproj_gguf:
                     rc_copy_async({"srcFs": "/tmp/models/llm", "srcRemote": os.path.basename(mmproj_gguf), "dstFs": f"gdrive:{GDRIVE_BASE}/models/llm", "dstRemote": os.path.basename(mmproj_gguf)}, max_wait=300, label="Backup mmproj")
-                if draft_gguf:
-                    rc_copy_async({"srcFs": "/tmp/models/llm", "srcRemote": os.path.basename(draft_gguf), "dstFs": f"gdrive:{GDRIVE_BASE}/models/llm", "dstRemote": os.path.basename(draft_gguf)}, max_wait=300, label="Backup DFlash2")
-                log_event("Cached Qwen 27B GGUF + drafter to Google Drive backup in background!", category="RCLONE", level="SUCCESS")
+                log_event("Cached Qwen GGUF to Google Drive backup in background!", category="RCLONE", level="SUCCESS")
             except Exception as be:
                 log_event(f"Drive LLM backup skipped: {be}", category="RCLONE", level="WARN")
         threading.Thread(target=_backup_llm_to_drive, daemon=True).start()
 
     ll_env = os.environ.copy()
     ll_env["LD_LIBRARY_PATH"] = f"/tmp/llama_bin:{ll_env.get('LD_LIBRARY_PATH', '')}"
+
+    if PROFILE_ID == "LLM_QWEN_FAST_8B":
+        t_split = "50,50"
+        ctx_size = "16384"
+        mtp_n = "3"
+    elif PROFILE_ID == "LLM_QWEN_MOE_35B":
+        t_split = "50,50"
+        ctx_size = "16384"
+        mtp_n = "3"
+    elif PROFILE_ID == "LLM_QWEN_VLM":
+        t_split = "55,45"
+        ctx_size = "8192"
+        mtp_n = "2"
+    else:
+        t_split = "50,50"
+        ctx_size = "16384"
+        mtp_n = "3"
+
     ll_cmd = [
         llama_bin, "-m", model_gguf, "--host", "127.0.0.1", "--port", "8190",
-        "-ngl", "999", "-ngld", "99",
-        "-dev", "CUDA0,CUDA1", "-devd", "CUDA1",
+        "-ngl", "999",
+        "-dev", "CUDA0,CUDA1",
         "--split-mode", "layer",
-        "--tensor-split", "55,45" if PROFILE_ID == "LLM_QWEN_VLM" else "50,50",
+        "--tensor-split", t_split,
         "--fit", "off",
         "--flash-attn", "on",
-        "--ctx-size", "8192" if PROFILE_ID == "LLM_QWEN_VLM" else "16384",
+        "--no-mmap",
+        "--ctx-size", ctx_size,
         "-ctk", "q8_0", "-ctv", "q8_0",
-        "-ctkd", "q8_0", "-ctvd", "q8_0",
         "--batch-size", "512",
         "--ubatch-size", "256",
         "--parallel", "1",
         "--kv-unified",
         "--jinja",
+        "--spec-type", "draft-mtp",
+        "--spec-draft-n-max", mtp_n,
     ]
-    if draft_gguf and os.path.exists(draft_gguf):
-        ll_cmd.extend(["-md", draft_gguf, "--spec-draft-n-max", "3"])
-        log_event(f"External speculative drafter ACTIVE: {os.path.basename(draft_gguf)}", category="SYSTEM", level="SUCCESS")
-    else:
-        mtp_draft_tokens = "2" if PROFILE_ID == "LLM_QWEN_VLM" else "3"
-        ll_cmd.extend(["--spec-type", "draft-mtp", "--spec-draft-n-max", mtp_draft_tokens])
-        if PROFILE_ID != "LLM_QWEN_VLM":
-            ll_cmd.extend(["--spec-draft-p-min", "0.75"])
-        log_event(f"Embedded MTP speculative decoding ACTIVE (--spec-type draft-mtp, n={mtp_draft_tokens}) ~28-33 tok/s", category="SYSTEM", level="SUCCESS")
-    if mmproj_gguf and PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_MOE_35B"):
+    if PROFILE_ID != "LLM_QWEN_VLM":
+        ll_cmd.extend(["--spec-draft-p-min", "0.75"])
+    log_event(f"Embedded MTP speculative decoding ACTIVE (--spec-type draft-mtp, n={mtp_n})", category="SYSTEM", level="SUCCESS")
+
+    if mmproj_gguf and PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B"):
         ll_cmd.extend(["--mmproj", mmproj_gguf])
         log_event(f"Multimodal vision ACTIVE on CUDA1: {os.path.basename(mmproj_gguf)}", category="SYSTEM", level="SUCCESS")
     ll_log = open("/tmp/llama_server.log", "w")
     ll_proc = subprocess.Popen(ll_cmd, env=ll_env, stdout=ll_log, stderr=ll_log)
     mode_label = (
-        "Qwen 35B-A3B Vision MoE (~80-120 tok/s)" if PROFILE_ID == "LLM_QWEN_MOE_35B"
-        else ("Vision + LLM" if PROFILE_ID == "LLM_QWEN_VLM" else "Ultra Text Turbo")
+        "Qwen 8B Fast Vision (~70-110 tok/s)" if PROFILE_ID == "LLM_QWEN_FAST_8B"
+        else ("Qwen 35B-A3B Vision MoE (~80-120 tok/s)" if PROFILE_ID == "LLM_QWEN_MOE_35B"
+        else ("Vision + LLM" if PROFILE_ID == "LLM_QWEN_VLM" else "Ultra Text Turbo"))
     )
     log_event(f"Launched llama-server ({mode_label}, 2x T4 split) -> 127.0.0.1:8190 ({os.path.basename(model_gguf)})", category="SYSTEM")
 
@@ -1293,7 +1330,10 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B"):
                 if len(parts) >= 3:
                     tot_b = int(float(parts[1]) * 1024 * 1024)
                     used_b = int(float(parts[2]) * 1024 * 1024)
-                    model_tag = "Qwen 35B MoE" if PROFILE_ID == "LLM_QWEN_MOE_35B" else "Qwen 27B"
+                    model_tag = (
+                        "Qwen 8B Fast" if PROFILE_ID == "LLM_QWEN_FAST_8B"
+                        else ("Qwen 35B MoE" if PROFILE_ID == "LLM_QWEN_MOE_35B" else "Qwen 27B")
+                    )
                     devs.append({"name": f"{parts[0]} ({model_tag})", "vram_total": tot_b, "vram_free": max(0, tot_b - used_b)})
             return devs
         except Exception:

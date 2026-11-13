@@ -64,7 +64,7 @@ export async function POST(req: NextRequest) {
       where: {
         userId: user.userId,
         workerProfile: {
-          in: ["LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "TPU_QWEN27B_V5E"],
+          in: ["LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B", "TPU_QWEN27B_V5E"],
         },
         status: "ONLINE",
       },

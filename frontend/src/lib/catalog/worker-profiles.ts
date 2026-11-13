@@ -4,6 +4,7 @@ export type WorkerProfileId =
   | "IMAGE_GGUF_EDIT"
   | "AUDIO_LIPSYNC"
   | "VIDEO_MOTION"
+  | "LLM_QWEN_FAST_8B"
   | "LLM_QWEN_VLM"
   | "LLM_QWEN_TEXT_TURBO"
   | "LLM_QWEN_MOE_35B"
@@ -126,6 +127,15 @@ export const WORKER_PROFILES: Record<WorkerProfileId, WorkerProfileSpec> = {
       },
     ],
   },
+  LLM_QWEN_FAST_8B: {
+    id: "LLM_QWEN_FAST_8B",
+    label: "Qwen 8B Fast Vision (15s Boot · 70-110 tok/s)",
+    shortTag: "QWEN-8B-FAST",
+    description:
+      "Ultra-lightweight Qwen3-VL-8B GGUF (~5.1 GB). Instant 15–20s boot, tiny VRAM footprint, and rapid 70–110 tok/s generation for responsive writing, testing & vision QA.",
+    recommendedTargets: ["gpu2", "gpu3", "gpu0", "gpu1", "gpu4", "gpu5"],
+    customNodes: [],
+  },
   LLM_QWEN_VLM: {
     id: "LLM_QWEN_VLM",
     label: "Qwen 27B Vision + LLM (Dual-T4)",
@@ -176,6 +186,7 @@ export function isLlmWorkerProfile(id?: string | null): boolean {
     id === "LLM_QWEN_VLM" ||
     id === "LLM_QWEN_TEXT_TURBO" ||
     id === "LLM_QWEN_MOE_35B" ||
+    id === "LLM_QWEN_FAST_8B" ||
     id === "TPU_QWEN27B_V5E"
   );
 }

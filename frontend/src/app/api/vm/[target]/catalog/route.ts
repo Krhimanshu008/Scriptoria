@@ -25,11 +25,20 @@ export async function GET(
 
     if (isLlmWorkerProfile(vm.workerProfile)) {
       const isTurbo = vm.workerProfile === "LLM_QWEN_TEXT_TURBO";
+      const isMoe = vm.workerProfile === "LLM_QWEN_MOE_35B";
+      const isFast8B = vm.workerProfile === "LLM_QWEN_FAST_8B";
+      const ckpt = isTurbo
+        ? "Qwen3.8-27B-EXL3-4.00bpw"
+        : isMoe
+        ? "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+        : isFast8B
+        ? "Qwen3-VL-8B-Instruct-UD-Q4_K_M.gguf"
+        : "Qwen3.8-27B-UD-Q4_K_M.gguf";
       return NextResponse.json({
         target,
         totalNodesAvailable: 0,
         models: {
-          checkpoints: [isTurbo ? "Qwen3.8-27B-EXL3-4.00bpw" : "Qwen3.8-27B-UD-Q4_K_M.gguf"],
+          checkpoints: [ckpt],
           loras: [],
           vaes: [],
           controlnets: [],
