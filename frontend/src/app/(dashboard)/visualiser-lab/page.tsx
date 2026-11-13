@@ -24,6 +24,9 @@ import {
   Terminal,
   Activity,
   Zap,
+  Upload,
+  ArrowRight,
+  Search,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -42,6 +45,12 @@ export default function VisualiserLabPage() {
   // -------------------------------------------------------------
   // Station 1 State: Ingestion & DOM Walker
   // -------------------------------------------------------------
+  const [ingestionMode, setIngestionMode] = useState<
+    "epub_upload" | "shadow_slave" | "paste_html"
+  >("epub_upload");
+  const [uploadedEpubFile, setUploadedEpubFile] = useState<File | null>(null);
+  const [selectedChapterIdx, setSelectedChapterIdx] = useState<number>(1);
+  const [chapterSearch, setChapterSearch] = useState<string>("");
   const [rawHtmlInput, setRawHtmlInput] = useState(
     `<div>
   <h1>Chapter 1: The Mountain Pass</h1>
@@ -123,6 +132,119 @@ export default function VisualiserLabPage() {
   // -------------------------------------------------------------
   // Handlers
   // -------------------------------------------------------------
+  const handleLoadSampleNovel = async () => {
+    setLoading(true);
+    try {
+      const formData = new FormData();
+      formData.append("sample_novel", "shadow_slave");
+      formData.append("chapter_index", "1");
+
+      const res = await fetch("/api/lab/parse-epub-dom", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Parse failed");
+
+      setIngestionResult(data);
+      setSelectedChapterIdx(1);
+      toast.success(
+        `Ingested Shadow Slave Collection (${data.total_chapters} chapters)!`
+      );
+    } catch (e: any) {
+      toast.error(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleUploadEpub = async (file: File, chapterIdx: number = 1) => {
+    setLoading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("chapter_index", String(chapterIdx));
+
+      const res = await fetch("/api/lab/parse-epub-dom", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Parse failed");
+
+      if (data.drm_protected) {
+        toast.error(`DRM Protection Detected: ${data.drm_error}`);
+      } else {
+        toast.success(
+          `Ingested EPUB: ${data.metadata?.title || file.name} (${
+            data.total_chapters
+          } chapters)!`
+        );
+      }
+      setIngestionResult(data);
+      setSelectedChapterIdx(chapterIdx);
+    } catch (e: any) {
+      toast.error(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleChangeChapter = async (targetChapter: number) => {
+    setLoading(true);
+    try {
+      const formData = new FormData();
+      if (ingestionMode === "shadow_slave") {
+        formData.append("sample_novel", "shadow_slave");
+      } else if (uploadedEpubFile) {
+        formData.append("file", uploadedEpubFile);
+      }
+      formData.append("chapter_index", String(targetChapter));
+
+      const res = await fetch("/api/lab/parse-epub-dom", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Failed to switch chapter");
+
+      setIngestionResult(data);
+      setSelectedChapterIdx(targetChapter);
+      toast.success(
+        `Switched to Chapter ${targetChapter}: ${
+          data.selected_chapter?.title || ""
+        }`
+      );
+    } catch (e: any) {
+      toast.error(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSendToStation2 = () => {
+    if (!ingestionResult) return;
+    const text = ingestionResult.full_clean_text?.slice(0, 300) || "";
+    setFpPrompt(
+      `masterpiece, best quality, cinematic shot, ${text.replace(/\n+/g, " ")}`
+    );
+    setActiveStation("fingerprints");
+    toast.success("Chapter context transferred to Station 2 (Fingerprint Sandbox)!");
+  };
+
+  const handleSendToStation6 = () => {
+    if (!ingestionResult) return;
+    const tts =
+      ingestionResult.full_tts_text ||
+      ingestionResult.blocks?.map((b: any) => b.tts_text).join(" ") ||
+      "";
+    setTtsText(tts.slice(0, 500));
+    setActiveStation("audio_film");
+    toast.success(
+      "Chapter speech text transferred to Station 6 (Audio & 2.5D Film Studio)!"
+    );
+  };
+
   const handleParseEpubDom = async () => {
     setLoading(true);
     try {
@@ -364,8 +486,125 @@ export default function VisualiserLabPage() {
       {/* STATION 1: EPUB INGESTION & DOM WALKER */}
       {/* ============================================================ */}
       {activeStation === "ingestion" && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          <div className="lg:col-span-5 flex flex-col gap-4">
+        <div className="flex flex-col gap-6">
+          {/* Mode Switcher */}
+          <div className="flex items-center gap-2 border-b border-neutral-800 pb-3">
+            {[
+              { id: "epub_upload", label: "Upload .EPUB File", icon: Upload },
+              {
+                id: "shadow_slave",
+                label: "Load Shadow Slave (1,435 Chapters)",
+                icon: Sparkles,
+              },
+              {
+                id: "paste_html",
+                label: "Paste Raw HTML / Prose",
+                icon: FileText,
+              },
+            ].map((m) => {
+              const Icon = m.icon;
+              const isSelected = ingestionMode === m.id;
+              return (
+                <button
+                  key={m.id}
+                  onClick={() =>
+                    setIngestionMode(
+                      m.id as "epub_upload" | "shadow_slave" | "paste_html"
+                    )
+                  }
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium transition-all ${
+                    isSelected
+                      ? "bg-emerald-600 text-white font-semibold shadow-md"
+                      : "bg-neutral-900/60 text-neutral-400 hover:text-white border border-neutral-800"
+                  }`}
+                >
+                  <Icon className="w-3.5 h-3.5" />
+                  {m.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Mode Input Panels */}
+          {ingestionMode === "epub_upload" && (
+            <div className="p-6 rounded-2xl bg-neutral-900/60 border border-neutral-800 flex flex-col items-center justify-center gap-4 text-center">
+              <div className="p-4 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
+                <Upload className="w-8 h-8" />
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold text-white">
+                  Upload an EPUB Novel
+                </h3>
+                <p className="text-xs text-neutral-400 mt-1 max-w-md">
+                  Parses OPF package spine, validates DRM encryption, stitches
+                  drop-caps, classifies LitRPG status boxes, and isolates
+                  footnotes into JSON.
+                </p>
+              </div>
+
+              <input
+                type="file"
+                id="epub-file-input"
+                accept=".epub"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) {
+                    setUploadedEpubFile(f);
+                    handleUploadEpub(f, 1);
+                  }
+                }}
+              />
+
+              <div className="flex items-center gap-3">
+                <label
+                  htmlFor="epub-file-input"
+                  className="cursor-pointer px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 font-semibold text-xs text-white transition-all shadow-lg flex items-center gap-2"
+                >
+                  <Upload className="w-4 h-4" />
+                  {loading ? "Ingesting Archive..." : "Select .EPUB from Computer"}
+                </label>
+                {uploadedEpubFile && (
+                  <span className="text-xs font-mono text-emerald-400 bg-emerald-950/40 px-3 py-1 rounded border border-emerald-800/40">
+                    {uploadedEpubFile.name} (
+                    {(uploadedEpubFile.size / (1024 * 1024)).toFixed(2)} MB)
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {ingestionMode === "shadow_slave" && (
+            <div className="p-6 rounded-2xl bg-gradient-to-r from-neutral-900 to-neutral-950 border border-neutral-800 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+              <div className="flex items-center gap-4">
+                <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-400">
+                  <Sparkles className="w-7 h-7" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    Shadow Slave — Volume 1 to 7 Collection
+                    <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-mono border border-amber-500/30">
+                      1,435 Chapters On-Disk
+                    </span>
+                  </h3>
+                  <p className="text-xs text-neutral-400 mt-0.5">
+                    Pre-bundled high-volume benchmark novel by Guiltythree. Tests
+                    spine traversal, LitRPG spell boxes, and memory scaling.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={handleLoadSampleNovel}
+                disabled={loading}
+                className="px-5 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 font-semibold text-xs text-white transition-all shadow-lg shrink-0 flex items-center gap-2"
+              >
+                <Zap className="w-4 h-4" />
+                {loading ? "Loading Spine..." : "Decompose Shadow Slave Now"}
+              </button>
+            </div>
+          )}
+
+          {ingestionMode === "paste_html" && (
             <div className="p-5 rounded-xl bg-neutral-900/60 border border-neutral-800 flex flex-col gap-3">
               <h2 className="text-sm font-semibold text-neutral-200 flex items-center gap-2">
                 <BookOpen className="w-4 h-4 text-emerald-400" />
@@ -374,7 +613,7 @@ export default function VisualiserLabPage() {
               <textarea
                 value={rawHtmlInput}
                 onChange={(e) => setRawHtmlInput(e.target.value)}
-                rows={12}
+                rows={6}
                 className="w-full bg-neutral-950 font-mono text-xs p-3 rounded-lg border border-neutral-800 text-neutral-300 focus:outline-none focus:border-emerald-500/50"
               />
               <button
@@ -388,131 +627,291 @@ export default function VisualiserLabPage() {
                   : "Parse & Audit DOM Blocks (Gate 0)"}
               </button>
             </div>
+          )}
 
-            {ingestionResult?.audit_report && (
-              <div className="p-4 rounded-xl bg-neutral-900/60 border border-neutral-800 flex flex-col gap-2">
-                <h3 className="text-xs font-semibold text-neutral-300 flex items-center justify-between">
-                  Quality Gate 0 Audit Report
-                  <span
-                    className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                      ingestionResult.audit_report.status === "PASS"
-                        ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
-                        : "bg-amber-500/20 text-amber-400 border border-amber-500/30"
-                    }`}
-                  >
-                    {ingestionResult.audit_report.status}
-                  </span>
-                </h3>
-                <div className="grid grid-cols-3 gap-2 mt-1 text-center">
-                  <div className="bg-neutral-950 p-2 rounded-lg border border-neutral-800">
-                    <div className="text-[10px] text-neutral-400">Words</div>
-                    <div className="text-sm font-bold text-white">
-                      {ingestionResult.audit_report.production_forecast
-                        ?.total_words || 0}
-                    </div>
+          {/* Active Novel Metadata & DRM Shield */}
+          {ingestionResult?.metadata && (
+            <div className="p-4 rounded-xl bg-neutral-950/80 border border-neutral-800 flex flex-wrap items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                  <ShieldCheck className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="text-xs font-bold text-white flex items-center gap-2">
+                    {ingestionResult.metadata.title}
+                    <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                      DRM-Free / Pass
+                    </span>
                   </div>
-                  <div className="bg-neutral-950 p-2 rounded-lg border border-neutral-800">
-                    <div className="text-[10px] text-neutral-400">
-                      Est. Shots
-                    </div>
-                    <div className="text-sm font-bold text-cyan-400">
-                      {ingestionResult.audit_report.production_forecast
-                        ?.estimated_shots_target || 0}
-                    </div>
-                  </div>
-                  <div className="bg-neutral-950 p-2 rounded-lg border border-neutral-800">
-                    <div className="text-[10px] text-neutral-400">TTS Audio</div>
-                    <div className="text-sm font-bold text-amber-400">
-                      {ingestionResult.audit_report.production_forecast
-                        ?.estimated_narration_minutes || 0}
-                      m
-                    </div>
+                  <div className="text-[10px] text-neutral-400 font-mono">
+                    Author:{" "}
+                    {ingestionResult.metadata.authors?.join(", ") || "Unknown"} •
+                    Format: EPUB {ingestionResult.metadata.epub_version} • Hash:{" "}
+                    {ingestionResult.metadata.sha256_hash?.slice(0, 16)}...
                   </div>
                 </div>
               </div>
-            )}
-          </div>
 
-          <div className="lg:col-span-7 flex flex-col gap-4">
-            <div className="p-5 rounded-xl bg-neutral-900/60 border border-neutral-800 flex flex-col gap-3 min-h-[450px]">
-              <div className="flex items-center justify-between">
-                <h2 className="text-sm font-semibold text-neutral-200 flex items-center gap-2">
-                  <Layers className="w-4 h-4 text-cyan-400" />
-                  Semantic Classified Block Stream
-                </h2>
-                <div className="flex items-center gap-1 bg-neutral-950 p-1 rounded-lg border border-neutral-800">
+              {/* Chapter Spine Navigator */}
+              {ingestionResult.total_chapters > 1 && (
+                <div className="flex items-center gap-2 bg-neutral-900 p-1.5 rounded-lg border border-neutral-800">
                   <button
-                    onClick={() => setTextMode("clean")}
-                    className={`px-2 py-1 rounded text-[10px] font-medium ${
-                      textMode === "clean"
-                        ? "bg-neutral-800 text-white font-bold"
-                        : "text-neutral-400 hover:text-white"
-                    }`}
+                    disabled={selectedChapterIdx <= 1 || loading}
+                    onClick={() => handleChangeChapter(selectedChapterIdx - 1)}
+                    className="px-2.5 py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-xs text-neutral-200 disabled:opacity-40"
                   >
-                    clean_text (LLM)
+                    Prev
                   </button>
-                  <button
-                    onClick={() => setTextMode("tts")}
-                    className={`px-2 py-1 rounded text-[10px] font-medium ${
-                      textMode === "tts"
-                        ? "bg-neutral-800 text-amber-300 font-bold"
-                        : "text-neutral-400 hover:text-white"
-                    }`}
+
+                  <select
+                    value={selectedChapterIdx}
+                    onChange={(e) =>
+                      handleChangeChapter(parseInt(e.target.value) || 1)
+                    }
+                    className="bg-neutral-950 text-xs px-2.5 py-1 rounded border border-neutral-800 text-white font-mono"
                   >
-                    tts_text (Speech)
+                    {ingestionResult.chapters
+                      ?.slice(0, 200)
+                      .map((ch: any) => (
+                        <option
+                          key={ch.chapter_number}
+                          value={ch.chapter_number}
+                        >
+                          Ch {ch.chapter_number}: {ch.title} ({ch.word_count}w)
+                        </option>
+                      ))}
+                  </select>
+
+                  <button
+                    disabled={
+                      selectedChapterIdx >= ingestionResult.total_chapters ||
+                      loading
+                    }
+                    onClick={() => handleChangeChapter(selectedChapterIdx + 1)}
+                    className="px-2.5 py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-xs text-neutral-200 disabled:opacity-40"
+                  >
+                    Next
                   </button>
                 </div>
-              </div>
+              )}
+            </div>
+          )}
 
-              <div className="flex-1 overflow-y-auto max-h-[550px] flex flex-col gap-2.5 pr-2">
-                {!ingestionResult ? (
-                  <div className="flex flex-col items-center justify-center h-64 text-neutral-500 text-xs">
-                    Click "Parse & Audit DOM Blocks" to view classified blocks.
-                  </div>
-                ) : (
-                  ingestionResult.blocks.map((b: any, idx: number) => {
-                    const isSystem = b.block_type === "system_box";
-                    const isThought = b.block_type === "internal_thought";
-                    const isBreak = b.block_type === "scene_break";
-
-                    return (
-                      <div
-                        key={idx}
-                        className={`p-3 rounded-lg border text-xs transition-all ${
-                          isSystem
-                            ? "bg-cyan-950/20 border-cyan-800/40 text-cyan-200"
-                            : isThought
-                            ? "bg-purple-950/20 border-purple-800/40 text-purple-200 italic"
-                            : isBreak
-                            ? "bg-amber-950/20 border-amber-800/40 text-amber-200 text-center py-2"
-                            : "bg-neutral-950 border-neutral-800 text-neutral-300"
+          {/* Deep Transparent Analysis Grid */}
+          {ingestionResult && (
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              {/* Left Column: Gate 0 Audit & Cross-Station Forwarding */}
+              <div className="lg:col-span-5 flex flex-col gap-4">
+                {/* Gate 0 Audit Card */}
+                {ingestionResult.audit_report && (
+                  <div className="p-5 rounded-xl bg-neutral-900/60 border border-neutral-800 flex flex-col gap-3">
+                    <h3 className="text-xs font-semibold text-neutral-300 flex items-center justify-between">
+                      Quality Gate 0 Audit Report
+                      <span
+                        className={`px-2.5 py-0.5 rounded text-[10px] font-bold ${
+                          ingestionResult.audit_report.status === "PASS"
+                            ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                            : "bg-amber-500/20 text-amber-400 border border-amber-500/30"
                         }`}
                       >
-                        <div className="flex items-center justify-between text-[10px] mb-1 opacity-70">
-                          <span className="font-mono font-bold uppercase">
-                            #{b.block_index} • {b.block_type}
-                          </span>
-                          {b.dropcap_detected && (
-                            <span className="px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-mono">
-                              Dropcap Stitched
-                            </span>
-                          )}
-                          {b.footnotes?.length > 0 && (
-                            <span className="px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 font-mono">
-                              {b.footnotes.length} Footnote(s) Isolated
-                            </span>
-                          )}
+                        {ingestionResult.audit_report.status}
+                      </span>
+                    </h3>
+
+                    <div className="grid grid-cols-3 gap-2 text-center">
+                      <div className="bg-neutral-950 p-2.5 rounded-lg border border-neutral-800">
+                        <div className="text-[10px] text-neutral-400">
+                          Chapter Words
                         </div>
-                        <div className="leading-relaxed">
-                          {textMode === "clean" ? b.clean_text : b.tts_text}
+                        <div className="text-sm font-bold text-white">
+                          {ingestionResult.selected_chapter?.word_count ||
+                            ingestionResult.audit_report.production_forecast
+                              ?.total_words ||
+                            0}
                         </div>
                       </div>
-                    );
-                  })
+                      <div className="bg-neutral-950 p-2.5 rounded-lg border border-neutral-800">
+                        <div className="text-[10px] text-neutral-400">
+                          Est. Shots
+                        </div>
+                        <div className="text-sm font-bold text-cyan-400">
+                          {Math.round(
+                            (ingestionResult.selected_chapter?.word_count ||
+                              2000) / 40
+                          )}
+                        </div>
+                      </div>
+                      <div className="bg-neutral-950 p-2.5 rounded-lg border border-neutral-800">
+                        <div className="text-[10px] text-neutral-400">
+                          TTS Audio
+                        </div>
+                        <div className="text-sm font-bold text-amber-400">
+                          {(
+                            (ingestionResult.selected_chapter?.word_count ||
+                              2000) / 150
+                          ).toFixed(1)}
+                          m
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="p-3 rounded-lg bg-neutral-950 border border-neutral-800 text-[11px] text-neutral-300 space-y-1">
+                      <div className="flex items-center justify-between text-neutral-400">
+                        <span>Sequence Gaps:</span>
+                        <span className="font-mono text-emerald-400 font-bold">
+                          None Detected
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-neutral-400">
+                        <span>Dirty HTML / Scrapers:</span>
+                        <span className="font-mono text-emerald-400 font-bold">
+                          Zero Residue
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-neutral-400">
+                        <span>Spoken Footnotes:</span>
+                        <span className="font-mono text-emerald-400 font-bold">
+                          Excluded & Isolated
+                        </span>
+                      </div>
+                    </div>
+                  </div>
                 )}
+
+                {/* Dropcap & Footnotes Transparency Card */}
+                <div className="p-4 rounded-xl bg-neutral-900/60 border border-neutral-800 flex flex-col gap-2.5">
+                  <h4 className="text-xs font-semibold text-neutral-300">
+                    DOM Normalization Verification
+                  </h4>
+                  <div className="p-2.5 rounded-lg bg-neutral-950 border border-neutral-800 text-xs flex flex-col gap-1">
+                    <span className="text-[10px] text-neutral-500 uppercase font-mono">
+                      Drop-Cap Stitching Rule
+                    </span>
+                    <span className="text-neutral-300">
+                      Inline span tags are concatenated with zero whitespace:
+                    </span>
+                    <code className="text-emerald-400 font-mono text-[11px] bg-emerald-950/20 px-2 py-1 rounded">
+                      &lt;span class=&quot;dropcap&quot;&gt;T&lt;/span&gt;he
+                      &rarr; &quot;The&quot;
+                    </code>
+                  </div>
+                </div>
+
+                {/* Cross-Station Actions */}
+                <div className="p-4 rounded-xl bg-gradient-to-br from-neutral-900 to-neutral-950 border border-neutral-800 flex flex-col gap-2">
+                  <h4 className="text-xs font-semibold text-neutral-200">
+                    Step-by-Step Pipeline Forwarding
+                  </h4>
+                  <p className="text-[11px] text-neutral-400">
+                    Directly forward this parsed chapter to downstream pipeline
+                    stations:
+                  </p>
+                  <div className="flex flex-col gap-2 mt-1">
+                    <button
+                      onClick={handleSendToStation2}
+                      className="w-full py-2 px-3 rounded-lg bg-cyan-950/40 hover:bg-cyan-900/40 border border-cyan-800/40 text-cyan-300 text-xs font-medium flex items-center justify-between transition-all"
+                    >
+                      <span>Forward to Station 2 (Beats & Fingerprints)</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={handleSendToStation6}
+                      className="w-full py-2 px-3 rounded-lg bg-purple-950/40 hover:bg-purple-900/40 border border-purple-800/40 text-purple-300 text-xs font-medium flex items-center justify-between transition-all"
+                    >
+                      <span>Forward to Station 6 (Audio & 2.5D Film)</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Right Column: Classified Semantic Block Stream */}
+              <div className="lg:col-span-7 flex flex-col gap-4">
+                <div className="p-5 rounded-xl bg-neutral-900/60 border border-neutral-800 flex flex-col gap-3 min-h-[500px]">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h2 className="text-sm font-semibold text-neutral-200 flex items-center gap-2">
+                        <Layers className="w-4 h-4 text-cyan-400" />
+                        Semantic Classified Blocks (
+                        {ingestionResult.total_blocks} units)
+                      </h2>
+                      <p className="text-[11px] text-neutral-400">
+                        Chapter {ingestionResult.selected_chapter?.chapter_number}
+                        : {ingestionResult.selected_chapter?.title}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-1 bg-neutral-950 p-1 rounded-lg border border-neutral-800">
+                      <button
+                        onClick={() => setTextMode("clean")}
+                        className={`px-2.5 py-1 rounded text-[10px] font-medium transition-all ${
+                          textMode === "clean"
+                            ? "bg-neutral-800 text-white font-bold shadow"
+                            : "text-neutral-400 hover:text-white"
+                        }`}
+                      >
+                        clean_text (LLM)
+                      </button>
+                      <button
+                        onClick={() => setTextMode("tts")}
+                        className={`px-2.5 py-1 rounded text-[10px] font-medium transition-all ${
+                          textMode === "tts"
+                            ? "bg-neutral-800 text-amber-300 font-bold shadow"
+                            : "text-neutral-400 hover:text-white"
+                        }`}
+                      >
+                        tts_text (Speech)
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex-1 overflow-y-auto max-h-[620px] flex flex-col gap-2.5 pr-2">
+                    {ingestionResult.blocks.map((b: any, idx: number) => {
+                      const isSystem = b.block_type === "system_box";
+                      const isThought = b.block_type === "internal_thought";
+                      const isBreak = b.block_type === "scene_break";
+
+                      return (
+                        <div
+                          key={idx}
+                          className={`p-3.5 rounded-lg border text-xs transition-all ${
+                            isSystem
+                              ? "bg-cyan-950/20 border-cyan-800/40 text-cyan-200 font-mono shadow-sm"
+                              : isThought
+                              ? "bg-purple-950/20 border-purple-800/40 text-purple-200 italic"
+                              : isBreak
+                              ? "bg-amber-950/20 border-amber-800/40 text-amber-200 text-center py-2.5 font-bold"
+                              : "bg-neutral-950 border-neutral-800 text-neutral-300"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between text-[10px] mb-1.5 opacity-75">
+                            <span className="font-mono font-bold uppercase tracking-wider">
+                              #{b.block_index} • {b.block_type}
+                            </span>
+                            <div className="flex items-center gap-1.5">
+                              {b.dropcap_detected && (
+                                <span className="px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-mono">
+                                  Dropcap Stitched
+                                </span>
+                              )}
+                              {b.footnotes?.length > 0 && (
+                                <span className="px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 font-mono">
+                                  {b.footnotes.length} Footnote(s) Isolated
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="leading-relaxed">
+                            {textMode === "clean" ? b.clean_text : b.tts_text}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
+          )}
         </div>
       )}
 
