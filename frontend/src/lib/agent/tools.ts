@@ -394,7 +394,9 @@ export async function executeAgentTool(
       where: {
         userId,
         status: "ONLINE",
-        workerProfile: { notIn: ["LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"] },
+        workerProfile: {
+          notIn: ["LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "TPU_QWEN27B_V5E"],
+        },
       },
     });
 

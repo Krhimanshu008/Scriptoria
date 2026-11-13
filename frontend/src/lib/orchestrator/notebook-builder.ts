@@ -976,16 +976,19 @@ uv_thread.start()
 rclone_ok = setup_rclone()
 
 # -------------------------------------------------------------
-# 3B. Dedicated LLM Nodes (LLM_QWEN_VLM & LLM_QWEN_TEXT_TURBO on Dual-T4)
+# 3B. Dedicated LLM Nodes (LLM_QWEN_VLM, LLM_QWEN_TEXT_TURBO & LLM_QWEN_MOE_35B on Dual-T4)
 # -------------------------------------------------------------
-if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"):
+if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B"):
     import http.client as _hc
     from http.server import ThreadingHTTPServer as _THS, BaseHTTPRequestHandler as _BHRH
     from pathlib import Path
 
     os.makedirs("/tmp/models/llm", exist_ok=True)
     os.makedirs("/tmp/llama_bin", exist_ok=True)
-    LLM_MODEL_REPO = os.environ.get("QWEN_MODEL_REPO", "unsloth/Qwen3.8-27B-GGUF")
+    if PROFILE_ID == "LLM_QWEN_MOE_35B":
+        LLM_MODEL_REPO = os.environ.get("QWEN_MODEL_REPO", "unsloth/Qwen3.6-35B-A3B-GGUF")
+    else:
+        LLM_MODEL_REPO = os.environ.get("QWEN_MODEL_REPO", "unsloth/Qwen3.8-27B-GGUF")
 
     def _resolve_llama_bin():
         for cand in Path("/kaggle/input").rglob("llama-server") if os.path.exists("/kaggle/input") else []:
@@ -1120,7 +1123,7 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"):
 
     def _resolve_qwen_ggufs():
         from pathlib import Path as _P
-        needs_vision = (PROFILE_ID == "LLM_QWEN_VLM")
+        needs_vision = (PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_MOE_35B"))
         m, mm, dr = None, None, None
 
         if os.path.exists("/kaggle/input"):
@@ -1254,12 +1257,15 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"):
         if PROFILE_ID != "LLM_QWEN_VLM":
             ll_cmd.extend(["--spec-draft-p-min", "0.75"])
         log_event(f"Embedded MTP speculative decoding ACTIVE (--spec-type draft-mtp, n={mtp_draft_tokens}) ~28-33 tok/s", category="SYSTEM", level="SUCCESS")
-    if mmproj_gguf and PROFILE_ID == "LLM_QWEN_VLM":
+    if mmproj_gguf and PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_MOE_35B"):
         ll_cmd.extend(["--mmproj", mmproj_gguf])
         log_event(f"Multimodal vision ACTIVE on CUDA1: {os.path.basename(mmproj_gguf)}", category="SYSTEM", level="SUCCESS")
     ll_log = open("/tmp/llama_server.log", "w")
     ll_proc = subprocess.Popen(ll_cmd, env=ll_env, stdout=ll_log, stderr=ll_log)
-    mode_label = "Vision + LLM" if PROFILE_ID == "LLM_QWEN_VLM" else "Ultra Text Turbo"
+    mode_label = (
+        "Qwen 35B-A3B Vision MoE (~80-120 tok/s)" if PROFILE_ID == "LLM_QWEN_MOE_35B"
+        else ("Vision + LLM" if PROFILE_ID == "LLM_QWEN_VLM" else "Ultra Text Turbo")
+    )
     log_event(f"Launched llama-server ({mode_label}, 2x T4 split) -> 127.0.0.1:8190 ({os.path.basename(model_gguf)})", category="SYSTEM")
 
     def _tail_llama_log():
@@ -1287,7 +1293,8 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"):
                 if len(parts) >= 3:
                     tot_b = int(float(parts[1]) * 1024 * 1024)
                     used_b = int(float(parts[2]) * 1024 * 1024)
-                    devs.append({"name": f"{parts[0]} (Qwen 27B)", "vram_total": tot_b, "vram_free": max(0, tot_b - used_b)})
+                    model_tag = "Qwen 35B MoE" if PROFILE_ID == "LLM_QWEN_MOE_35B" else "Qwen 27B"
+                    devs.append({"name": f"{parts[0]} ({model_tag})", "vram_total": tot_b, "vram_free": max(0, tot_b - used_b)})
             return devs
         except Exception:
             return []

@@ -15,7 +15,9 @@ export async function GET(req: NextRequest) {
     const llmVms = await prisma.vmInstance.findMany({
       where: {
         userId: auth.userId,
-        workerProfile: { in: ["LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"] },
+        workerProfile: {
+          in: ["LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "TPU_QWEN27B_V5E"],
+        },
       },
       orderBy: { lastHeartbeat: "desc" },
     });

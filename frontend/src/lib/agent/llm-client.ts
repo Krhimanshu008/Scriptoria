@@ -126,7 +126,9 @@ export async function resolveCandidateLlmConfigs(
     const onlineQwen = await prisma.vmInstance.findFirst({
       where: {
         userId,
-        workerProfile: { in: ["LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"] },
+        workerProfile: {
+          in: ["LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "TPU_QWEN27B_V5E"],
+        },
         status: "ONLINE",
       },
       orderBy: { lastHeartbeat: "desc" },

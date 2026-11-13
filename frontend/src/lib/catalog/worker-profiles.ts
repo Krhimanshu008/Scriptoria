@@ -6,6 +6,7 @@ export type WorkerProfileId =
   | "VIDEO_MOTION"
   | "LLM_QWEN_VLM"
   | "LLM_QWEN_TEXT_TURBO"
+  | "LLM_QWEN_MOE_35B"
   | "TPU_QWEN27B_V5E";
 
 export interface CustomNodeSpec {
@@ -143,6 +144,15 @@ export const WORKER_PROFILES: Record<WorkerProfileId, WorkerProfileSpec> = {
     recommendedTargets: ["gpu0", "gpu1", "gpu2", "gpu3", "gpu4", "gpu5"],
     customNodes: [],
   },
+  LLM_QWEN_MOE_35B: {
+    id: "LLM_QWEN_MOE_35B",
+    label: "Qwen 35B-A3B Vision MoE (80-120 tok/s · Dual-T4)",
+    shortTag: "QWEN-35B-MOE",
+    description:
+      "35B Sparse MoE with only 3B active parameters per token + native Vision. High throughput (80–120+ tok/s) on 2× T4 across all text, reasoning, and multimodal inputs.",
+    recommendedTargets: ["gpu2", "gpu3", "gpu4", "gpu5", "gpu0", "gpu1"],
+    customNodes: [],
+  },
   TPU_QWEN27B_V5E: {
     id: "TPU_QWEN27B_V5E",
     label: "Qwen 27B BF16 (TPU v5e-8 · 130 tok/s · 262k)",
@@ -162,7 +172,12 @@ export function isValidWorkerProfile(id?: string | null): id is WorkerProfileId 
 }
 
 export function isLlmWorkerProfile(id?: string | null): boolean {
-  return id === "LLM_QWEN_VLM" || id === "LLM_QWEN_TEXT_TURBO" || id === "TPU_QWEN27B_V5E";
+  return (
+    id === "LLM_QWEN_VLM" ||
+    id === "LLM_QWEN_TEXT_TURBO" ||
+    id === "LLM_QWEN_MOE_35B" ||
+    id === "TPU_QWEN27B_V5E"
+  );
 }
 
 export function getWorkerProfile(id?: string | null): WorkerProfileSpec {

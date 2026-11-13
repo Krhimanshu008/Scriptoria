@@ -21,6 +21,7 @@ import {
 import type { PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
 import type { VmStoredModelItem } from "@/lib/orchestrator/rclone-client";
 import { WORKFLOW_PRESETS, type WorkflowPreset } from "@/lib/orchestrator/workflow-presets";
+import { isLlmWorkerProfile } from "@/lib/catalog/worker-profiles";
 import { useClusterStore } from "@/store/cluster-store";
 import { VmLogsDialog } from "@/components/gpu/VmLogsDialog";
 import { Button } from "@/components/ui/button";
@@ -346,11 +347,7 @@ export function StudioWorkspace() {
                 setMultiGpuMode(nextMode);
                 if (nextMode) {
                   const onlines = vms
-                    .filter(
-                      (v) =>
-                        v.status === "ONLINE" &&
-                        !["LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"].includes(v.workerProfile)
-                    )
+                    .filter((v) => v.status === "ONLINE" && !isLlmWorkerProfile(v.workerProfile))
                     .map((v) => v.target);
                   setSelectedTargets(onlines.length > 0 ? onlines : [target]);
                 }
@@ -370,7 +367,7 @@ export function StudioWorkspace() {
                 ? selectedTargets.includes(v.target)
                 : v.target === target;
               const online = v.status === "ONLINE";
-              const isLlm = ["LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"].includes(v.workerProfile);
+              const isLlm = isLlmWorkerProfile(v.workerProfile);
               return (
                 <button
                   key={v.target}
