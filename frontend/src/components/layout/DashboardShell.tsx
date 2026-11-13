@@ -15,6 +15,7 @@ import {
   Sparkles,
   Bot,
   Zap,
+  Film,
   X,
   PanelLeftClose,
   PanelLeftOpen,
@@ -38,6 +39,7 @@ const NAV_GROUPS = [
   {
     section: "Intelligence & Studio",
     items: [
+      { href: "/visualiser-lab", label: "Pipeline Test Lab", icon: Film },
       { href: "/llm-studio", label: "LLM Studio", icon: Bot },
       { href: "/studio", label: "Studio", icon: Sparkles },
       { href: "/history", label: "Outputs", icon: Images },
@@ -50,6 +52,7 @@ const NAV_GROUPS = [
 ];
 
 function pageTitleForPath(pathname: string): string {
+  if (pathname.startsWith("/visualiser-lab")) return "Novel Visualiser Test Lab";
   if (pathname.startsWith("/llm-studio")) return "LLM Studio";
   if (pathname.startsWith("/tpu-cluster")) return "TPU Cluster (v5e-8)";
   if (pathname.startsWith("/vms")) return "GPU Cluster";
