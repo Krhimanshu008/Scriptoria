@@ -7,7 +7,7 @@
   - Top-level workspace memory: [`MEMORY.md`](file:///c:/Users/5480/Desktop/Automation/Book_Visualiser/MEMORY.md).
 - **Scriptoria Repo:** `c:\Users\Himan\OneDrive\Desktop\Himanshu\Scriptoria`
   - **Git Remote:** `origin` -> `https://github.com/Krhimanshu008/Scriptoria.git` (`main`)
-  - **Current HEAD:** `08b2c46` (synced & pushed to `origin/main`, deployed at `https://scriptoria.krhimanshu.in`)
+  - **Current HEAD:** `cdd83a0` (synced & pushed to `origin/main`, deployed at `https://scriptoria.krhimanshu.in`)
   - **Git Status:** All `.md` architecture specs and memory files tracked and synced.
 - **Tech Stack (`Scriptoria/frontend`):**
   - Next.js `16.4.6` (App Router + Turbopack), React 19 (React Compiler ESLint rules active), Tailwind CSS v4 (`cn` without `tailwind-merge`), `@base-ui/react`, TanStack React Query, Prisma `v6.19.3` -> Turso libSQL (`libsql://scriptoria-prod-krhimanshu.aws-ap-south-1.turso.io`), Vercel deployment target.
@@ -18,7 +18,10 @@
 
 ## 2. Recent Commit History (`origin/main`)
 
-1. `08b2c46` — `fix(llm): remove invalid --no-mmap, isolate profile directories to prevent mmproj collisions, disable default thinking, and guard MTP`
+1. `cdd83a0` — `fix(ui): resolve React Compiler purity and effect setState lint errors in TPU and LLM Studio`
+   - Resolved React Compiler ESLint errors (`react-hooks/set-state-in-effect`, `react-hooks/purity` on Date.now in render, and unused imports).
+   - Production `next build` passes with 0 errors across 52 routes.
+2. `08b2c46` — `fix(llm): remove invalid --no-mmap, isolate profile directories to prevent mmproj collisions, disable default thinking, and guard MTP`
    - Removed `--no-mmap` flag rejected by llama-server (exit code 1).
    - Profile-isolated storage paths (`qwen3_vl_8b`, `qwen36_35b_moe`, `qwen38_27b`), eliminating cross-model `mmproj-F16.gguf` collisions and tensor mismatches.
    - Guarded MTP so it never runs on 8B (no MTP layers) or when `--mmproj` vision is active (preventing graph reallocation stalls).
