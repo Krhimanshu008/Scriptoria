@@ -129,19 +129,19 @@ export const WORKER_PROFILES: Record<WorkerProfileId, WorkerProfileSpec> = {
   },
   LLM_QWEN_FAST_8B: {
     id: "LLM_QWEN_FAST_8B",
-    label: "Qwen 8B Fast Vision (15s Boot · 70-110 tok/s)",
+    label: "Qwen 8B Fast Vision (15s Boot · ~45-60 tok/s)",
     shortTag: "QWEN-8B-FAST",
     description:
-      "Ultra-lightweight Qwen3-VL-8B GGUF (~5.1 GB). Instant 15–20s boot, tiny VRAM footprint, and rapid 70–110 tok/s generation for responsive writing, testing & vision QA.",
+      "Ultra-lightweight Qwen3-VL-8B GGUF (~5.1 GB). Instant 15–20s boot, tiny VRAM footprint, and rapid 45–60 tok/s generation for responsive writing, testing & vision QA.",
     recommendedTargets: ["gpu2", "gpu3", "gpu0", "gpu1", "gpu4", "gpu5"],
     customNodes: [],
   },
   LLM_QWEN_VLM: {
     id: "LLM_QWEN_VLM",
-    label: "Qwen 27B Vision + LLM (Dual-T4)",
+    label: "Qwen 27B Vision + LLM (~16 tok/s · Dual-T4)",
     shortTag: "QWEN-LLM",
     description:
-      "Dual-T4 llama-server + DFlash2 speculative drafter + mmproj vision. Best for Visual QA, multi-modal frame auditing, and mixed storyboarding (~35-85 tok/s).",
+      "Dual-T4 llama-server + mmproj vision. Best for Visual QA, multi-modal frame auditing, and mixed storyboarding (~16 tok/s).",
     recommendedTargets: ["gpu0", "gpu1", "gpu2", "gpu3", "gpu4", "gpu5"],
     customNodes: [],
   },
@@ -156,10 +156,10 @@ export const WORKER_PROFILES: Record<WorkerProfileId, WorkerProfileSpec> = {
   },
   LLM_QWEN_MOE_35B: {
     id: "LLM_QWEN_MOE_35B",
-    label: "Qwen 35B-A3B Vision MoE (80-120 tok/s · Dual-T4)",
+    label: "Qwen 35B-A3B Vision MoE (~35-55 tok/s · Dual-T4)",
     shortTag: "QWEN-35B-MOE",
     description:
-      "35B Sparse MoE with only 3B active parameters per token + native Vision. High throughput (80–120+ tok/s) on 2× T4 across all text, reasoning, and multimodal inputs.",
+      "35B Sparse MoE with only 3B active parameters per token + native Vision. Fast decode (~35–55 tok/s) on 2× T4 with 52:48 layer split and sub-second prompt replies.",
     recommendedTargets: ["gpu2", "gpu3", "gpu4", "gpu5", "gpu0", "gpu1"],
     customNodes: [],
   },
