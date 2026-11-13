@@ -105,7 +105,7 @@ export async function POST(req: NextRequest) {
         stream_options: { include_usage: true },
         cache_prompt: true,
         chat_template_kwargs: {
-          enable_thinking: reasoningEffort !== "none",
+          enable_thinking: reasoningEffort !== "none" && reasoningEffort !== "low",
         },
       };
       if (mode === "json" || mode === "vision_qa") {

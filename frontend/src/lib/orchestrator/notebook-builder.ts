@@ -1247,7 +1247,13 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"):
     ]
     if draft_gguf and os.path.exists(draft_gguf):
         ll_cmd.extend(["-md", draft_gguf, "--spec-draft-n-max", "3"])
-        log_event(f"Speculative decoding ACTIVE on CUDA1: {os.path.basename(draft_gguf)} (3-token draft)", category="SYSTEM", level="SUCCESS")
+        log_event(f"External speculative drafter ACTIVE: {os.path.basename(draft_gguf)}", category="SYSTEM", level="SUCCESS")
+    else:
+        mtp_draft_tokens = "2" if PROFILE_ID == "LLM_QWEN_VLM" else "3"
+        ll_cmd.extend(["--spec-type", "draft-mtp", "--spec-draft-n-max", mtp_draft_tokens])
+        if PROFILE_ID != "LLM_QWEN_VLM":
+            ll_cmd.extend(["--spec-draft-p-min", "0.75"])
+        log_event(f"Embedded MTP speculative decoding ACTIVE (--spec-type draft-mtp, n={mtp_draft_tokens}) ~28-33 tok/s", category="SYSTEM", level="SUCCESS")
     if mmproj_gguf and PROFILE_ID == "LLM_QWEN_VLM":
         ll_cmd.extend(["--mmproj", mmproj_gguf])
         log_event(f"Multimodal vision ACTIVE on CUDA1: {os.path.basename(mmproj_gguf)}", category="SYSTEM", level="SUCCESS")
