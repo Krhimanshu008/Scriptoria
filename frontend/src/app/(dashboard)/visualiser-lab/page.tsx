@@ -158,7 +158,7 @@ export default function VisualiserLabPage() {
     }
   };
 
-  const handleUploadEpub = async (file: File, chapterIdx: number = 1) => {
+  const handleUploadDocument = async (file: File, chapterIdx: number = 1) => {
     setLoading(true);
     try {
       const formData = new FormData();
@@ -173,10 +173,11 @@ export default function VisualiserLabPage() {
       if (!res.ok) throw new Error(data.detail || "Parse failed");
 
       if (data.drm_protected) {
-        toast.error(`DRM Protection Detected: ${data.drm_error}`);
+        toast.error(`DRM/Password Protection Detected: ${data.drm_error || "File is encrypted"}`);
       } else {
+        const docType = data.document_format?.toUpperCase() || (file.name.endsWith(".pdf") ? "PDF" : "EPUB");
         toast.success(
-          `Ingested EPUB: ${data.metadata?.title || file.name} (${
+          `Ingested ${docType}: ${data.metadata?.title || file.name} (${
             data.total_chapters
           } chapters)!`
         );
@@ -189,6 +190,8 @@ export default function VisualiserLabPage() {
       setLoading(false);
     }
   };
+
+  const handleUploadEpub = handleUploadDocument;
 
   const handleChangeChapter = async (targetChapter: number) => {
     setLoading(true);
@@ -490,7 +493,7 @@ export default function VisualiserLabPage() {
           {/* Mode Switcher */}
           <div className="flex items-center gap-2 border-b border-neutral-800 pb-3">
             {[
-              { id: "epub_upload", label: "Upload .EPUB File", icon: Upload },
+              { id: "epub_upload", label: "Upload EPUB / PDF Document", icon: Upload },
               {
                 id: "shadow_slave",
                 label: "Load Shadow Slave (1,435 Chapters)",
@@ -533,25 +536,25 @@ export default function VisualiserLabPage() {
               </div>
               <div>
                 <h3 className="text-sm font-semibold text-white">
-                  Upload an EPUB Novel
+                  Upload an EPUB or PDF Novel
                 </h3>
                 <p className="text-xs text-neutral-400 mt-1 max-w-md">
-                  Parses OPF package spine, validates DRM encryption, stitches
-                  drop-caps, classifies LitRPG status boxes, and isolates
-                  footnotes into JSON.
+                  Supports .EPUB and .PDF archives. Reconstructs multi-column layout,
+                  strips running headers/footers, repairs hyphenated line wraps,
+                  stitches drop-caps, and validates Quality Gate 0.
                 </p>
               </div>
 
               <input
                 type="file"
                 id="epub-file-input"
-                accept=".epub"
+                accept=".epub,.pdf"
                 className="hidden"
                 onChange={(e) => {
                   const f = e.target.files?.[0];
                   if (f) {
                     setUploadedEpubFile(f);
-                    handleUploadEpub(f, 1);
+                    handleUploadDocument(f, 1);
                   }
                 }}
               />
@@ -562,7 +565,7 @@ export default function VisualiserLabPage() {
                   className="cursor-pointer px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 font-semibold text-xs text-white transition-all shadow-lg flex items-center gap-2"
                 >
                   <Upload className="w-4 h-4" />
-                  {loading ? "Ingesting Archive..." : "Select .EPUB from Computer"}
+                  {loading ? "Ingesting Document..." : "Select .EPUB or .PDF from Computer"}
                 </label>
                 {uploadedEpubFile && (
                   <span className="text-xs font-mono text-emerald-400 bg-emerald-950/40 px-3 py-1 rounded border border-emerald-800/40">
