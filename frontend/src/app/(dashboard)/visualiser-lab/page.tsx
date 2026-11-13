@@ -50,7 +50,7 @@ export default function VisualiserLabPage() {
   // Station 1 State: Ingestion & DOM Walker
   // -------------------------------------------------------------
   const [ingestionMode, setIngestionMode] = useState<
-    "epub_upload" | "shadow_slave" | "paste_html"
+    "epub_upload" | "lotm_vol1" | "shadow_slave" | "paste_html"
   >("epub_upload");
   const [uploadedEpubFile, setUploadedEpubFile] = useState<File | null>(null);
   const [selectedChapterIdx, setSelectedChapterIdx] = useState<number>(1);
@@ -108,9 +108,10 @@ export default function VisualiserLabPage() {
   // -------------------------------------------------------------
   // Station 4 State: Vector RAG & Temporal Context Sandbox
   // -------------------------------------------------------------
-  const [ragQueryText, setRagQueryText] = useState("Sunny weapon shackles true name");
-  const [ragStoryTick, setRagStoryTick] = useState(1500);
-  const [ragNarrativeTick, setRagNarrativeTick] = useState(1000101001);
+  const [ragSelectedNovel, setRagSelectedNovel] = useState<"shadow_slave" | "lotm_vol1">("lotm_vol1");
+  const [ragQueryText, setRagQueryText] = useState("Klein weapon revolver potion Seer Neil Ince");
+  const [ragStoryTick, setRagStoryTick] = useState(10000);
+  const [ragNarrativeTick, setRagNarrativeTick] = useState(1001001001);
   const [ragResult, setRagResult] = useState<any>(null);
   const [ragLoading, setRagLoading] = useState(false);
 
@@ -312,6 +313,7 @@ export default function VisualiserLabPage() {
           query: ragQueryText,
           current_story_tick: ragStoryTick,
           current_narrative_tick: ragNarrativeTick,
+          sample_novel: ragSelectedNovel,
           top_k: 5,
         }),
       });
@@ -331,6 +333,39 @@ export default function VisualiserLabPage() {
   // -------------------------------------------------------------
   // Handlers
   // -------------------------------------------------------------
+  const handleLoadLotmVol1 = async (runFullAudit: boolean = true) => {
+    setLoading(true);
+    try {
+      const formData = new FormData();
+      formData.append("sample_novel", "lotm_vol1");
+      formData.append("chapter_index", "1");
+
+      const endpoint = runFullAudit ? "/api/lab/parse-epub-dom" : "/api/lab/sample-probe";
+      const res = await fetch(endpoint, {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "LOTM Volume 1 loading failed");
+
+      setIngestionResult(data);
+      setSelectedChapterIdx(1);
+      if (runFullAudit) {
+        toast.success(
+          `Ingested Lord of the Mysteries - Vol 1: Clown (${data.total_chapters} chapters)! Gate 0 PASS.`
+        );
+      } else {
+        toast.success(
+          `Pre-flight Probe Completed (<100ms)! Book Passport & Dossier ready.`
+        );
+      }
+    } catch (e: any) {
+      toast.error(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleLoadSampleNovel = async () => {
     setLoading(true);
     try {
@@ -396,7 +431,9 @@ export default function VisualiserLabPage() {
     setLoading(true);
     try {
       const formData = new FormData();
-      if (ingestionMode === "shadow_slave") {
+      if (ingestionMode === "lotm_vol1") {
+        formData.append("sample_novel", "lotm_vol1");
+      } else if (ingestionMode === "shadow_slave") {
         formData.append("sample_novel", "shadow_slave");
       } else if (uploadedEpubFile) {
         formData.append("file", uploadedEpubFile);
@@ -696,8 +733,13 @@ export default function VisualiserLabPage() {
             {[
               { id: "epub_upload", label: "Upload EPUB / PDF Document", icon: Upload },
               {
+                id: "lotm_vol1",
+                label: "Lord of the Mysteries (Vol 1: Clown - 213 Chapters)",
+                icon: BookOpen,
+              },
+              {
                 id: "shadow_slave",
-                label: "Load Shadow Slave (1,435 Chapters)",
+                label: "Shadow Slave (1,435 Chapters)",
                 icon: Sparkles,
               },
               {
@@ -713,7 +755,7 @@ export default function VisualiserLabPage() {
                   key={m.id}
                   onClick={() =>
                     setIngestionMode(
-                      m.id as "epub_upload" | "shadow_slave" | "paste_html"
+                      m.id as "epub_upload" | "lotm_vol1" | "shadow_slave" | "paste_html"
                     )
                   }
                   className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium transition-all ${
@@ -730,6 +772,52 @@ export default function VisualiserLabPage() {
           </div>
 
           {/* Mode Input Panels */}
+          {ingestionMode === "lotm_vol1" && (
+            <div className="p-6 rounded-2xl bg-gradient-to-r from-neutral-900 via-neutral-900 to-indigo-950/40 border border-indigo-500/30 flex flex-col md:flex-row items-start md:items-center justify-between gap-6 shadow-2xl">
+              <div className="flex items-center gap-4">
+                <div className="p-3.5 rounded-xl bg-indigo-500/10 border border-indigo-500/30 text-indigo-400">
+                  <BookOpen className="w-8 h-8" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-base font-bold text-white">
+                      Lord of the Mysteries — Volume 1: Clown
+                    </h3>
+                    <span className="text-[10px] px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 font-mono border border-indigo-500/30 font-bold">
+                      213 Chapters Benchmark
+                    </span>
+                  </div>
+                  <p className="text-xs text-neutral-400 mt-1 max-w-xl">
+                    Canonical webnovel by Cuttlefish That Loves Diving. Victorian steampunk / Cthulhu occult world.
+                    Follows Zhou Mingrui / Klein Moretti in Tingen City across Nighthawks, Sequence 9 Seer potion, and the 0-08 conspiracy.
+                  </p>
+                  <div className="flex flex-wrap items-center gap-3 mt-2 text-[11px] text-neutral-400 font-mono">
+                    <span className="text-neutral-300">• Drop-Cap: &lsquo;P&rsquo; + &lsquo;ain&rsquo; &rarr; &lsquo;Pain&rsquo;</span>
+                    <span className="text-neutral-300">• 0 Missing Chapters</span>
+                    <span className="text-neutral-300">• Zero GPU / AI Ingestion (&lt;2.5s)</span>
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-col sm:flex-row gap-2 shrink-0">
+                <button
+                  onClick={() => handleLoadLotmVol1(false)}
+                  disabled={loading}
+                  className="px-4 py-2.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 font-medium text-xs text-neutral-200 border border-neutral-700 transition-all shadow-md flex items-center justify-center gap-2"
+                >
+                  <Search className="w-3.5 h-3.5 text-cyan-400" />
+                  Pre-Flight Probe (&lt;100ms)
+                </button>
+                <button
+                  onClick={() => handleLoadLotmVol1(true)}
+                  disabled={loading}
+                  className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 font-semibold text-xs text-white transition-all shadow-lg flex items-center justify-center gap-2"
+                >
+                  <Zap className="w-4 h-4 text-amber-300" />
+                  {loading ? "Parsing 213 Chapters..." : "Ingest LOTM Vol 1 & Gate 0 Audit"}
+                </button>
+              </div>
+            </div>
+          )}
           {ingestionMode === "epub_upload" && (
             <div className="p-6 rounded-2xl bg-neutral-900/60 border border-neutral-800 flex flex-col items-center justify-center gap-4 text-center">
               <div className="p-4 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
@@ -1690,14 +1778,14 @@ export default function VisualiserLabPage() {
         <div className="flex flex-col gap-6">
           {/* Header & Story Tick Controls */}
           <div className="p-6 rounded-xl bg-neutral-900/60 border border-neutral-800 flex flex-col gap-4">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
               <div className="flex items-center gap-3">
                 <div className="p-2.5 rounded-lg bg-violet-500/10 border border-violet-500/30 text-violet-400">
                   <Search className="w-5 h-5" />
                 </div>
                 <div>
                   <h2 className="text-sm font-bold text-white flex items-center gap-2">
-                    Vector RAG & Bi-Temporal Spoiler Shield
+                    Vector RAG &amp; Bi-Temporal Spoiler Shield
                     <span className="text-[10px] px-2 py-0.5 rounded bg-violet-500/20 text-violet-300 font-mono border border-violet-500/30">
                       Checkpoint 4
                     </span>
@@ -1710,14 +1798,65 @@ export default function VisualiserLabPage() {
 
               {/* Story Tick Display */}
               <div className="flex items-center gap-3 bg-neutral-950 p-2 rounded-xl border border-neutral-800 font-mono text-xs">
-                <span className="text-neutral-500">Current Reading Position:</span>
+                <span className="text-neutral-500">Reading Position:</span>
                 <span className="text-violet-400 font-bold">
-                  Story Tick #{ragStoryTick}
+                  Tick #{ragStoryTick.toLocaleString()}
                 </span>
                 <span className="px-2 py-0.5 rounded bg-neutral-900 text-neutral-300 border border-neutral-800 text-[10px]">
-                  {ragStoryTick <= 5000 ? "Chapter 1-5" : ragStoryTick <= 30000 ? "Chapter 15-30" : "Chapter 50+"}
+                  {ragSelectedNovel === "lotm_vol1"
+                    ? ragStoryTick <= 10000
+                      ? "Ch 1-10 (Tingen Awakening)"
+                      : ragStoryTick <= 40000
+                      ? "Ch 35-40 (Sequence 9 Seer)"
+                      : ragStoryTick <= 110000
+                      ? "Ch 105 (Old Neil Tragedy)"
+                      : ragStoryTick <= 125000
+                      ? "Ch 120 (Sequence 8 Clown)"
+                      : ragStoryTick <= 212000
+                      ? "Ch 211-212 (Ince & 0-08)"
+                      : "Ch 213 (Clown Smile Finale)"
+                    : ragStoryTick <= 5000
+                    ? "Chapter 1-5"
+                    : ragStoryTick <= 30000
+                    ? "Chapter 15-30"
+                    : "Chapter 50+"}
                 </span>
               </div>
+            </div>
+
+            {/* Benchmark Novel Switcher */}
+            <div className="flex items-center gap-2 pt-2 border-t border-neutral-800">
+              <span className="text-xs text-neutral-400 font-medium">Benchmark Corpus:</span>
+              <button
+                onClick={() => {
+                  setRagSelectedNovel("lotm_vol1");
+                  setRagQueryText("Klein weapon revolver potion Seer Neil Ince");
+                  setRagStoryTick(10000);
+                  setRagNarrativeTick(1001001001);
+                }}
+                className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${
+                  ragSelectedNovel === "lotm_vol1"
+                    ? "bg-violet-600 text-white shadow"
+                    : "bg-neutral-950 text-neutral-400 hover:text-white border border-neutral-800"
+                }`}
+              >
+                Lord of the Mysteries (Vol 1: Clown · 213 Ch)
+              </button>
+              <button
+                onClick={() => {
+                  setRagSelectedNovel("shadow_slave");
+                  setRagQueryText("Sunny weapon shackles true name");
+                  setRagStoryTick(1500);
+                  setRagNarrativeTick(1000101001);
+                }}
+                className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${
+                  ragSelectedNovel === "shadow_slave"
+                    ? "bg-amber-600 text-white shadow"
+                    : "bg-neutral-950 text-neutral-400 hover:text-white border border-neutral-800"
+                }`}
+              >
+                Shadow Slave (Vol 1-7)
+              </button>
             </div>
 
             {/* Slider */}
@@ -1729,7 +1868,7 @@ export default function VisualiserLabPage() {
               <input
                 type="range"
                 min={1000}
-                max={60000}
+                max={ragSelectedNovel === "lotm_vol1" ? 220000 : 60000}
                 step={1000}
                 value={ragStoryTick}
                 onChange={(e) => {
@@ -1739,12 +1878,23 @@ export default function VisualiserLabPage() {
                 }}
                 className="w-full accent-violet-500 cursor-pointer"
               />
-              <div className="flex justify-between text-[10px] text-neutral-500 font-mono">
-                <span>Ch 1 (Tick 1,000)</span>
-                <span>Ch 15 (Tick 15,000)</span>
-                <span>Ch 25 (Tick 25,000 - True Name Reveal)</span>
-                <span>Ch 50 (Tick 50,000)</span>
-              </div>
+              {ragSelectedNovel === "lotm_vol1" ? (
+                <div className="flex justify-between text-[10px] text-neutral-500 font-mono">
+                  <span>Ch 1 (Tick 1k)</span>
+                  <span>Ch 35 (Tick 35k - Seer)</span>
+                  <span>Ch 105 (Tick 105k - Old Neil)</span>
+                  <span>Ch 120 (Tick 120k - Clown)</span>
+                  <span>Ch 212 (Tick 212k - 0-08)</span>
+                  <span>Ch 213 (Vol 1 Finale)</span>
+                </div>
+              ) : (
+                <div className="flex justify-between text-[10px] text-neutral-500 font-mono">
+                  <span>Ch 1 (Tick 1,000)</span>
+                  <span>Ch 15 (Tick 15,000)</span>
+                  <span>Ch 25 (Tick 25,000 - True Name Reveal)</span>
+                  <span>Ch 50 (Tick 50,000)</span>
+                </div>
+              )}
             </div>
 
             {/* Search Query Input */}
@@ -1754,7 +1904,7 @@ export default function VisualiserLabPage() {
                   type="text"
                   value={ragQueryText}
                   onChange={(e) => setRagQueryText(e.target.value)}
-                  placeholder="Enter context search query (e.g. Sunny weapons, true name, shadow powers)..."
+                  placeholder="Enter context search query..."
                   className="flex-1 bg-neutral-950 text-xs p-3 rounded-lg border border-neutral-800 text-neutral-100 focus:outline-none focus:border-violet-500/50"
                 />
                 <button
@@ -1772,14 +1922,23 @@ export default function VisualiserLabPage() {
               </div>
 
               {/* Quick Preset Queries */}
-              <div className="flex items-center gap-2 text-[11px] text-neutral-400">
+              <div className="flex flex-wrap items-center gap-2 text-[11px] text-neutral-400">
                 <span>Quick Test Queries:</span>
-                {[
-                  "Sunny weapon shackles",
-                  "Lost from Light secret true name",
-                  "Caravan Overseer scar whip",
-                  "Dark shrine nightmare creature",
-                ].map((q) => (
+                {(ragSelectedNovel === "lotm_vol1"
+                  ? [
+                      "Klein weapon revolver",
+                      "Sequence 9 Seer potion",
+                      "Old Neil Hidden Sage corruption",
+                      "Ince Zangwill Quill 0-08 betrayal",
+                      "Detective Sherlock Moriarty (Vol 2 Spoiler)",
+                    ]
+                  : [
+                      "Sunny weapon shackles",
+                      "Lost from Light secret true name",
+                      "Caravan Overseer scar whip",
+                      "Dark shrine nightmare creature",
+                    ]
+                ).map((q) => (
                   <button
                     key={q}
                     onClick={() => {
