@@ -1,19 +1,16 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import {
   Zap,
   Power,
   Terminal,
-  ExternalLink,
   Copy,
   Check,
   Loader2,
   AlertTriangle,
-  Cpu,
   Clock,
-  Sparkles,
   Bot,
   Activity,
   CheckCircle2,
@@ -84,8 +81,21 @@ export function TpuClusterCard({
   const quota = account.quota;
   const tpuRemaining = quota?.tpuRemainingSeconds ?? 72000;
   const tpuTotal = quota?.tpuTotalAllowedSeconds ?? 72000;
-  const tpuUsed = quota?.tpuUsedSeconds ?? 0;
   const quotaPercent = Math.min(100, Math.max(0, (tpuRemaining / (tpuTotal || 72000)) * 100));
+
+  const [uptimeSeconds, setUptimeSeconds] = useState(0);
+
+  useEffect(() => {
+    const update = () => {
+      const diff = vm?.onlineSince
+        ? Math.max(0, Math.floor((Date.now() - new Date(vm.onlineSince).getTime()) / 1000))
+        : 0;
+      setUptimeSeconds(diff);
+    };
+    const iv = setInterval(update, 1000);
+    queueMicrotask(update);
+    return () => clearInterval(iv);
+  }, [vm?.onlineSince]);
 
   async function handleToggle(action: "start" | "stop") {
     setToggling(true);
@@ -343,7 +353,7 @@ export function TpuClusterCard({
                   TPU Inference Tunnel Active
                 </span>
                 <span className="font-mono text-[10px] text-zinc-400">
-                  (Uptime: {formatUptime(vm.onlineSince ? Math.floor((Date.now() - new Date(vm.onlineSince).getTime()) / 1000) : 0)})
+                  (Uptime: {formatUptime(uptimeSeconds)})
                 </span>
               </div>
 

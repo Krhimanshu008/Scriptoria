@@ -13,7 +13,6 @@ import {
   ImagePlus,
   Loader2,
   MessageSquare,
-  Pencil,
   Plus,
   RefreshCw,
   Send,
@@ -140,7 +139,21 @@ export function LlmStudioTab() {
   const [jsonSchema, setJsonSchema] = useState(DEFAULT_JSON_SCHEMA);
   const [promptInput, setPromptInput] = useState("");
   const [attachedImages, setAttachedImages] = useState<string[]>([]);
-  const [turns, setTurns] = useState<TurnMessage[]>([]);
+  const [turns, setTurns] = useState<TurnMessage[]>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const saved = localStorage.getItem("scriptoria_llm_active_session");
+        if (!saved) {
+          const cached = localStorage.getItem("scriptoria_llm_cached_turns");
+          if (cached) {
+            const parsed = JSON.parse(cached);
+            if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+          }
+        }
+      } catch {}
+    }
+    return [];
+  });
   const [sending, setSending] = useState(false);
   const [expandedThinkingIds, setExpandedThinkingIds] = useState<Record<string, boolean>>({});
 
@@ -241,7 +254,12 @@ export function LlmStudioTab() {
 
   const queryClient = useQueryClient();
   const [leftTab, setLeftTab] = useState<"controls" | "history">("controls");
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("scriptoria_llm_active_session");
+    }
+    return null;
+  });
 
   const { data: sessionData, refetch: refetchSessions } = useQuery<{ sessions: SessionItem[] }>({
     queryKey: ["llm-sessions"],
@@ -263,53 +281,37 @@ export function LlmStudioTab() {
     },
   });
 
-  // Restore activeSessionId on mount or localStorage turns
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("scriptoria_llm_active_session");
-      if (saved) {
-        setActiveSessionId(saved);
-      } else {
-        try {
-          const cached = localStorage.getItem("scriptoria_llm_cached_turns");
-          if (cached) {
-            const parsed = JSON.parse(cached);
-            if (Array.isArray(parsed) && parsed.length > 0) setTurns(parsed);
-          }
-        } catch {}
-      }
-    }
-  }, []);
-
   // Sync activeSessionData to turns & state
   useEffect(() => {
     if (activeSessionData?.session) {
       const sess = activeSessionData.session;
-      if (sess.mode) setMode(sess.mode as StudioMode);
-      if (sess.systemPrompt) setSystemPrompt(sess.systemPrompt);
-      if (sess.jsonSchema) setJsonSchema(sess.jsonSchema);
-      if (typeof sess.temperature === "number") setTemperature(sess.temperature);
-      if (typeof sess.maxTokens === "number") setMaxTokens(sess.maxTokens);
-      if (sess.reasoningEffort) setReasoningEffort(sess.reasoningEffort as ThinkingLevel);
+      queueMicrotask(() => {
+        if (sess.mode) setMode(sess.mode as StudioMode);
+        if (sess.systemPrompt) setSystemPrompt(sess.systemPrompt);
+        if (sess.jsonSchema) setJsonSchema(sess.jsonSchema);
+        if (typeof sess.temperature === "number") setTemperature(sess.temperature);
+        if (typeof sess.maxTokens === "number") setMaxTokens(sess.maxTokens);
+        if (sess.reasoningEffort) setReasoningEffort(sess.reasoningEffort as ThinkingLevel);
 
-      const msgs: TurnMessage[] = (sess.messages || []).map(
-        (m: {
-          id: string;
-          role: string;
-          content: string;
-          thinking?: string | null;
-          imagesJson?: string | null;
-          metaJson?: string | null;
-        }) => ({
-          id: m.id,
-          role: m.role as "user" | "assistant",
-          content: m.content,
-          thinking: m.thinking,
-          imageDataUrls: m.imagesJson ? JSON.parse(m.imagesJson) : undefined,
-          meta: m.metaJson ? JSON.parse(m.metaJson) : undefined,
-        })
-      );
-      setTurns(msgs);
+        const msgs: TurnMessage[] = (sess.messages || []).map(
+          (m: {
+            id: string;
+            role: string;
+            content: string;
+            thinking?: string | null;
+            imagesJson?: string | null;
+            metaJson?: string | null;
+          }) => ({
+            id: m.id,
+            role: m.role as "user" | "assistant",
+            content: m.content,
+            thinking: m.thinking,
+            imageDataUrls: m.imagesJson ? JSON.parse(m.imagesJson) : undefined,
+            meta: m.metaJson ? JSON.parse(m.metaJson) : undefined,
+          })
+        );
+        setTurns(msgs);
+      });
     }
   }, [activeSessionData]);
 

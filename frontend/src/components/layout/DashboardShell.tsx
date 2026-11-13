@@ -13,7 +13,6 @@ import {
   LogOut,
   Loader2,
   Sparkles,
-  Cpu,
   Bot,
   Zap,
   X,

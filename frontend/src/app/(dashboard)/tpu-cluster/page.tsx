@@ -4,15 +4,9 @@ import React, { useState } from "react";
 import Link from "next/link";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Zap,
   RefreshCw,
-  Cpu,
   Bot,
   Settings,
-  Sparkles,
-  Layers,
-  ShieldCheck,
-  Flame,
   Info,
 } from "lucide-react";
 import type { PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
