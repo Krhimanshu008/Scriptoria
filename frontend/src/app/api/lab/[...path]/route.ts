@@ -43,6 +43,15 @@ async function proxyRequest(request: NextRequest, { params }: { params: Promise<
       resHeaders.set(key, val);
     });
 
+    // Pass through SSE event streams in real time
+    if (response.headers.get("content-type")?.includes("text/event-stream")) {
+      return new NextResponse(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: resHeaders,
+      });
+    }
+
     const data = await response.arrayBuffer();
     return new NextResponse(data, {
       status: response.status,

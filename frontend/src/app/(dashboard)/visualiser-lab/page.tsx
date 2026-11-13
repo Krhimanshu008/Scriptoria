@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   Film,
   BookOpen,
@@ -10,6 +10,7 @@ import {
   ShieldCheck,
   Volume2,
   Play,
+  Pause,
   RotateCcw,
   Sparkles,
   Layers,
@@ -27,13 +28,16 @@ import {
   Upload,
   ArrowRight,
   Search,
+  ShieldAlert,
+  Cpu,
 } from "lucide-react";
 import { toast } from "sonner";
 
 type LabStation =
   | "ingestion"
-  | "fingerprints"
+  | "extraction"
   | "foundry"
+  | "rag"
   | "storyboard"
   | "qc"
   | "audio_film";
@@ -65,7 +69,28 @@ export default function VisualiserLabPage() {
   const [textMode, setTextMode] = useState<"clean" | "tts">("clean");
 
   // -------------------------------------------------------------
-  // Station 2 State: Deterministic Fingerprint Sandbox
+  // Station 2 State: Story Brain & Live Extraction Streaming Terminal
+  // -------------------------------------------------------------
+  const [station2SubTab, setStation2SubTab] = useState<"stream" | "fingerprints">("stream");
+  const [extractionLogs, setExtractionLogs] = useState<
+    Array<{
+      timestamp: string;
+      type: "worker" | "chunker" | "prompt" | "token" | "schema" | "db" | "complete";
+      text: string;
+      speed?: number;
+      data?: any;
+    }>
+  >([]);
+  const [isExtracting, setIsExtracting] = useState(false);
+  const [extractionSpeed, setExtractionSpeed] = useState<number>(0);
+  const [extractedTokensCount, setExtractedTokensCount] = useState<number>(0);
+  const [logFilter, setLogFilter] = useState<"ALL" | "WORKER" | "PROMPTS" | "RAW_LLM" | "DB_COMMITS">("ALL");
+  const [autoScroll, setAutoScroll] = useState(true);
+  const [extractionSummary, setExtractionSummary] = useState<any>(null);
+  const terminalContainerRef = useRef<HTMLDivElement>(null);
+
+  // -------------------------------------------------------------
+  // Station 2 Legacy State: Deterministic Fingerprint Sandbox
   // -------------------------------------------------------------
   const [fpPrompt, setFpPrompt] = useState(
     "masterpiece, best quality, cinematic wide establishing shot, cold desolate mountain peak, howling blizzard"
@@ -79,6 +104,15 @@ export default function VisualiserLabPage() {
   // -------------------------------------------------------------
   const [foundryPlates, setFoundryPlates] = useState<any[]>([]);
   const [selectedPlate, setSelectedPlate] = useState<any>(null);
+
+  // -------------------------------------------------------------
+  // Station 4 State: Vector RAG & Temporal Context Sandbox
+  // -------------------------------------------------------------
+  const [ragQueryText, setRagQueryText] = useState("Sunny weapon shackles true name");
+  const [ragStoryTick, setRagStoryTick] = useState(1500);
+  const [ragNarrativeTick, setRagNarrativeTick] = useState(1000101001);
+  const [ragResult, setRagResult] = useState<any>(null);
+  const [ragLoading, setRagLoading] = useState(false);
 
   // -------------------------------------------------------------
   // Station 4 State: Storyboard & Framing
@@ -126,6 +160,171 @@ export default function VisualiserLabPage() {
       }
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  useEffect(() => {
+    if (autoScroll && terminalContainerRef.current) {
+      terminalContainerRef.current.scrollTop = terminalContainerRef.current.scrollHeight;
+    }
+  }, [extractionLogs, autoScroll]);
+
+  const handleStartKnowledgeExtraction = async () => {
+    setIsExtracting(true);
+    setExtractionLogs([]);
+    setExtractionSummary(null);
+    setExtractedTokensCount(0);
+    setExtractionSpeed(0);
+
+    try {
+      const chapterText = ingestionResult?.full_clean_text || undefined;
+      const res = await fetch("/api/lab/extract-knowledge-stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chapter_number: selectedChapterIdx || 1,
+          chapter_text: chapterText,
+          mock_streaming: true,
+        }),
+      });
+
+      if (!res.ok) throw new Error("Failed to connect to extraction stream");
+      if (!res.body) throw new Error("Readable stream unavailable");
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split("\n\n");
+        buffer = events.pop() || "";
+
+        for (const evt of events) {
+          if (!evt.trim()) continue;
+          const eventMatch = evt.match(/event:\s*(\w+)/);
+          const dataMatch = evt.match(/data:\s*([\s\S]+)/);
+
+          if (eventMatch && dataMatch) {
+            const eventType = eventMatch[1];
+            try {
+              const data = JSON.parse(dataMatch[1]);
+              const timestamp = data.timestamp || new Date().toLocaleTimeString();
+
+              if (eventType === "worker_assigned") {
+                setExtractionLogs((prev) => [
+                  ...prev,
+                  {
+                    timestamp,
+                    type: "worker",
+                    text: `[WORKER_ASSIGNED] ${data.worker_node} running ${data.model} (${data.backend}) · VRAM: ${data.vram_allocated_gb}GB / ${data.vram_total_gb}GB`,
+                    data,
+                  },
+                ]);
+              } else if (eventType === "beat_chunking") {
+                setExtractionLogs((prev) => [
+                  ...prev,
+                  {
+                    timestamp,
+                    type: "chunker",
+                    text: `[BEAT_CHUNKING] ${data.message}`,
+                    data,
+                  },
+                ]);
+              } else if (eventType === "prompt_dispatched") {
+                setExtractionLogs((prev) => [
+                  ...prev,
+                  {
+                    timestamp,
+                    type: "prompt",
+                    text: `[PROMPT_DISPATCHED] Dispatched scene prompt (${data.input_tokens} tokens)\nSystem: ${data.system_prompt}\nUser Preview: ${data.user_prompt_preview}`,
+                    data,
+                  },
+                ]);
+              } else if (eventType === "token_stream") {
+                setExtractionSpeed(data.speed_tps);
+                setExtractedTokensCount(data.tokens_generated);
+                setExtractionLogs((prev) => [
+                  ...prev,
+                  {
+                    timestamp,
+                    type: "token",
+                    text: data.chunk,
+                    speed: data.speed_tps,
+                  },
+                ]);
+              } else if (eventType === "schema_validated") {
+                setExtractionLogs((prev) => [
+                  ...prev,
+                  {
+                    timestamp,
+                    type: "schema",
+                    text: `[SCHEMA_VALIDATED] ${data.message} (${data.characters_extracted} characters, ${data.claims_count} claims, ${data.state_transitions_count} transitions)`,
+                    data,
+                  },
+                ]);
+              } else if (eventType === "db_persisted") {
+                setExtractionSummary(data);
+                setExtractionLogs((prev) => [
+                  ...prev,
+                  {
+                    timestamp,
+                    type: "db",
+                    text: `[DB_PERSISTED] ${data.message}`,
+                    data,
+                  },
+                ]);
+              } else if (eventType === "extraction_complete") {
+                setExtractionLogs((prev) => [
+                  ...prev,
+                  {
+                    timestamp,
+                    type: "complete",
+                    text: `[COMPLETE] ${data.message} (Avg Speed: ${data.average_speed_tps} tok/s)`,
+                    data,
+                  },
+                ]);
+                toast.success("Story Brain Extraction Complete!");
+              }
+            } catch (err) {
+              console.error("SSE parse error", err);
+            }
+          }
+        }
+      }
+    } catch (e: any) {
+      toast.error(e.message || "Extraction stream failed");
+    } finally {
+      setIsExtracting(false);
+    }
+  };
+
+  const handleRunRAGQuery = async () => {
+    setRagLoading(true);
+    try {
+      const res = await fetch("/api/lab/rag-query", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: ragQueryText,
+          current_story_tick: ragStoryTick,
+          current_narrative_tick: ragNarrativeTick,
+          top_k: 5,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "RAG search failed");
+      setRagResult(data);
+      toast.success(
+        `Retrieved in ${data.retrieval_latency_ms}ms · ${data.spoilers_redacted_count} spoilers blocked`
+      );
+    } catch (e: any) {
+      toast.error(e.message || "RAG query error");
+    } finally {
+      setRagLoading(false);
     }
   };
 
@@ -227,12 +426,8 @@ export default function VisualiserLabPage() {
 
   const handleSendToStation2 = () => {
     if (!ingestionResult) return;
-    const text = ingestionResult.full_clean_text?.slice(0, 300) || "";
-    setFpPrompt(
-      `masterpiece, best quality, cinematic shot, ${text.replace(/\n+/g, " ")}`
-    );
-    setActiveStation("fingerprints");
-    toast.success("Chapter context transferred to Station 2 (Fingerprint Sandbox)!");
+    setActiveStation("extraction");
+    toast.success("Chapter context transferred to Station 2 (Story Brain & Live Extraction Terminal)!");
   };
 
   const handleSendToStation6 = () => {
@@ -427,18 +622,18 @@ export default function VisualiserLabPage() {
       </div>
 
       {/* Station Selector Tabs */}
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-2 bg-neutral-900/60 p-2 rounded-xl border border-neutral-800">
+      <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-2 bg-neutral-900/60 p-2 rounded-xl border border-neutral-800">
         {[
           {
             id: "ingestion",
-            label: "1. DOM Ingestion",
+            label: "1. DOM Ingest",
             icon: BookOpen,
             color: "text-emerald-400",
           },
           {
-            id: "fingerprints",
-            label: "2. Fingerprints",
-            icon: Hash,
+            id: "extraction",
+            label: "2. Story Brain",
+            icon: Terminal,
             color: "text-cyan-400",
           },
           {
@@ -448,20 +643,26 @@ export default function VisualiserLabPage() {
             color: "text-amber-400",
           },
           {
+            id: "rag",
+            label: "4. Vector RAG",
+            icon: Search,
+            color: "text-violet-400",
+          },
+          {
             id: "storyboard",
-            label: "4. Co-Director",
+            label: "5. Co-Director",
             icon: Clapperboard,
             color: "text-indigo-400",
           },
           {
             id: "qc",
-            label: "5. 3-Gate QC",
+            label: "6. 3-Gate QC",
             icon: ShieldCheck,
             color: "text-rose-400",
           },
           {
             id: "audio_film",
-            label: "6. Audio & Film",
+            label: "7. Film Studio",
             icon: Volume2,
             color: "text-purple-400",
           },
@@ -1016,130 +1217,413 @@ export default function VisualiserLabPage() {
       )}
 
       {/* ============================================================ */}
-      {/* STATION 2: DETERMINISTIC FINGERPRINT SANDBOX */}
+      {/* STATION 2: STORY BRAIN & LIVE EXTRACTION TERMINAL */}
       {/* ============================================================ */}
-      {activeStation === "fingerprints" && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          <div className="lg:col-span-6 flex flex-col gap-4">
-            <div className="p-5 rounded-xl bg-neutral-900/60 border border-neutral-800 flex flex-col gap-3">
-              <h2 className="text-sm font-semibold text-neutral-200 flex items-center gap-2">
-                <Hash className="w-4 h-4 text-cyan-400" />
-                Prompt & Parameter Contract
-              </h2>
-
-              <div>
-                <label className="text-xs text-neutral-400 mb-1 block">
-                  Positive Prompt
-                </label>
-                <textarea
-                  value={fpPrompt}
-                  onChange={(e) => setFpPrompt(e.target.value)}
-                  rows={4}
-                  className="w-full bg-neutral-950 text-xs p-3 rounded-lg border border-neutral-800 text-neutral-200 focus:outline-none focus:border-cyan-500/50"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs text-neutral-400 mb-1 block">
-                    Generation Seed
-                  </label>
-                  <input
-                    type="number"
-                    value={fpSeed}
-                    onChange={(e) => setFpSeed(parseInt(e.target.value) || 0)}
-                    className="w-full bg-neutral-950 text-xs p-2.5 rounded-lg border border-neutral-800 text-neutral-200 focus:outline-none focus:border-cyan-500/50"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-neutral-400 mb-1 block">
-                    Workflow Template
-                  </label>
-                  <select
-                    value={fpWorkflow}
-                    onChange={(e) => setFpWorkflow(e.target.value)}
-                    className="w-full bg-neutral-950 text-xs p-2.5 rounded-lg border border-neutral-800 text-neutral-200 focus:outline-none focus:border-cyan-500/50"
-                  >
-                    <option value="04_WF_SHOT_SOLO.json">
-                      04_WF_SHOT_SOLO (Character + Scene)
-                    </option>
-                    <option value="05_WF_SHOT_MULTI.json">
-                      05_WF_SHOT_MULTI (Two-Shot / Multi)
-                    </option>
-                    <option value="06_WF_SHOT_ENV.json">
-                      06_WF_SHOT_ENV (Pure Environment Vista)
-                    </option>
-                    <option value="07_WF_EDIT_INPAINT.json">
-                      07_WF_EDIT_INPAINT (Surgical SAM2 Inpaint)
-                    </option>
-                  </select>
-                </div>
-              </div>
-
+      {activeStation === "extraction" && (
+        <div className="flex flex-col gap-6">
+          {/* Sub-tab navigation */}
+          <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
+            <div className="flex items-center gap-2">
               <button
-                onClick={handleComputeFingerprint}
-                disabled={loading}
-                className="w-full py-2.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 font-semibold text-xs text-white transition-all shadow-lg flex items-center justify-center gap-2 mt-2"
+                onClick={() => setStation2SubTab("stream")}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium transition-all ${
+                  station2SubTab === "stream"
+                    ? "bg-cyan-600 text-white font-semibold shadow-md"
+                    : "bg-neutral-900 text-neutral-400 hover:text-white border border-neutral-800"
+                }`}
               >
-                <Hash className="w-4 h-4" />
-                Compute Deterministic SHA-256 Fingerprint
+                <Terminal className="w-3.5 h-3.5" />
+                Live Story Brain Streaming Terminal
+              </button>
+              <button
+                onClick={() => setStation2SubTab("fingerprints")}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium transition-all ${
+                  station2SubTab === "fingerprints"
+                    ? "bg-cyan-600 text-white font-semibold shadow-md"
+                    : "bg-neutral-900 text-neutral-400 hover:text-white border border-neutral-800"
+                }`}
+              >
+                <Hash className="w-3.5 h-3.5" />
+                Deterministic Fingerprint Contract
               </button>
             </div>
-          </div>
 
-          <div className="lg:col-span-6 flex flex-col gap-4">
-            <div className="p-5 rounded-xl bg-neutral-900/60 border border-neutral-800 flex flex-col gap-4">
-              <h2 className="text-sm font-semibold text-neutral-200 flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                Cache Invalidation Contract
-              </h2>
-
-              {fpResult ? (
-                <div className="flex flex-col gap-3">
-                  <div className="p-4 rounded-xl bg-neutral-950 border border-cyan-500/30 flex flex-col gap-1.5">
-                    <span className="text-[10px] uppercase font-mono tracking-wider text-cyan-400 font-bold">
-                      Deterministic Fingerprint (SHA-256)
-                    </span>
-                    <span className="font-mono text-sm font-bold text-white break-all">
-                      {fpResult.fingerprint}
-                    </span>
-                  </div>
-
-                  <div className="p-3.5 rounded-lg bg-emerald-950/20 border border-emerald-800/40 text-emerald-300 text-xs flex items-center gap-2">
-                    <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
-                    <span>
-                      Fingerprint is calculated across style vector, prompt,
-                      seed, workflow template, and reference plates.
-                    </span>
-                  </div>
-
-                  <div className="p-4 rounded-xl bg-neutral-950 border border-neutral-800 text-xs flex flex-col gap-2">
-                    <span className="text-neutral-400 font-semibold">
-                      Invalidation Rules:
-                    </span>
-                    <ul className="list-disc list-inside text-neutral-300 space-y-1">
-                      <li>
-                        If the fingerprint matches PostgreSQL cache:{" "}
-                        <span className="text-emerald-400 font-bold">
-                          SKIP RENDER (0 GPU seconds)
-                        </span>
-                      </li>
-                      <li>
-                        If prompt, seed, or character plate changes:{" "}
-                        <span className="text-amber-400 font-bold">
-                          INVALIDATE & RE-RENDER
-                        </span>
-                      </li>
-                    </ul>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex flex-col items-center justify-center h-48 text-neutral-500 text-xs">
-                  Click button to compute and inspect deterministic hash.
-                </div>
-              )}
+            {/* Cluster Node Status Badge */}
+            <div className="flex items-center gap-2 bg-neutral-950 px-3 py-1.5 rounded-lg border border-neutral-800">
+              <span className="flex h-2 w-2 rounded-full bg-emerald-500 animate-ping" />
+              <span className="text-[11px] font-mono text-cyan-400 font-bold">
+                KAGGLE-1 [acc1:gpu0/gpu1] · Qwen 27B Turbo (Dual-T4 30GB)
+              </span>
             </div>
           </div>
+
+          {station2SubTab === "stream" ? (
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              {/* Left Column: Live Terminal */}
+              <div className="lg:col-span-7 flex flex-col gap-4">
+                {/* Control Panel */}
+                <div className="p-4 rounded-xl bg-neutral-900/60 border border-neutral-800 flex items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={handleStartKnowledgeExtraction}
+                      disabled={isExtracting}
+                      className="py-2 px-4 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:bg-neutral-800 disabled:text-neutral-500 text-white text-xs font-bold transition-all shadow-lg flex items-center gap-2"
+                    >
+                      {isExtracting ? (
+                        <>
+                          <Activity className="w-4 h-4 animate-spin text-cyan-300" />
+                          Streaming Tokens...
+                        </>
+                      ) : (
+                        <>
+                          <Play className="w-4 h-4 text-white" />
+                          Start Knowledge Extraction
+                        </>
+                      )}
+                    </button>
+
+                    <div className="text-xs text-neutral-400">
+                      Target:{" "}
+                      <span className="font-semibold text-neutral-200">
+                        {ingestionResult?.selected_chapter?.title || `Chapter ${selectedChapterIdx}`}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3 text-xs font-mono">
+                    <div className="bg-neutral-950 px-2.5 py-1 rounded border border-neutral-800 text-neutral-300">
+                      Tokens:{" "}
+                      <span className="text-cyan-400 font-bold">
+                        {extractedTokensCount}
+                      </span>
+                    </div>
+                    <div className="bg-neutral-950 px-2.5 py-1 rounded border border-neutral-800 text-neutral-300">
+                      Throughput:{" "}
+                      <span className="text-emerald-400 font-bold">
+                        {extractionSpeed} tok/s
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Monospace Live Streaming Terminal */}
+                <div className="p-4 rounded-xl bg-neutral-950 border border-neutral-800 flex flex-col gap-3 font-mono shadow-2xl">
+                  {/* Terminal Header */}
+                  <div className="flex items-center justify-between border-b border-neutral-800 pb-2.5 text-xs">
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-2.5 h-2.5 rounded-full bg-rose-500/80" />
+                        <span className="w-2.5 h-2.5 rounded-full bg-amber-500/80" />
+                        <span className="w-2.5 h-2.5 rounded-full bg-emerald-500/80" />
+                      </div>
+                      <span className="text-neutral-400 font-bold ml-2">
+                        STORY_BRAIN_STREAM // LIVE TELEMETRY
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-1">
+                      {(["ALL", "WORKER", "PROMPTS", "RAW_LLM", "DB_COMMITS"] as const).map(
+                        (f) => (
+                          <button
+                            key={f}
+                            onClick={() => setLogFilter(f)}
+                            className={`px-2 py-0.5 rounded text-[10px] transition-all ${
+                              logFilter === f
+                                ? "bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/40"
+                                : "text-neutral-500 hover:text-neutral-300"
+                            }`}
+                          >
+                            {f}
+                          </button>
+                        )
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Terminal Log Area */}
+                  <div
+                    ref={terminalContainerRef}
+                    className="h-[460px] overflow-y-auto space-y-1 text-xs select-text pr-2 leading-relaxed"
+                  >
+                    {extractionLogs.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center h-full text-neutral-600 text-xs">
+                        <Terminal className="w-8 h-8 mb-2 opacity-40" />
+                        Click &quot;Start Knowledge Extraction&quot; to begin live SSE streaming from Kaggle Dual-T4 worker.
+                      </div>
+                    ) : (
+                      extractionLogs
+                        .filter((log) => {
+                          if (logFilter === "ALL") return true;
+                          if (logFilter === "WORKER") return log.type === "worker";
+                          if (logFilter === "PROMPTS") return log.type === "prompt" || log.type === "chunker";
+                          if (logFilter === "RAW_LLM") return log.type === "token";
+                          if (logFilter === "DB_COMMITS") return log.type === "db" || log.type === "schema" || log.type === "complete";
+                          return true;
+                        })
+                        .map((log, idx) => {
+                          let colorClass = "text-neutral-300";
+                          if (log.type === "worker") colorClass = "text-amber-400 font-semibold";
+                          if (log.type === "chunker") colorClass = "text-blue-400";
+                          if (log.type === "prompt") colorClass = "text-purple-300 whitespace-pre-wrap";
+                          if (log.type === "token") colorClass = "text-cyan-300";
+                          if (log.type === "schema") colorClass = "text-emerald-400 font-bold";
+                          if (log.type === "db") colorClass = "text-emerald-300 font-semibold bg-emerald-950/20 p-1.5 rounded";
+                          if (log.type === "complete") colorClass = "text-yellow-300 font-bold";
+
+                          return (
+                            <div key={idx} className={`break-words ${colorClass}`}>
+                              {log.type !== "token" && (
+                                <span className="text-neutral-600 mr-2 text-[10px]">
+                                  [{log.timestamp}]
+                                </span>
+                              )}
+                              {log.text}
+                            </div>
+                          );
+                        })
+                    )}
+                  </div>
+
+                  {/* Terminal Footer */}
+                  <div className="flex items-center justify-between border-t border-neutral-900 pt-2 text-[10px] text-neutral-500">
+                    <div className="flex items-center gap-2">
+                      <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
+                      <span>Protocol: SSE (Server-Sent Events)</span>
+                    </div>
+                    <label className="flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={autoScroll}
+                        onChange={(e) => setAutoScroll(e.target.checked)}
+                        className="rounded border-neutral-800 bg-neutral-900 text-cyan-500 text-xs"
+                      />
+                      <span>Auto-scroll</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              {/* Right Column: DB Persisted Knowledge Inspection */}
+              <div className="lg:col-span-5 flex flex-col gap-4">
+                <div className="p-5 rounded-xl bg-neutral-900/60 border border-neutral-800 flex flex-col gap-4">
+                  <h3 className="text-sm font-semibold text-neutral-200 flex items-center justify-between">
+                    <span>Persisted Knowledge Graph (PostgreSQL)</span>
+                    {extractionSummary && (
+                      <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-mono border border-emerald-500/30">
+                        {extractionSummary.persisted_nodes?.length || 0} Nodes Committed
+                      </span>
+                    )}
+                  </h3>
+
+                  {extractionSummary ? (
+                    <div className="flex flex-col gap-3">
+                      {/* Character & Location Nodes */}
+                      <div className="space-y-2">
+                        <span className="text-[11px] font-semibold text-neutral-400 uppercase tracking-wider font-mono">
+                          Discovered Entity Nodes
+                        </span>
+                        {extractionSummary.persisted_nodes?.map((node: any, idx: number) => (
+                          <div
+                            key={idx}
+                            className="p-3 rounded-lg bg-neutral-950 border border-neutral-800 flex items-center justify-between"
+                          >
+                            <div>
+                              <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                                {node.canonical_name}
+                                <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+                                  {node.node_code}
+                                </span>
+                              </div>
+                              <div className="text-[10px] text-neutral-400 font-mono">
+                                Category: {node.category}
+                              </div>
+                            </div>
+                            <span className="text-[10px] px-2 py-0.5 rounded bg-neutral-900 text-neutral-300 font-mono border border-neutral-800">
+                              Active
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Bi-Temporal States */}
+                      <div className="space-y-2">
+                        <span className="text-[11px] font-semibold text-neutral-400 uppercase tracking-wider font-mono">
+                          Bi-Temporal Character States
+                        </span>
+                        {extractionSummary.node_states?.map((st: any, idx: number) => (
+                          <div
+                            key={idx}
+                            className="p-3 rounded-lg bg-neutral-950 border border-neutral-800 flex flex-col gap-1"
+                          >
+                            <div className="flex items-center justify-between text-xs font-semibold text-neutral-200">
+                              <span>{st.label}</span>
+                              <span className="text-[10px] font-mono text-cyan-400">
+                                Tick #{st.story_tick}
+                              </span>
+                            </div>
+                            <div className="text-[10px] text-neutral-500 font-mono">
+                              State Code: {st.state_code}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Registered Foundry Reference Plates */}
+                      <div className="space-y-2">
+                        <span className="text-[11px] font-semibold text-neutral-400 uppercase tracking-wider font-mono">
+                          Registered Foundry Reference Plates
+                        </span>
+                        {extractionSummary.foundry_assets_registered?.map((asset: any, idx: number) => (
+                          <div
+                            key={idx}
+                            className="p-3 rounded-lg bg-neutral-950 border border-amber-500/30 flex flex-col gap-1.5"
+                          >
+                            <div className="flex items-center justify-between text-xs font-bold text-amber-300">
+                              <span>{asset.asset_code}</span>
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-mono border border-amber-500/30">
+                                {asset.tier}
+                              </span>
+                            </div>
+                            <div className="text-[10px] text-neutral-400 font-mono">
+                              Workflow: {asset.template}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center h-64 text-neutral-500 text-xs">
+                      No extraction executed yet. Run extraction stream to populate knowledge graph.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : (
+            /* Fingerprint Sandbox */
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              <div className="lg:col-span-6 flex flex-col gap-4">
+                <div className="p-5 rounded-xl bg-neutral-900/60 border border-neutral-800 flex flex-col gap-3">
+                  <h2 className="text-sm font-semibold text-neutral-200 flex items-center gap-2">
+                    <Hash className="w-4 h-4 text-cyan-400" />
+                    Prompt & Parameter Contract
+                  </h2>
+
+                  <div>
+                    <label className="text-xs text-neutral-400 mb-1 block">
+                      Positive Prompt
+                    </label>
+                    <textarea
+                      value={fpPrompt}
+                      onChange={(e) => setFpPrompt(e.target.value)}
+                      rows={4}
+                      className="w-full bg-neutral-950 text-xs p-3 rounded-lg border border-neutral-800 text-neutral-200 focus:outline-none focus:border-cyan-500/50"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs text-neutral-400 mb-1 block">
+                        Generation Seed
+                      </label>
+                      <input
+                        type="number"
+                        value={fpSeed}
+                        onChange={(e) => setFpSeed(parseInt(e.target.value) || 0)}
+                        className="w-full bg-neutral-950 text-xs p-2.5 rounded-lg border border-neutral-800 text-neutral-200 focus:outline-none focus:border-cyan-500/50"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-neutral-400 mb-1 block">
+                        Workflow Template
+                      </label>
+                      <select
+                        value={fpWorkflow}
+                        onChange={(e) => setFpWorkflow(e.target.value)}
+                        className="w-full bg-neutral-950 text-xs p-2.5 rounded-lg border border-neutral-800 text-neutral-200 focus:outline-none focus:border-cyan-500/50"
+                      >
+                        <option value="04_WF_SHOT_SOLO.json">
+                          04_WF_SHOT_SOLO (Character + Scene)
+                        </option>
+                        <option value="05_WF_SHOT_MULTI.json">
+                          05_WF_SHOT_MULTI (Two-Shot / Multi)
+                        </option>
+                        <option value="06_WF_SHOT_ENV.json">
+                          06_WF_SHOT_ENV (Pure Environment Vista)
+                        </option>
+                        <option value="07_WF_EDIT_INPAINT.json">
+                          07_WF_EDIT_INPAINT (Surgical SAM2 Inpaint)
+                        </option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={handleComputeFingerprint}
+                    disabled={loading}
+                    className="w-full py-2.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 font-semibold text-xs text-white transition-all shadow-lg flex items-center justify-center gap-2 mt-2"
+                  >
+                    <Hash className="w-4 h-4" />
+                    Compute Deterministic SHA-256 Fingerprint
+                  </button>
+                </div>
+              </div>
+
+              <div className="lg:col-span-6 flex flex-col gap-4">
+                <div className="p-5 rounded-xl bg-neutral-900/60 border border-neutral-800 flex flex-col gap-4">
+                  <h2 className="text-sm font-semibold text-neutral-200 flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                    Cache Invalidation Contract
+                  </h2>
+
+                  {fpResult ? (
+                    <div className="flex flex-col gap-3">
+                      <div className="p-4 rounded-xl bg-neutral-950 border border-cyan-500/30 flex flex-col gap-1.5">
+                        <span className="text-[10px] uppercase font-mono tracking-wider text-cyan-400 font-bold">
+                          Deterministic Fingerprint (SHA-256)
+                        </span>
+                        <span className="font-mono text-sm font-bold text-white break-all">
+                          {fpResult.fingerprint}
+                        </span>
+                      </div>
+
+                      <div className="p-3.5 rounded-lg bg-emerald-950/20 border border-emerald-800/40 text-emerald-300 text-xs flex items-center gap-2">
+                        <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+                        <span>
+                          Fingerprint is calculated across style vector, prompt,
+                          seed, workflow template, and reference plates.
+                        </span>
+                      </div>
+
+                      <div className="p-4 rounded-xl bg-neutral-950 border border-neutral-800 text-xs flex flex-col gap-2">
+                        <span className="text-neutral-400 font-semibold">
+                          Invalidation Rules:
+                        </span>
+                        <ul className="list-disc list-inside text-neutral-300 space-y-1">
+                          <li>
+                            If the fingerprint matches PostgreSQL cache:{" "}
+                            <span className="text-emerald-400 font-bold">
+                              SKIP RENDER (0 GPU seconds)
+                            </span>
+                          </li>
+                          <li>
+                            If prompt, seed, or character plate changes:{" "}
+                            <span className="text-amber-400 font-bold">
+                              INVALIDATE & RE-RENDER
+                            </span>
+                          </li>
+                        </ul>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center h-48 text-neutral-500 text-xs">
+                      Click button to compute and inspect deterministic hash.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -1200,7 +1684,224 @@ export default function VisualiserLabPage() {
       )}
 
       {/* ============================================================ */}
-      {/* STATION 4: CO-DIRECTOR & STORYBOARD */}
+      {/* STATION 4: VECTOR RAG & SPOILER-SAFE RETRIEVAL */}
+      {/* ============================================================ */}
+      {activeStation === "rag" && (
+        <div className="flex flex-col gap-6">
+          {/* Header & Story Tick Controls */}
+          <div className="p-6 rounded-xl bg-neutral-900/60 border border-neutral-800 flex flex-col gap-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-lg bg-violet-500/10 border border-violet-500/30 text-violet-400">
+                  <Search className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-bold text-white flex items-center gap-2">
+                    Vector RAG & Bi-Temporal Spoiler Shield
+                    <span className="text-[10px] px-2 py-0.5 rounded bg-violet-500/20 text-violet-300 font-mono border border-violet-500/30">
+                      Checkpoint 4
+                    </span>
+                  </h2>
+                  <p className="text-xs text-neutral-400">
+                    Query scene context without leaking future plot points. Lore claims beyond current story tick are automatically suppressed.
+                  </p>
+                </div>
+              </div>
+
+              {/* Story Tick Display */}
+              <div className="flex items-center gap-3 bg-neutral-950 p-2 rounded-xl border border-neutral-800 font-mono text-xs">
+                <span className="text-neutral-500">Current Reading Position:</span>
+                <span className="text-violet-400 font-bold">
+                  Story Tick #{ragStoryTick}
+                </span>
+                <span className="px-2 py-0.5 rounded bg-neutral-900 text-neutral-300 border border-neutral-800 text-[10px]">
+                  {ragStoryTick <= 5000 ? "Chapter 1-5" : ragStoryTick <= 30000 ? "Chapter 15-30" : "Chapter 50+"}
+                </span>
+              </div>
+            </div>
+
+            {/* Slider */}
+            <div className="flex flex-col gap-2 pt-2 border-t border-neutral-800">
+              <div className="flex items-center justify-between text-xs text-neutral-400">
+                <span>Story Tick Slider (Simulate novel reading progression):</span>
+                <span className="font-mono text-cyan-400 font-semibold">{ragStoryTick.toLocaleString()} ticks</span>
+              </div>
+              <input
+                type="range"
+                min={1000}
+                max={60000}
+                step={1000}
+                value={ragStoryTick}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value);
+                  setRagStoryTick(val);
+                  setRagNarrativeTick(1000000000 + val * 1000);
+                }}
+                className="w-full accent-violet-500 cursor-pointer"
+              />
+              <div className="flex justify-between text-[10px] text-neutral-500 font-mono">
+                <span>Ch 1 (Tick 1,000)</span>
+                <span>Ch 15 (Tick 15,000)</span>
+                <span>Ch 25 (Tick 25,000 - True Name Reveal)</span>
+                <span>Ch 50 (Tick 50,000)</span>
+              </div>
+            </div>
+
+            {/* Search Query Input */}
+            <div className="flex flex-col gap-2 pt-2">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={ragQueryText}
+                  onChange={(e) => setRagQueryText(e.target.value)}
+                  placeholder="Enter context search query (e.g. Sunny weapons, true name, shadow powers)..."
+                  className="flex-1 bg-neutral-950 text-xs p-3 rounded-lg border border-neutral-800 text-neutral-100 focus:outline-none focus:border-violet-500/50"
+                />
+                <button
+                  onClick={handleRunRAGQuery}
+                  disabled={ragLoading}
+                  className="px-6 py-2.5 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:bg-neutral-800 text-white font-bold text-xs flex items-center gap-2 transition-all shadow-lg"
+                >
+                  {ragLoading ? (
+                    <Activity className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Search className="w-4 h-4" />
+                  )}
+                  Run RAG Query
+                </button>
+              </div>
+
+              {/* Quick Preset Queries */}
+              <div className="flex items-center gap-2 text-[11px] text-neutral-400">
+                <span>Quick Test Queries:</span>
+                {[
+                  "Sunny weapon shackles",
+                  "Lost from Light secret true name",
+                  "Caravan Overseer scar whip",
+                  "Dark shrine nightmare creature",
+                ].map((q) => (
+                  <button
+                    key={q}
+                    onClick={() => {
+                      setRagQueryText(q);
+                    }}
+                    className="px-2 py-0.5 rounded bg-neutral-950 hover:bg-neutral-800 border border-neutral-800 text-neutral-300 font-mono text-[10px] transition-all"
+                  >
+                    {q}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* RAG Query Results */}
+          {ragResult && (
+            <div className="flex flex-col gap-4">
+              {/* Spoiler Shield Banner */}
+              <div
+                className={`p-4 rounded-xl border flex items-center justify-between gap-4 ${
+                  ragResult.spoilers_redacted_count > 0
+                    ? "bg-rose-950/20 border-rose-800/40 text-rose-300"
+                    : "bg-emerald-950/20 border-emerald-800/40 text-emerald-300"
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  {ragResult.spoilers_redacted_count > 0 ? (
+                    <ShieldAlert className="w-5 h-5 text-rose-400 shrink-0" />
+                  ) : (
+                    <ShieldCheck className="w-5 h-5 text-emerald-400 shrink-0" />
+                  )}
+                  <div className="text-xs">
+                    <span className="font-bold">
+                      {ragResult.spoilers_redacted_count > 0
+                        ? `Temporal Spoiler Shield Active: ${ragResult.spoilers_redacted_count} future plot spoiler(s) redacted!`
+                        : "Temporal Spoiler Shield Active: 0 future spoilers found."}
+                    </span>{" "}
+                    <span className="opacity-80">
+                      (Query executed at Story Tick #{ragStoryTick} in {ragResult.retrieval_latency_ms}ms)
+                    </span>
+                  </div>
+                </div>
+
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-black/40 border border-current font-bold">
+                  SPOILER SHIELD LOCKED
+                </span>
+              </div>
+
+              {/* Two Column Results */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Matched Passages */}
+                <div className="p-5 rounded-xl bg-neutral-900/60 border border-neutral-800 flex flex-col gap-3">
+                  <h3 className="text-xs font-semibold text-neutral-200 flex items-center justify-between">
+                    <span>Retrieved Prose Passages</span>
+                    <span className="text-[10px] text-neutral-400 font-mono">
+                      {ragResult.passages?.length || 0} Excerpts
+                    </span>
+                  </h3>
+
+                  <div className="space-y-2.5 max-h-[400px] overflow-y-auto pr-1">
+                    {ragResult.passages?.map((p: any, idx: number) => (
+                      <div
+                        key={idx}
+                        className="p-3.5 rounded-lg bg-neutral-950 border border-neutral-800 text-xs flex flex-col gap-1.5"
+                      >
+                        <div className="flex items-center justify-between text-[10px] font-mono text-neutral-400">
+                          <span className="text-cyan-400 font-bold">
+                            {p.canonical_id} • Ch.{p.chapter_number}
+                          </span>
+                          <span className="px-1.5 py-0.2 rounded bg-neutral-900 text-neutral-300">
+                            Sim: {(p.similarity_score * 100).toFixed(0)}%
+                          </span>
+                        </div>
+                        <p className="text-neutral-300 leading-relaxed text-xs">
+                          {p.text}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Matched Lore Claims */}
+                <div className="p-5 rounded-xl bg-neutral-900/60 border border-neutral-800 flex flex-col gap-3">
+                  <h3 className="text-xs font-semibold text-neutral-200 flex items-center justify-between">
+                    <span>Active Lore Claims (Tick &le; #{ragStoryTick})</span>
+                    <span className="text-[10px] text-neutral-400 font-mono">
+                      {ragResult.lore_claims?.length || 0} Claims
+                    </span>
+                  </h3>
+
+                  <div className="space-y-2.5 max-h-[400px] overflow-y-auto pr-1">
+                    {ragResult.lore_claims?.map((c: any, idx: number) => (
+                      <div
+                        key={idx}
+                        className="p-3.5 rounded-lg bg-neutral-950 border border-neutral-800 text-xs flex flex-col gap-1.5"
+                      >
+                        <div className="flex items-center justify-between text-[10px] font-mono">
+                          <span className="text-white font-bold">
+                            {c.canonical_name} ({c.entity_code})
+                          </span>
+                          <span className="px-1.5 py-0.2 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                            Tick #{c.valid_from_tick}
+                          </span>
+                        </div>
+                        <div className="text-xs text-neutral-300">
+                          <span className="text-neutral-500 font-mono text-[11px] mr-1">
+                            {c.attribute}:
+                          </span>
+                          <span className="text-cyan-300 font-semibold">{c.value}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ============================================================ */}
+      {/* STATION 5: CO-DIRECTOR & STORYBOARD */}
       {/* ============================================================ */}
       {activeStation === "storyboard" && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
