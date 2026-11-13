@@ -14,7 +14,8 @@ async function proxyRequest(request: NextRequest, { params }: { params: Promise<
 
   const headers = new Headers();
   request.headers.forEach((val, key) => {
-    if (!["host", "connection", "content-length"].includes(key.toLowerCase())) {
+    const k = key.toLowerCase();
+    if (!["host", "connection", "content-length", "expect", "transfer-encoding", "keep-alive"].includes(k)) {
       headers.set(key, val);
     }
   });
@@ -24,19 +25,24 @@ async function proxyRequest(request: NextRequest, { params }: { params: Promise<
     const contentType = request.headers.get("content-type") || "";
     if (contentType.includes("multipart/form-data")) {
       body = await request.formData();
+      headers.delete("content-type");
     } else {
       body = await request.text();
     }
   }
 
   try {
-    const response = await fetch(targetUrl.toString(), {
+    const fetchOptions: RequestInit = {
       method: request.method,
       headers: headers,
       body: body,
+    };
+    if (body instanceof ReadableStream) {
       // @ts-expect-error Next fetch duplex option for streaming
-      duplex: "half",
-    });
+      fetchOptions.duplex = "half";
+    }
+
+    const response = await fetch(targetUrl.toString(), fetchOptions);
 
     const resHeaders = new Headers();
     response.headers.forEach((val, key) => {
@@ -59,10 +65,12 @@ async function proxyRequest(request: NextRequest, { params }: { params: Promise<
       headers: resHeaders,
     });
   } catch (error: any) {
+    console.error("Lab proxy error:", error);
     return NextResponse.json(
       {
         error: "Failed to connect to FastAPI Test Lab backend at http://127.0.0.1:8000",
         details: error?.message || String(error),
+        cause: error?.cause ? String(error.cause) : undefined,
       },
       { status: 502 }
     );
