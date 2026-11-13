@@ -18,7 +18,12 @@
 
 ## 2. Recent Commit History (`origin/main`)
 
-1. `cdd83a0` — `fix(ui): resolve React Compiler purity and effect setState lint errors in TPU and LLM Studio`
+1. `[NEXT]` — `feat(workers): add pull-based worker lease API and activate DFlash2 speculative drafting`
+   - Added 4 pull-queue endpoints: `POST /api/v1/workers/claim` (5-min lease, capability matching, auto-reaper), `/complete`, `/fail` (with retry count), and `/heartbeat`.
+   - Updated `notebook-builder.ts` with DFlash2 speculative drafter (`z-lab/Qwen3.8-27B-DFlash2-GGUF`), offloaded with `-ngld 99`, pinned to `-devd CUDA1`, `-ctkd q8_0 -ctvd q8_0`, and `--spec-draft-n-max 5`.
+   - Built `Book Graph/scripts/worker.py` universal worker client with double-buffered asset prefetching and local ComfyUI dispatch.
+   - Verified clean production `next build` (56/56 routes) and 0 ESLint errors.
+2. `cdd83a0` — `fix(ui): resolve React Compiler purity and effect setState lint errors in TPU and LLM Studio`
    - Resolved React Compiler ESLint errors (`react-hooks/set-state-in-effect`, `react-hooks/purity` on Date.now in render, and unused imports).
    - Production `next build` passes with 0 errors across 52 routes.
 2. `08b2c46` — `fix(llm): remove invalid --no-mmap, isolate profile directories to prevent mmproj collisions, disable default thinking, and guard MTP`

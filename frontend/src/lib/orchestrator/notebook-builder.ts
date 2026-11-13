@@ -1244,6 +1244,31 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
     model_gguf, mmproj_gguf, downloaded_fresh = _resolve_qwen_ggufs()
     post_heartbeat(3, "STARTING")
 
+    dflash_gguf = None
+    if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"):
+        try:
+            if os.path.exists(LOCAL_LLM_DIR):
+                dflash_gguf = next((str(p) for p in Path(LOCAL_LLM_DIR).glob("*.gguf") if "dflash" in p.name.lower()), None)
+            if not dflash_gguf and rclone_ok:
+                try:
+                    ls = rc_post("operations/list", {"fs": f"gdrive:{REMOTE_LLM_DIR}", "remote": ""}, timeout=10)
+                    df_item = next((x for x in ls.get("list", []) or [] if "dflash" in x.get("Name", "").lower()), None)
+                    if df_item:
+                        rc_copy_async({"srcFs": f"gdrive:{REMOTE_LLM_DIR}", "srcRemote": df_item["Name"], "dstFs": LOCAL_LLM_DIR, "dstRemote": df_item["Name"]}, max_wait=300, label="DFlash2 stream")
+                        dflash_gguf = f"{LOCAL_LLM_DIR}/{df_item['Name']}"
+                except Exception:
+                    pass
+            if not dflash_gguf:
+                try:
+                    dflash_gguf = _fast_download_hf("z-lab/Qwen3.8-27B-DFlash2-GGUF", "Qwen3.8-27B-DFlash2-Q4_K_M.gguf", LOCAL_LLM_DIR, label="DFlash2 Drafter")
+                except Exception:
+                    try:
+                        dflash_gguf = _fast_download_hf("Akicou/Qwen3.8-27B-DFlash2-GGUF", "Qwen3.8-27B-DFlash2-Q4_K_M.gguf", LOCAL_LLM_DIR, label="DFlash2 Drafter")
+                    except Exception:
+                        pass
+        except Exception as dfe:
+            log_event(f"DFlash2 lookup: {dfe}", category="SYSTEM")
+
     if rclone_ok and downloaded_fresh:
         def _backup_llm_to_drive():
             try:
@@ -1251,6 +1276,8 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                 rc_copy_async({"srcFs": LOCAL_LLM_DIR, "srcRemote": os.path.basename(model_gguf), "dstFs": f"gdrive:{REMOTE_LLM_DIR}", "dstRemote": os.path.basename(model_gguf)}, max_wait=900, label="Backup Qwen GGUF")
                 if mmproj_gguf:
                     rc_copy_async({"srcFs": LOCAL_LLM_DIR, "srcRemote": os.path.basename(mmproj_gguf), "dstFs": f"gdrive:{REMOTE_LLM_DIR}", "dstRemote": os.path.basename(mmproj_gguf)}, max_wait=300, label="Backup mmproj")
+                if dflash_gguf and os.path.exists(dflash_gguf):
+                    rc_copy_async({"srcFs": LOCAL_LLM_DIR, "srcRemote": os.path.basename(dflash_gguf), "dstFs": f"gdrive:{REMOTE_LLM_DIR}", "dstRemote": os.path.basename(dflash_gguf)}, max_wait=300, label="Backup DFlash2")
                 log_event(f"Cached {MODEL_SUBDIR} weights to Google Drive backup in background!", category="RCLONE", level="SUCCESS")
             except Exception as be:
                 log_event(f"Drive LLM backup skipped: {be}", category="RCLONE", level="WARN")
@@ -1294,8 +1321,18 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
         "--chat-template-kwargs", '{"enable_thinking":false}',
     ]
 
-    # Only pass draft-mtp when NOT 8B and when vision mmproj is not loaded
-    if PROFILE_ID in ("LLM_QWEN_TEXT_TURBO", "LLM_QWEN_VLM") and not mmproj_gguf:
+    # DFlash2 Speculative Decoding (per MO updated.md)
+    if dflash_gguf and os.path.exists(dflash_gguf):
+        ll_cmd.extend([
+            "-md", dflash_gguf,
+            "--spec-type", "draft-dflash",
+            "--spec-draft-n-max", "5",
+            "-ngld", "99",
+            "-devd", "CUDA1",
+            "-ctkd", "q8_0", "-ctvd", "q8_0",
+        ])
+        log_event(f"DFlash2 speculative drafter ACTIVE on CUDA1: {os.path.basename(dflash_gguf)} (n_max=5, -ngld 99)", category="LLAMA", level="SUCCESS")
+    elif PROFILE_ID in ("LLM_QWEN_TEXT_TURBO", "LLM_QWEN_VLM") and not mmproj_gguf:
         ll_cmd.extend(["--spec-type", "draft-mtp", "--spec-draft-n-max", "2"])
         log_event("Embedded MTP speculative decoding ACTIVE (--spec-type draft-mtp, n=2)", category="SYSTEM", level="SUCCESS")
 
@@ -1307,7 +1344,7 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
     mode_label = (
         "Qwen 8B Fast Vision (~45-60 tok/s)" if is_fast_8b
         else ("Qwen 35B-A3B Vision MoE (~35-55 tok/s)" if is_moe_35b
-        else ("Vision + LLM (~16 tok/s)" if is_vlm_27b else "Ultra Text Turbo"))
+        else (("Vision + DFlash2 (~35-45 tok/s)" if dflash_gguf else "Vision + LLM (~16 tok/s)") if is_vlm_27b else "Ultra Text Turbo"))
     )
     log_event(f"Launched llama-server ({mode_label}, 2x T4 split) -> 127.0.0.1:8190 ({os.path.basename(model_gguf)})", category="SYSTEM")
 
