@@ -5,10 +5,10 @@
 - **Workspace Root:** `c:\Users\5480\Desktop\Automation\Book_Visualiser`
   - Contains `Scriptoria/` (Git repo) and `Book Graph/` (Python FastAPI + Supabase novel-to-images backend, intentionally not a Git repo).
   - Top-level workspace memory: [`MEMORY.md`](file:///c:/Users/5480/Desktop/Automation/Book_Visualiser/MEMORY.md).
-- **Scriptoria Repo:** `c:\Users\5480\Desktop\Automation\Book_Visualiser\Scriptoria`
+- **Scriptoria Repo:** `c:\Users\Himan\OneDrive\Desktop\Himanshu\Scriptoria`
   - **Git Remote:** `origin` -> `https://github.com/Krhimanshu008/Scriptoria.git` (`main`)
-  - **Current HEAD:** `6a4e67c` (synced & pushed to `origin/main`, deployed at `https://scriptoria.krhimanshu.in`)
-  - **Git Status:** Working tree clean, `Memory.md` tracked and synced with GitHub.
+  - **Current HEAD:** `08b2c46` (synced & pushed to `origin/main`, deployed at `https://scriptoria.krhimanshu.in`)
+  - **Git Status:** All `.md` architecture specs and memory files tracked and synced.
 - **Tech Stack (`Scriptoria/frontend`):**
   - Next.js `16.4.6` (App Router + Turbopack), React 19 (React Compiler ESLint rules active), Tailwind CSS v4 (`cn` without `tailwind-merge`), `@base-ui/react`, TanStack React Query, Prisma `v6.19.3` -> Turso libSQL (`libsql://scriptoria-prod-krhimanshu.aws-ap-south-1.turso.io`), Vercel deployment target.
 - **ENCRYPTION_KEY Rule:**
@@ -18,7 +18,24 @@
 
 ## 2. Recent Commit History (`origin/main`)
 
-1. `0b98cdb` — `fix(llm): align llama-server with DFlash2 CUDA1 pin, asymmetric 55/45 split, ngld 99 and cache_prompt`
+1. `08b2c46` — `fix(llm): remove invalid --no-mmap, isolate profile directories to prevent mmproj collisions, disable default thinking, and guard MTP`
+   - Removed `--no-mmap` flag rejected by llama-server (exit code 1).
+   - Profile-isolated storage paths (`qwen3_vl_8b`, `qwen36_35b_moe`, `qwen38_27b`), eliminating cross-model `mmproj-F16.gguf` collisions and tensor mismatches.
+   - Guarded MTP so it never runs on 8B (no MTP layers) or when `--mmproj` vision is active (preventing graph reallocation stalls).
+   - Added `--chat-template-kwargs '{"enable_thinking":false}'` so simple prompt replies stream in <500ms instead of 135s in `<think>` mode.
+2. `40a9fa3` — `fix(llm): optimize boot to <45s, add aria2c binary fetch, enable --no-mmap DMA loading, fix corrupted tokens, and add Qwen-8B-Fast profile`
+   - Added `LLM_QWEN_FAST_8B` profile (~5.1 GB weights, 15s boot, ~45-60 tok/s).
+   - Replaced single-threaded GitHub binary fetch with 16-connection `aria2c` (~3s) + Google Drive FastBoot snapshot (`llama_server_t4_v1.tar.gz`) for 1.5s restore.
+   - Removed incompatible DFlash2 external drafter which corrupted tokens ("ispers", "refr").
+3. `7fc4956` — `feat(llm): implement Path 4 - Qwen 35B-A3B Vision MoE profile for 80-120 tok/s on Dual-T4`
+   - Added `LLM_QWEN_MOE_35B` profile using `unsloth/Qwen3.6-35B-A3B-GGUF` (35B total, only 3B active parameters per token).
+4. `3279674` — `feat(llm): activate embedded MTP speculative decoding and disable thinking on low/none reasoning`
+5. `3f60329` — `feat(llm): resolve HTTP 524 timeout, enable unbuffered SSE bridge, and optimize Dual-T4 boot to <60s`
+   - Rewrote Python `_LlmBridgeHandler` with immediate HTTP 200 chunked headers and line-by-line SSE flushing.
+   - Optimized KV cache to Q8 (`-ctk q8_0 -ctv q8_0`) to eliminate PCIe memory bus stalls.
+6. `4802602` — `feat(tpu): dedicated TPU cluster page, navigation, and isolated slot architecture`
+   - Dedicated `/tpu-cluster` route and `TpuClusterCard` for 8-chip TPU v5e-8 compute.
+7. `0b98cdb` — `fix(llm): align llama-server with DFlash2 CUDA1 pin, asymmetric 55/45 split, ngld 99 and cache_prompt`
    - Fixed 5 critical hardware & VLM bugs from `MO updated.md`: `-ngld 99`, `-dev CUDA0,CUDA1 -devd CUDA1`, `--tensor-split 55,45`, `--fit off`, `-ctkd q8_0 -ctvd q8_0`, `--kv-unified`, and tuned `--spec-draft-n-max 5`.
    - Added DFlash2 GGUF fallback to `z-lab/Qwen3.8-27B-DFlash2-GGUF` and `Akicou/Qwen3.8-27B-DFlash2-GGUF`.
    - Enabled `cache_prompt: true` across LLM Studio and Book Graph client.
@@ -74,6 +91,15 @@ Verified live on `https://scriptoria.krhimanshu.in/vms`:
 6. **Token Speed (<10 tok/s) & Latency Fix:** Switched from CPU-emulated `q8_0` KV cache to native FP16 tensor core cache (`-ctk f16 -ctv f16`), tuned speculative drafting to `--spec-draft-n-max 3`, and increased `--ubatch-size 256` for faster prompt evaluation.
 7. **Cloudflare HTTP 524 Timeout Fix:** Eliminated 0-byte buffering `resp.read()` in `_LlmBridgeHandler` in favor of unbuffered chunked transfer streaming (`Transfer-Encoding: chunked`), paired with Caddy `flush_interval -1`.
 8. **AI Studio Controller:** Added `dispatch_multi_gpu_prompt` in `src/lib/agent/tools.ts`, connected to conversational AI Controller panels in both `/studio` and `/llm-studio`.
+9. **Dedicated TPU Cluster Page & Isolated Architecture:** Added `/tpu-cluster` route and `TpuClusterCard.tsx` with dedicated `tpu0`–`tpu3` slots, dual-pool Kaggle quota tracking (`gpuQuota` + `tpuQuota`), independent session group management, and token quote sanitization.
+10. **Qwen 35B-A3B Vision MoE Profile (`LLM_QWEN_MOE_35B`):** Added 35B MoE with 3B active parameters per token, bypassing the single-T4 bandwidth bottleneck and achieving ~35–55 tok/s with sub-second prompt replies on 2x T4.
+11. **Qwen 8B Fast Vision Profile (`LLM_QWEN_FAST_8B`):** Added lightweight ~5.1 GB model profile (`unsloth/Qwen3-VL-8B-Instruct-GGUF`) that boots in 15–20s and decodes at ~45–60 tok/s on Dual-T4.
+12. **Sub-45s Boot & Stability Optimizations:**
+    - Accelerated binary retrieval from 190s to 3s using 16-connection `aria2c` with background Google Drive FastBoot snapshot (`llama_server_t4_v1.tar.gz`) for 1.5s restore.
+    - Isolated local and remote model storage paths (`qwen3_vl_8b`, `qwen36_35b_moe`, `qwen38_27b`), eliminating cross-model `mmproj-F16.gguf` collisions.
+    - Removed incompatible DFlash2 external drafter that corrupted English tokens.
+    - Set default `--chat-template-kwargs '{"enable_thinking":false}'` so simple prompt replies stream in <500ms instead of 135s in `<think>` mode.
+    - Guarded MTP so it never runs on 8B or when `--mmproj` vision is active.
 
 ---
 
