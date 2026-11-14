@@ -1348,30 +1348,33 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
         ctx_size = "16384"
 
     WORKER_PROCS = {}
-    WORKER_LOCK = threading.Lock()
+    WORKER_LOCK = threading.RLock()
     WORKER_STATE = {"status": "STARTING", "profile": PROFILE_ID}
+
+    def _stop_llm_workers_unlocked():
+        for k, p in list(WORKER_PROCS.items()):
+            try:
+                p.terminate()
+                p.wait(timeout=2)
+            except Exception:
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+        WORKER_PROCS.clear()
+        subprocess.run(["pkill", "-9", "-f", "llama-server"], check=False)
+        time.sleep(0.5)
+        WORKER_STATE["status"] = "STOPPED"
+        log_event("LLM worker processes stopped & VRAM cleared.", category="SYSTEM", level="WARN")
 
     def stop_llm_workers():
         with WORKER_LOCK:
-            for k, p in list(WORKER_PROCS.items()):
-                try:
-                    p.terminate()
-                    p.wait(timeout=2)
-                except Exception:
-                    try:
-                        p.kill()
-                    except Exception:
-                        pass
-            WORKER_PROCS.clear()
-            subprocess.run(["pkill", "-9", "-f", "llama-server"], check=False)
-            time.sleep(0.5)
-            WORKER_STATE["status"] = "STOPPED"
-            log_event("LLM worker processes stopped & VRAM cleared.", category="SYSTEM", level="WARN")
+            _stop_llm_workers_unlocked()
 
     def start_llm_workers(target_profile=None):
         global PROFILE_ID, is_moe_35b, is_fast_8b, is_vlm_27b, model_gguf, mmproj_gguf, mode_label
         with WORKER_LOCK:
-            stop_llm_workers()
+            _stop_llm_workers_unlocked()
             if target_profile:
                 PROFILE_ID = target_profile
                 WORKER_STATE["profile"] = target_profile
@@ -1458,9 +1461,13 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
     start_llm_workers()
 
     def _tail_llama_log(log_path, label):
-        time.sleep(2)
+        t0 = time.time()
+        while time.time() - t0 < 30 and not os.path.exists(log_path):
+            time.sleep(0.5)
+        if not os.path.exists(log_path):
+            return
         try:
-            with open(log_path, "r") as lf:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as lf:
                 while True:
                     line = lf.readline()
                     if line:
