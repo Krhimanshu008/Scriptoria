@@ -73,7 +73,7 @@ interface TurnMessage {
   };
 }
 
-type StudioMode = "chat" | "json" | "vision_qa";
+type StudioMode = "chat" | "json" | "vision_qa" | "swarm_arena";
 type ThinkingLevel = "none" | "low" | "medium" | "high";
 
 const DEFAULT_JSON_SCHEMA = JSON.stringify(
@@ -137,6 +137,7 @@ export function LlmStudioTab() {
     "You are the Book Visualiser & Scriptoria Neuro-Symbolic Co-Director."
   );
   const [jsonSchema, setJsonSchema] = useState(DEFAULT_JSON_SCHEMA);
+  const [selectedService, setSelectedService] = useState<"default" | "extract" | "tag" | "qc" | "rag">("default");
   const [promptInput, setPromptInput] = useState("");
   const [attachedImages, setAttachedImages] = useState<string[]>([]);
   const [turns, setTurns] = useState<TurnMessage[]>(() => {
@@ -183,8 +184,54 @@ export function LlmStudioTab() {
     }
   }
 
-  function applyPreset(kind: "json_test" | "vision_qa" | "beat_shots") {
-    if (kind === "json_test") {
+  function applyPreset(kind: "json_test" | "vision_qa" | "beat_shots" | "swarm_test" | "fast_extract" | "cpm_tag") {
+    if (kind === "swarm_test") {
+      setMode("swarm_arena");
+      setReasoningEffort("none");
+      setSystemPrompt("Novel Scene Multi-Model Swarm Arena");
+      setPromptInput(
+        "Chapter 1: The blizzard howled across the jagged obsidian ridges. Sunny pulled his tattered dark grey cloak tighter around his trembling shoulders. His silver hair was caked with frost, and the jagged scar carving across his left cheek burned bitterly. Beside him, Nephis held her pristine silver rapier."
+      );
+    } else if (kind === "fast_extract") {
+      setMode("json");
+      setSelectedService("extract");
+      setReasoningEffort("none");
+      setSystemPrompt("You are the Fast Knowledge Extractor. Extract novel characters, state tags, and weapons into JSON.");
+      setJsonSchema(
+        JSON.stringify(
+          {
+            type: "object",
+            properties: {
+              characters: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    name: { type: "string" },
+                    scar: { type: "string" },
+                    clothing: { type: "string" },
+                    weapon: { type: "string" },
+                  },
+                  required: ["name", "scar", "clothing", "weapon"],
+                },
+              },
+            },
+            required: ["characters"],
+          },
+          null,
+          2
+        )
+      );
+      setPromptInput(
+        "Extract entities: Sunny pulled his tattered dark grey cloak tighter around his trembling shoulders. His silver hair was caked with frost, and the jagged scar carving across his left cheek burned bitterly in the sub-zero chill. Beside him, Nephis held her pristine silver rapier."
+      );
+    } else if (kind === "cpm_tag") {
+      setMode("vision_qa");
+      setSelectedService("tag");
+      setReasoningEffort("none");
+      setSystemPrompt("You are the Ultra Visual Tagger. Tag location, lighting, camera angle, and character outfit.");
+      setPromptInput("Identify the setting, weather, character appearance tags, and camera framing from this shot.");
+    } else if (kind === "json_test") {
       setMode("json");
       setReasoningEffort("none");
       setSystemPrompt("Return strict JSON validating character state continuity.");
@@ -406,6 +453,107 @@ export function LlmStudioTab() {
       }
     }
 
+    if (mode === "swarm_arena") {
+      try {
+        const payloadBase = {
+          messages: nextTurns.map((t) => ({
+            role: t.role,
+            content: t.content,
+            imageDataUrls: t.imageDataUrls,
+          })),
+          fallbackToVault,
+        };
+
+        const [p4b, pcpm, p9b] = await Promise.allSettled([
+          fetch("/api/llm-studio/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              ...payloadBase,
+              systemPrompt: "You are the Fast Knowledge Extractor. Extract novel characters, state tags, and weapons directly into concise JSON.",
+              mode: "json",
+              reasoningEffort: "none",
+              targetService: "extract",
+            }),
+          }).then((r) => r.json()),
+          fetch("/api/llm-studio/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              ...payloadBase,
+              systemPrompt: "You are the Ultra Visual Tagger. Tag location, lighting, camera framing, and outfit concisely.",
+              mode: "chat",
+              reasoningEffort: "none",
+              targetService: "tag",
+            }),
+          }).then((r) => r.json()),
+          fetch("/api/llm-studio/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              ...payloadBase,
+              systemPrompt: "You are the Gate-3 QC Architect. Audit consistency, check lore, and reason through potential discrepancies.",
+              mode: "chat",
+              reasoningEffort: "low",
+              targetService: "qc",
+            }),
+          }).then((r) => r.json()),
+        ]);
+
+        const turnsToAdd: TurnMessage[] = [];
+        if (p4b.status === "fulfilled" && p4b.value?.answer) {
+          turnsToAdd.push({
+            id: `a-4b-${Date.now()}`,
+            role: "assistant",
+            content: p4b.value.answer,
+            meta: {
+              source: "Qwen3.5-4B Extractor (:8191)",
+              model: "qwen3.5-4b",
+              latencyMs: p4b.value.latencyMs || 0,
+              tokPerSec: p4b.value.tokPerSec || null,
+              completionTokens: p4b.value.usage?.completion_tokens,
+            },
+          });
+        }
+        if (pcpm.status === "fulfilled" && pcpm.value?.answer) {
+          turnsToAdd.push({
+            id: `a-cpm-${Date.now()}`,
+            role: "assistant",
+            content: pcpm.value.answer,
+            meta: {
+              source: "MiniCPM-V 4.7-1B Tagger (:8192)",
+              model: "minicpm-v-1b",
+              latencyMs: pcpm.value.latencyMs || 0,
+              tokPerSec: pcpm.value.tokPerSec || null,
+              completionTokens: pcpm.value.usage?.completion_tokens,
+            },
+          });
+        }
+        if (p9b.status === "fulfilled" && p9b.value?.answer) {
+          turnsToAdd.push({
+            id: `a-9b-${Date.now()}`,
+            role: "assistant",
+            content: p9b.value.answer,
+            thinking: p9b.value.thinking,
+            meta: {
+              source: "Qwen3.5-9B QC VLM (:8190)",
+              model: "qwen3.5-9b",
+              latencyMs: p9b.value.latencyMs || 0,
+              tokPerSec: p9b.value.tokPerSec || null,
+              completionTokens: p9b.value.usage?.completion_tokens,
+            },
+          });
+        }
+        setTurns((prev) => [...prev, ...turnsToAdd]);
+        toast.success(`Swarm complete (${turnsToAdd.length} models finished in parallel)`);
+      } catch (err) {
+        toast.error("Parallel swarm dispatch failed");
+      } finally {
+        setSending(false);
+      }
+      return;
+    }
+
     try {
       const res = await fetch("/api/llm-studio/chat", {
         method: "POST",
@@ -423,6 +571,7 @@ export function LlmStudioTab() {
           temperature,
           maxTokens,
           fallbackToVault,
+          targetService: selectedService,
         }),
       });
 
@@ -691,12 +840,13 @@ export function LlmStudioTab() {
             <>
 
           {/* Mode Tabs */}
-          <div className="grid grid-cols-3 gap-1 rounded-md border border-zinc-800 bg-zinc-950 p-1 text-[11px]">
+          <div className="grid grid-cols-4 gap-1 rounded-md border border-zinc-800 bg-zinc-950 p-1 text-[11px]">
             {(
               [
                 { id: "chat", label: "Chat" },
                 { id: "json", label: "JSON" },
                 { id: "vision_qa", label: "VLM QA" },
+                { id: "swarm_arena", label: "⚡ Swarm" },
               ] as const
             ).map((m) => (
               <button
@@ -705,7 +855,7 @@ export function LlmStudioTab() {
                 onClick={() => setMode(m.id)}
                 className={`rounded py-1 font-medium transition ${
                   mode === m.id
-                    ? "bg-indigo-600 text-white"
+                    ? "bg-indigo-600 text-white shadow-sm"
                     : "text-zinc-400 hover:text-zinc-200"
                 }`}
               >
@@ -714,12 +864,62 @@ export function LlmStudioTab() {
             ))}
           </div>
 
+          {/* Target Service Selector */}
+          <div className="space-y-1">
+            <div className="flex items-center justify-between text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+              <span>Target Service / Port</span>
+              <span className="font-mono text-indigo-400">
+                {selectedService === "extract"
+                  ? ":8191 (4B)"
+                  : selectedService === "tag"
+                  ? ":8192 (1B)"
+                  : selectedService === "qc"
+                  ? ":8190 (9B)"
+                  : selectedService === "rag"
+                  ? ":8193 (RAG)"
+                  : "Auto / QC"}
+              </span>
+            </div>
+            <select
+              value={selectedService}
+              onChange={(e) => setSelectedService(e.target.value as any)}
+              disabled={mode === "swarm_arena"}
+              className="h-8 w-full rounded border border-zinc-800 bg-zinc-950 px-2 font-mono text-[11px] text-zinc-200 disabled:opacity-50"
+            >
+              <option value="default">Auto / Gate-3 QC (Qwen3.5-9B · :8190)</option>
+              <option value="extract">Fast Passage Extractor (Qwen3.5-4B · :8191)</option>
+              <option value="tag">Ultra Visual Tagger & OCR (MiniCPM-V 1B · :8192)</option>
+              <option value="rag">Lore RAG & Reranker (Qwen3-0.6B · :8193)</option>
+            </select>
+          </div>
+
           {/* One-Click Presets */}
           <div className="space-y-1.5">
             <div className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
               Quick Test Presets
             </div>
             <div className="flex flex-wrap gap-1.5">
+              <button
+                type="button"
+                onClick={() => applyPreset("swarm_test")}
+                className="rounded border border-indigo-700/60 bg-indigo-950/40 px-2 py-1 text-[11px] text-indigo-300 hover:border-indigo-500 hover:text-white"
+              >
+                ⚡ Swarm 3x Parallel
+              </button>
+              <button
+                type="button"
+                onClick={() => applyPreset("fast_extract")}
+                className="rounded border border-emerald-800/60 bg-emerald-950/40 px-2 py-1 text-[11px] text-emerald-300 hover:border-emerald-500 hover:text-white"
+              >
+                4B Chapter Extraction
+              </button>
+              <button
+                type="button"
+                onClick={() => applyPreset("cpm_tag")}
+                className="rounded border border-amber-800/60 bg-amber-950/40 px-2 py-1 text-[11px] text-amber-300 hover:border-amber-500 hover:text-white"
+              >
+                1B Visual Tag & OCR
+              </button>
               <button
                 type="button"
                 onClick={() => applyPreset("json_test")}

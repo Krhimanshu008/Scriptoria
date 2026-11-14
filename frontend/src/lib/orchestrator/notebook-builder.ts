@@ -720,7 +720,7 @@ with open("/tmp/Caddyfile", "w", encoding="utf-8") as f:
     f.write(f"""(sc_dispatch) {{
     @has_header header X-Target-Port *
     handle @has_header {{
-        @badport not header_regexp X-Target-Port ^(8188|8189|8190|5572|9999)$
+        @badport not header_regexp X-Target-Port ^(8188|8189|8190|8191|8192|8193|8194|5572|9999)$
         handle @badport {{
             respond "Invalid Target Port" 400
         }}
@@ -978,12 +978,15 @@ rclone_ok = setup_rclone()
 # -------------------------------------------------------------
 # 3B. Dedicated LLM Nodes (LLM_QWEN_VLM, LLM_QWEN_TEXT_TURBO, LLM_QWEN_MOE_35B & LLM_QWEN_FAST_8B on Dual-T4)
 # -------------------------------------------------------------
-if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B"):
+if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B", "LLM_LIGHTWEIGHT_SWARM"):
     import http.client as _hc
     from http.server import ThreadingHTTPServer as _THS, BaseHTTPRequestHandler as _BHRH
     from pathlib import Path
 
-    if PROFILE_ID == "LLM_QWEN_FAST_8B":
+    if PROFILE_ID == "LLM_LIGHTWEIGHT_SWARM":
+        LLM_MODEL_REPO = "unsloth/Qwen3.5-9B-GGUF"
+        MODEL_SUBDIR = "qwen35_swarm"
+    elif PROFILE_ID == "LLM_QWEN_FAST_8B":
         LLM_MODEL_REPO = os.environ.get("QWEN_MODEL_REPO", "unsloth/Qwen3-VL-8B-Instruct-GGUF")
         MODEL_SUBDIR = "qwen3_vl_8b"
     elif PROFILE_ID == "LLM_QWEN_MOE_35B":
@@ -1156,6 +1159,21 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
 
     def _resolve_qwen_ggufs():
         from pathlib import Path as _P
+        if PROFILE_ID == "LLM_LIGHTWEIGHT_SWARM":
+            log_event("Resolving 5-Model Swarm weights (9B QC, 4B Extractor, MiniCPM-V 1B)...", category="SYSTEM")
+            q9_dir = f"{LOCAL_LLM_DIR}/qwen9b"
+            q4_dir = f"{LOCAL_LLM_DIR}/qwen4b"
+            cpm_dir = f"{LOCAL_LLM_DIR}/cpm1b"
+            os.makedirs(q9_dir, exist_ok=True)
+            os.makedirs(q4_dir, exist_ok=True)
+            os.makedirs(cpm_dir, exist_ok=True)
+            m9 = _fast_download_hf("unsloth/Qwen3.5-9B-GGUF", "Qwen3.5-9B-Q4_K_M.gguf", q9_dir, label="Qwen 9B QC")
+            mm9 = _fast_download_hf("unsloth/Qwen3.5-9B-GGUF", "mmproj-F16.gguf", q9_dir, label="Qwen 9B mmproj")
+            _fast_download_hf("unsloth/Qwen3.5-4B-GGUF", "Qwen3.5-4B-Q4_K_M.gguf", q4_dir, label="Qwen 4B Extractor")
+            _fast_download_hf("unsloth/Qwen3.5-4B-GGUF", "mmproj-F16.gguf", q4_dir, label="Qwen 4B mmproj")
+            _fast_download_hf("openbmb/MiniCPM-V-4.7-1B-gguf", "MiniCPM-V-4.7-1B-Q4_K_M.gguf", cpm_dir, label="MiniCPM-V 1B")
+            return m9, mm9, True
+
         needs_vision = (PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B"))
         is_moe_35b = (PROFILE_ID == "LLM_QWEN_MOE_35B")
         is_fast_8b = (PROFILE_ID == "LLM_QWEN_FAST_8B")
@@ -1303,50 +1321,101 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
         t_split = "50,50"
         ctx_size = "16384"
 
-    ll_cmd = [
-        llama_bin, "-m", model_gguf, "--host", "127.0.0.1", "--port", "8190",
-        "-ngl", "999",
-        "-dev", "CUDA0,CUDA1",
-        "--split-mode", "layer",
-        "--tensor-split", t_split,
-        "--fit", "off",
-        "--flash-attn", "on",
-        "--ctx-size", ctx_size,
-        "-ctk", "q8_0", "-ctv", "q8_0",
-        "--batch-size", "512",
-        "--ubatch-size", "256",
-        "--parallel", "1",
-        "--kv-unified",
-        "--jinja",
-        "--chat-template-kwargs", '{"enable_thinking":false}',
-    ]
+    if PROFILE_ID == "LLM_LIGHTWEIGHT_SWARM":
+        q4_dir = f"{LOCAL_LLM_DIR}/q4b"
+        cpm_dir = f"{LOCAL_LLM_DIR}/cpm1b"
+        m4_path = f"{q4_dir}/Qwen3.5-4B-Q4_K_M.gguf"
+        mm4_path = f"{q4_dir}/mmproj-F16.gguf"
+        cpm_path = f"{cpm_dir}/MiniCPM-V-4.7-1B-Q4_K_M.gguf"
 
-    # DFlash2 Speculative Decoding (per MO updated.md)
-    if dflash_gguf and os.path.exists(dflash_gguf):
-        ll_cmd.extend([
-            "-md", dflash_gguf,
-            "--spec-type", "draft-dflash",
-            "--spec-draft-n-max", "5",
-            "-ngld", "99",
-            "-devd", "CUDA1",
-            "-ctkd", "q8_0", "-ctvd", "q8_0",
-        ])
-        log_event(f"DFlash2 speculative drafter ACTIVE on CUDA1: {os.path.basename(dflash_gguf)} (n_max=5, -ngld 99)", category="LLAMA", level="SUCCESS")
-    elif PROFILE_ID in ("LLM_QWEN_TEXT_TURBO", "LLM_QWEN_VLM") and not mmproj_gguf:
-        ll_cmd.extend(["--spec-type", "draft-mtp", "--spec-draft-n-max", "2"])
-        log_event("Embedded MTP speculative decoding ACTIVE (--spec-type draft-mtp, n=2)", category="SYSTEM", level="SUCCESS")
+        # 1. Qwen3.5-9B on CUDA 0 (:8190)
+        cmd_9b = [
+            llama_bin, "-m", model_gguf, "--host", "127.0.0.1", "--port", "8190",
+            "-ngl", "99", "--flash-attn", "on", "-c", "16384",
+            "-ctk", "f16", "-ctv", "f16",
+            "--batch-size", "512", "--ubatch-size", "256",
+            "--parallel", "1", "--jinja",
+        ]
+        if mmproj_gguf:
+            cmd_9b.extend(["--mmproj", mmproj_gguf])
+        env_9b = ll_env.copy()
+        env_9b["CUDA_VISIBLE_DEVICES"] = "0"
+        ll_proc = subprocess.Popen(cmd_9b, env=env_9b, stdout=open("/tmp/llama_server.log", "w"), stderr=subprocess.STDOUT)
+        log_event("Launched Qwen3.5-9B QC VLM -> CUDA:0 (:8190)", category="SYSTEM", level="SUCCESS")
 
-    if mmproj_gguf and PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B"):
-        ll_cmd.extend(["--mmproj", mmproj_gguf])
-        log_event(f"Multimodal vision ACTIVE on CUDA1: {os.path.basename(mmproj_gguf)}", category="SYSTEM", level="SUCCESS")
-    ll_log = open("/tmp/llama_server.log", "w")
-    ll_proc = subprocess.Popen(ll_cmd, env=ll_env, stdout=ll_log, stderr=ll_log)
-    mode_label = (
-        "Qwen 8B Fast Vision (~45-60 tok/s)" if is_fast_8b
-        else ("Qwen 35B-A3B Vision MoE (~35-55 tok/s)" if is_moe_35b
-        else (("Vision + DFlash2 (~35-45 tok/s)" if dflash_gguf else "Vision + LLM (~16 tok/s)") if is_vlm_27b else "Ultra Text Turbo"))
-    )
-    log_event(f"Launched llama-server ({mode_label}, 2x T4 split) -> 127.0.0.1:8190 ({os.path.basename(model_gguf)})", category="SYSTEM")
+        # 2. Qwen3.5-4B on CUDA 1 (:8191) w/ Prompt Lookup
+        cmd_4b = [
+            llama_bin, "-m", m4_path, "--host", "127.0.0.1", "--port", "8191",
+            "-ngl", "99", "--flash-attn", "on", "-c", "8192",
+            "-ctk", "f16", "-ctv", "f16",
+            "--batch-size", "512", "--ubatch-size", "256",
+            "--lookup-cache",
+            "--chat-template-kwargs", '{"enable_thinking":false}',
+            "--parallel", "1", "--jinja",
+        ]
+        if os.path.exists(mm4_path):
+            cmd_4b.extend(["--mmproj", mm4_path])
+        env_4b = ll_env.copy()
+        env_4b["CUDA_VISIBLE_DEVICES"] = "1"
+        subprocess.Popen(cmd_4b, env=env_4b, stdout=open("/tmp/llama_4b.log", "w"), stderr=subprocess.STDOUT)
+        log_event("Launched Qwen3.5-4B Fast Extractor -> CUDA:1 (:8191)", category="SYSTEM", level="SUCCESS")
+
+        # 3. MiniCPM-V 4.7-1B on CUDA 1 (:8192)
+        cmd_cpm = [
+            llama_bin, "-m", cpm_path, "--host", "127.0.0.1", "--port", "8192",
+            "-ngl", "99", "--flash-attn", "on", "-c", "4096",
+            "--batch-size", "256", "--ubatch-size", "128",
+            "--parallel", "1",
+        ]
+        env_cpm = ll_env.copy()
+        env_cpm["CUDA_VISIBLE_DEVICES"] = "1"
+        subprocess.Popen(cmd_cpm, env=env_cpm, stdout=open("/tmp/llama_cpm.log", "w"), stderr=subprocess.STDOUT)
+        log_event("Launched MiniCPM-V 4.7-1B Tagger -> CUDA:1 (:8192)", category="SYSTEM", level="SUCCESS")
+    else:
+        ll_cmd = [
+            llama_bin, "-m", model_gguf, "--host", "127.0.0.1", "--port", "8190",
+            "-ngl", "999",
+            "-dev", "CUDA0,CUDA1",
+            "--split-mode", "layer",
+            "--tensor-split", t_split,
+            "--fit", "off",
+            "--flash-attn", "on",
+            "--ctx-size", ctx_size,
+            "-ctk", "q8_0", "-ctv", "q8_0",
+            "--batch-size", "512",
+            "--ubatch-size", "256",
+            "--parallel", "1",
+            "--kv-unified",
+            "--jinja",
+            "--chat-template-kwargs", '{"enable_thinking":false}',
+        ]
+
+        # DFlash2 Speculative Decoding (per MO updated.md)
+        if dflash_gguf and os.path.exists(dflash_gguf):
+            ll_cmd.extend([
+                "-md", dflash_gguf,
+                "--spec-type", "draft-dflash",
+                "--spec-draft-n-max", "5",
+                "-ngld", "99",
+                "-devd", "CUDA1",
+                "-ctkd", "q8_0", "-ctvd", "q8_0",
+            ])
+            log_event(f"DFlash2 speculative drafter ACTIVE on CUDA1: {os.path.basename(dflash_gguf)} (n_max=5, -ngld 99)", category="LLAMA", level="SUCCESS")
+        elif PROFILE_ID in ("LLM_QWEN_TEXT_TURBO", "LLM_QWEN_VLM") and not mmproj_gguf:
+            ll_cmd.extend(["--spec-type", "draft-mtp", "--spec-draft-n-max", "2"])
+            log_event("Embedded MTP speculative decoding ACTIVE (--spec-type draft-mtp, n=2)", category="SYSTEM", level="SUCCESS")
+
+        if mmproj_gguf and PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B"):
+            ll_cmd.extend(["--mmproj", mmproj_gguf])
+            log_event(f"Multimodal vision ACTIVE on CUDA1: {os.path.basename(mmproj_gguf)}", category="SYSTEM", level="SUCCESS")
+        ll_log = open("/tmp/llama_server.log", "w")
+        ll_proc = subprocess.Popen(ll_cmd, env=ll_env, stdout=ll_log, stderr=ll_log)
+        mode_label = (
+            "Qwen 8B Fast Vision (~45-60 tok/s)" if is_fast_8b
+            else ("Qwen 35B-A3B Vision MoE (~35-55 tok/s)" if is_moe_35b
+            else (("Vision + DFlash2 (~35-45 tok/s)" if dflash_gguf else "Vision + LLM (~16 tok/s)") if is_vlm_27b else "Ultra Text Turbo"))
+        )
+        log_event(f"Launched llama-server ({mode_label}, 2x T4 split) -> 127.0.0.1:8190 ({os.path.basename(model_gguf)})", category="SYSTEM")
 
     def _tail_llama_log():
         time.sleep(2)
@@ -1402,14 +1471,50 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                 self.end_headers()
                 self.wfile.write(body)
                 return
+            if self.path in ("/v1/swarm/health", "/v1/swarm/status"):
+                status_dict = {}
+                for sp, sn in [(8190, "qc_9b"), (8191, "extract_4b"), (8192, "tag_1b")]:
+                    try:
+                        with urllib.request.urlopen(f"http://127.0.0.1:{sp}/health", timeout=1) as hr:
+                            status_dict[sn] = (hr.status == 200)
+                    except Exception:
+                        status_dict[sn] = False
+                body = json.dumps({"status": "ok", "services": status_dict, "devices": _query_nvidia_smi()}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             length = int(self.headers.get("Content-Length", "0") or 0)
             req_body = self.rfile.read(length) if length > 0 else None
             fwd_hdrs = {k: v for k, v in self.headers.items() if k.lower() not in {"host", "content-length"}}
             if req_body is not None:
                 fwd_hdrs["Content-Length"] = str(len(req_body))
-            conn = _hc.HTTPConnection("127.0.0.1", 8190, timeout=300)
+
+            target_port = 8190
+            target_path = self.path
+            hdr_svc = (self.headers.get("X-Target-Service") or "").lower().strip()
+            if hdr_svc == "extract" or self.path.startswith("/v1/extract"):
+                target_port = 8191
+                if self.path.startswith("/v1/extract"):
+                    target_path = "/v1" + self.path[len("/v1/extract"):]
+            elif hdr_svc == "tag" or self.path.startswith("/v1/tag"):
+                target_port = 8192
+                if self.path.startswith("/v1/tag"):
+                    target_path = "/v1" + self.path[len("/v1/tag"):]
+            elif hdr_svc == "qc" or self.path.startswith("/v1/qc"):
+                target_port = 8190
+                if self.path.startswith("/v1/qc"):
+                    target_path = "/v1" + self.path[len("/v1/qc"):]
+            elif hdr_svc == "rag" or self.path.startswith("/v1/rag"):
+                target_port = 8193
+                if self.path.startswith("/v1/rag"):
+                    target_path = self.path[len("/v1/rag"):]
+
+            conn = _hc.HTTPConnection("127.0.0.1", target_port, timeout=300)
             try:
-                conn.request(method, self.path, body=req_body, headers=fwd_hdrs)
+                conn.request(method, target_path, body=req_body, headers=fwd_hdrs)
                 resp = conn.getresponse()
                 self.send_response(resp.status)
                 ctype = resp.getheader("Content-Type", "")
@@ -1464,8 +1569,13 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
     while True:
         llm_ok = False
         try:
-            with urllib.request.urlopen("http://127.0.0.1:8190/health", timeout=2) as hr:
-                llm_ok = hr.status == 200
+            if PROFILE_ID == "LLM_LIGHTWEIGHT_SWARM":
+                with urllib.request.urlopen("http://127.0.0.1:8190/health", timeout=2) as hr0:
+                    with urllib.request.urlopen("http://127.0.0.1:8191/health", timeout=2) as hr1:
+                        llm_ok = (hr0.status == 200 and hr1.status == 200)
+            else:
+                with urllib.request.urlopen("http://127.0.0.1:8190/health", timeout=2) as hr:
+                    llm_ok = hr.status == 200
         except Exception:
             llm_ok = False
 

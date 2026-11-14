@@ -18,6 +18,7 @@ interface ChatRequestBody {
   temperature?: number;
   maxTokens?: number;
   fallbackToVault?: boolean;
+  targetService?: "qc" | "extract" | "tag" | "rag" | "default";
 }
 
 function splitThinkBlock(raw: string): { thinking: string | null; answer: string } {
@@ -64,7 +65,7 @@ export async function POST(req: NextRequest) {
       where: {
         userId: user.userId,
         workerProfile: {
-          in: ["LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B", "TPU_QWEN27B_V5E"],
+          in: ["LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B", "LLM_LIGHTWEIGHT_SWARM", "TPU_QWEN27B_V5E"],
         },
         status: "ONLINE",
       },
@@ -76,6 +77,9 @@ export async function POST(req: NextRequest) {
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
       };
+      if (body.targetService && body.targetService !== "default") {
+        headers["X-Target-Service"] = body.targetService;
+      }
       if (onlineVm.vmSecret) {
         headers["Authorization"] = `Bearer ${onlineVm.vmSecret}`;
         headers["X-VM-Secret"] = onlineVm.vmSecret;

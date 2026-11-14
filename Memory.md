@@ -18,7 +18,13 @@
 
 ## 2. Recent Commit History (`origin/main`)
 
-1. `[NEXT]` — `feat(workers): add pull-based worker lease API and activate DFlash2 speculative drafting`
+1. `[NEXT]` — `feat(llm): add LLM_LIGHTWEIGHT_SWARM profile, 5-model parallel launcher, Caddy subpath routing, and LLM Studio Swarm Arena`
+   - Added `LLM_LIGHTWEIGHT_SWARM` (`5M-SWARM`) in `worker-profiles.ts`.
+   - Multi-model orchestration in `notebook-builder.ts`: pins Qwen3.5-9B (:8190) to CUDA 0, Qwen3.5-4B (:8191 w/ prompt lookup) and MiniCPM-V 4.7-1B (:8192) to CUDA 1, plus Caddy port/subpath routing (`/v1/extract`, `/v1/tag`, `/v1/qc`, `/v1/rag`).
+   - Backend sub-endpoint routing in `/api/v1/llm-endpoint` and `/api/llm-studio/chat`.
+   - LLM Studio Swarm Arena in `LlmStudioTab.tsx` with 3-model parallel dispatch (`Promise.allSettled`), target service dropdown, quick presets, and live tok/s telemetry.
+   - Added standalone VM test suite `scripts/test_llm_swarm.py` and local bridge simulator `scripts/local_swarm_simulator.py`.
+2. `624b92d` — `feat(workers): add pull-based worker lease API and activate DFlash2 speculative drafting`
    - Added 4 pull-queue endpoints: `POST /api/v1/workers/claim` (5-min lease, capability matching, auto-reaper), `/complete`, `/fail` (with retry count), and `/heartbeat`.
    - Updated `notebook-builder.ts` with DFlash2 speculative drafter (`z-lab/Qwen3.8-27B-DFlash2-GGUF`), offloaded with `-ngld 99`, pinned to `-devd CUDA1`, `-ctkd q8_0 -ctvd q8_0`, and `--spec-draft-n-max 5`.
    - Built `Book Graph/scripts/worker.py` universal worker client with double-buffered asset prefetching and local ComfyUI dispatch.

@@ -16,7 +16,7 @@ export async function GET(req: NextRequest) {
       where: {
         userId: auth.userId,
         workerProfile: {
-          in: ["LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B", "TPU_QWEN27B_V5E"],
+          in: ["LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B", "LLM_LIGHTWEIGHT_SWARM", "TPU_QWEN27B_V5E"],
         },
       },
       orderBy: { lastHeartbeat: "desc" },
@@ -41,6 +41,12 @@ export async function GET(req: NextRequest) {
       accountAlias: onlineVm.accountAlias,
       workerProfile: onlineVm.workerProfile,
       baseUrl: `${onlineVm.publicUrl.replace(/\/$/, "")}/v1`,
+      services: onlineVm.workerProfile === "LLM_LIGHTWEIGHT_SWARM" ? {
+        extract: `${onlineVm.publicUrl.replace(/\/$/, "")}/v1/extract`,
+        tag: `${onlineVm.publicUrl.replace(/\/$/, "")}/v1/tag`,
+        qc: `${onlineVm.publicUrl.replace(/\/$/, "")}/v1/qc`,
+        rag: `${onlineVm.publicUrl.replace(/\/$/, "")}/v1/rag`,
+      } : null,
       apiKey: onlineVm.vmSecret || "EMPTY",
       gpuName: onlineVm.gpuName,
       vramTotalGb: onlineVm.vramTotalGb,

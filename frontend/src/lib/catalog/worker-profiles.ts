@@ -8,6 +8,7 @@ export type WorkerProfileId =
   | "LLM_QWEN_VLM"
   | "LLM_QWEN_TEXT_TURBO"
   | "LLM_QWEN_MOE_35B"
+  | "LLM_LIGHTWEIGHT_SWARM"
   | "TPU_QWEN27B_V5E";
 
 export interface CustomNodeSpec {
@@ -163,6 +164,15 @@ export const WORKER_PROFILES: Record<WorkerProfileId, WorkerProfileSpec> = {
     recommendedTargets: ["gpu2", "gpu3", "gpu4", "gpu5", "gpu0", "gpu1"],
     customNodes: [],
   },
+  LLM_LIGHTWEIGHT_SWARM: {
+    id: "LLM_LIGHTWEIGHT_SWARM",
+    label: "Qwen 3.5 Swarm (4B Extract + 9B QC + MiniCPM-V + RAG)",
+    shortTag: "5M-SWARM",
+    description:
+      "Parallel 5-model suite on 2× T4. Qwen3.5-4B (~95-180 tok/s extraction), MiniCPM-V 4.7-1B (~180 tok/s tagger), Qwen3.5-9B (~45 tok/s QC reasoning), and Lore RAG.",
+    recommendedTargets: ["gpu0", "gpu1", "gpu2", "gpu3", "gpu4", "gpu5"],
+    customNodes: [],
+  },
   TPU_QWEN27B_V5E: {
     id: "TPU_QWEN27B_V5E",
     label: "Qwen 27B BF16 (TPU v5e-8 · 130 tok/s · 262k)",
@@ -187,6 +197,7 @@ export function isLlmWorkerProfile(id?: string | null): boolean {
     id === "LLM_QWEN_TEXT_TURBO" ||
     id === "LLM_QWEN_MOE_35B" ||
     id === "LLM_QWEN_FAST_8B" ||
+    id === "LLM_LIGHTWEIGHT_SWARM" ||
     id === "TPU_QWEN27B_V5E"
   );
 }
