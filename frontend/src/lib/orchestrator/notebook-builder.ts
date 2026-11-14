@@ -1390,8 +1390,9 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                 cmd_9b = [
                     llama_bin, "-m", model_gguf, "--host", "127.0.0.1", "--port", "8190",
                     "-ngl", "99", "-c", "16384",
-                    "--batch-size", "512", "--ubatch-size", "256",
-                    "--parallel", "1", "--jinja",
+                    "--flash-attn", "off",
+                    "--batch-size", "256", "--ubatch-size", "128",
+                    "--parallel", "1",
                 ]
                 if mmproj_gguf:
                     cmd_9b.extend(["--mmproj", mmproj_gguf])
@@ -1404,8 +1405,9 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                 cmd_4b = [
                     llama_bin, "-m", m4_path, "--host", "127.0.0.1", "--port", "8191",
                     "-ngl", "99", "-c", "8192",
-                    "--batch-size", "512", "--ubatch-size", "256",
-                    "--parallel", "1", "--jinja",
+                    "--flash-attn", "off",
+                    "--batch-size", "256", "--ubatch-size", "128",
+                    "--parallel", "1",
                 ]
                 env_4b = ll_env.copy()
                 env_4b["CUDA_VISIBLE_DEVICES"] = "1"
