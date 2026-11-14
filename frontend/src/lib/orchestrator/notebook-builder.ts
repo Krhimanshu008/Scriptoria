@@ -1329,8 +1329,7 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
         # 1. Qwen3.5-9B on CUDA 0 (:8190)
         cmd_9b = [
             llama_bin, "-m", model_gguf, "--host", "127.0.0.1", "--port", "8190",
-            "-ngl", "99", "--flash-attn", "on", "-c", "16384",
-            "-ctk", "f16", "-ctv", "f16",
+            "-ngl", "99", "-c", "16384",
             "--batch-size", "512", "--ubatch-size", "256",
             "--parallel", "1", "--jinja",
         ]
@@ -1344,8 +1343,7 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
         # 2. Qwen3.5-4B on CUDA 1 (:8191) - Fast Text Extractor
         cmd_4b = [
             llama_bin, "-m", m4_path, "--host", "127.0.0.1", "--port", "8191",
-            "-ngl", "99", "--flash-attn", "on", "-c", "8192",
-            "-ctk", "f16", "-ctv", "f16",
+            "-ngl", "99", "-c", "8192",
             "--batch-size", "512", "--ubatch-size", "256",
             "--parallel", "1", "--jinja",
         ]
@@ -1357,7 +1355,7 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
         # 3. MiniCPM-V 4.7-1B on CUDA 1 (:8192)
         cmd_cpm = [
             llama_bin, "-m", cpm_path, "--host", "127.0.0.1", "--port", "8192",
-            "-ngl", "99", "--flash-attn", "on", "-c", "4096",
+            "-ngl", "99", "-c", "4096",
             "--batch-size", "256", "--ubatch-size", "128",
             "--parallel", "1",
         ]
