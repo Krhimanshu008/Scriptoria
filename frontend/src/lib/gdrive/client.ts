@@ -70,11 +70,23 @@ export async function getUserGDriveCredential(userId: string): Promise<ResolvedG
  * or falls back to the stored access_token if refresh metadata is absent.
  */
 export async function mintGDriveAccessToken(parsed: GDriveTokenPayload): Promise<string> {
-  if (parsed.refresh_token && parsed.client_id && parsed.client_secret) {
+  const clientId =
+    parsed.client_id ||
+    process.env.GDRIVE_CLIENT_ID ||
+    process.env.CLIENT_ID;
+  const clientSecret =
+    parsed.client_secret ||
+    process.env.GDRIVE_CLIENT_SECRET ||
+    process.env.SECRET;
+  const refreshToken =
+    parsed.refresh_token ||
+    process.env.GDRIVE_REFRESH_TOKEN;
+
+  if (refreshToken && clientId && clientSecret) {
     const body = new URLSearchParams({
-      client_id: parsed.client_id,
-      client_secret: parsed.client_secret,
-      refresh_token: parsed.refresh_token,
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: refreshToken,
       grant_type: "refresh_token",
     });
 
@@ -90,6 +102,9 @@ export async function mintGDriveAccessToken(parsed: GDriveTokenPayload): Promise
       if (data.access_token) {
         return data.access_token;
       }
+    } else {
+      const errText = await res.text().catch(() => "");
+      console.error("[mintGDriveAccessToken] OAuth token refresh failed:", res.status, errText);
     }
   }
 

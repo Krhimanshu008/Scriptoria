@@ -20,6 +20,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Menu,
+  Wrench,
 } from "lucide-react";
 import type { SessionUser } from "@/lib/auth/session";
 import type { PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
@@ -39,6 +40,7 @@ const NAV_GROUPS = [
   {
     section: "Intelligence & Studio",
     items: [
+      { href: "/testbench", label: "Pipeline Testbench", icon: Wrench },
       { href: "/visualiser-lab", label: "Pipeline Test Lab", icon: Film },
       { href: "/llm-studio", label: "LLM Studio", icon: Bot },
       { href: "/studio", label: "Studio", icon: Sparkles },
@@ -52,6 +54,7 @@ const NAV_GROUPS = [
 ];
 
 function pageTitleForPath(pathname: string): string {
+  if (pathname.startsWith("/testbench")) return "Pipeline Testbench (Checkpoints 0–5)";
   if (pathname.startsWith("/visualiser-lab")) return "Novel Visualiser Test Lab";
   if (pathname.startsWith("/llm-studio")) return "LLM Studio";
   if (pathname.startsWith("/tpu-cluster")) return "TPU Cluster (v5e-8)";
