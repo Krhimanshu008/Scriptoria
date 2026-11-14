@@ -115,6 +115,7 @@ export async function refreshAndPersistGDriveToken(
 
   let rawTokenJson = "";
   let parsed: GDriveTokenPayload = {};
+  let decryptErrorMsg = "";
   try {
     rawTokenJson = decryptSecret({
       ciphertext: cred.encryptedKey,
@@ -122,7 +123,9 @@ export async function refreshAndPersistGDriveToken(
       authTag: cred.authTag,
     });
     parsed = JSON.parse(rawTokenJson);
-  } catch {
+  } catch (err: any) {
+    decryptErrorMsg = err?.message || "Decryption failed";
+    console.error("[refreshAndPersistGDriveToken] decryptSecret failed:", decryptErrorMsg);
     parsed = {};
   }
 
@@ -144,11 +147,20 @@ export async function refreshAndPersistGDriveToken(
     process.env.GDRIVE_REFRESH_TOKEN;
 
   if (!refreshToken) {
-    throw new Error("No refresh_token found in stored credential or environment. Please re-enter credentials.");
+    if (decryptErrorMsg) {
+      throw new Error(
+        `Unable to decrypt stored Google Drive token (${decryptErrorMsg}). Ensure ENCRYPTION_KEY in Vercel environment variables matches your local environment, or click Edit to re-save credentials.`
+      );
+    }
+    throw new Error(
+      "No refresh_token found in stored credential or environment. Please click Edit to re-enter your Google Drive credentials."
+    );
   }
 
   if (!clientId || !clientSecret) {
-    throw new Error("Google OAuth client_id and client_secret are required to refresh Google Drive access tokens.");
+    throw new Error(
+      "Google OAuth client_id and client_secret are required to refresh Google Drive access tokens. Please configure GDRIVE_CLIENT_ID and GDRIVE_CLIENT_SECRET in Vercel Environment Variables or click Edit to save them."
+    );
   }
 
   const tokenParams = new URLSearchParams({

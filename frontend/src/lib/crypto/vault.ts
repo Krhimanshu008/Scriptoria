@@ -3,12 +3,17 @@ import crypto from "crypto";
 const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 16;
 
-function getEncryptionKey(): Buffer {
+function getEncryptionKeyCandidates(): Buffer[] {
   const secret = process.env.ENCRYPTION_KEY;
   if (!secret) {
     throw new Error("ENCRYPTION_KEY environment variable is not defined");
   }
-  return crypto.createHash("sha256").update(secret).digest();
+  const clean = secret.trim().replace(/^["']|["']$/g, "");
+  const keys = [crypto.createHash("sha256").update(clean).digest()];
+  if (clean !== secret.trim()) {
+    keys.push(crypto.createHash("sha256").update(secret.trim()).digest());
+  }
+  return keys;
 }
 
 export interface EncryptedPayload {
@@ -22,7 +27,8 @@ export interface EncryptedPayload {
  */
 export function encryptSecret(plainText: string): EncryptedPayload {
   const iv = crypto.randomBytes(IV_LENGTH);
-  const cipher = crypto.createCipheriv(ALGORITHM, getEncryptionKey(), iv);
+  const key = getEncryptionKeyCandidates()[0];
+  const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
 
   let encrypted = cipher.update(plainText, "utf8", "hex");
   encrypted += cipher.final("hex");
@@ -37,21 +43,33 @@ export function encryptSecret(plainText: string): EncryptedPayload {
 }
 
 /**
- * Decrypts AES-256-GCM ciphertext with authenticated integrity verification.
+ * Decrypts AES-256-GCM ciphertext with authenticated integrity verification,
+ * trying both normalized and raw encryption key variants.
  */
 export function decryptSecret(payload: EncryptedPayload): string {
-  const decipher = crypto.createDecipheriv(
-    ALGORITHM,
-    getEncryptionKey(),
-    Buffer.from(payload.iv, "hex")
-  );
+  const keys = getEncryptionKeyCandidates();
+  let lastErr: Error | null = null;
 
-  decipher.setAuthTag(Buffer.from(payload.authTag, "hex"));
+  for (const key of keys) {
+    try {
+      const decipher = crypto.createDecipheriv(
+        ALGORITHM,
+        key,
+        Buffer.from(payload.iv, "hex")
+      );
 
-  let decrypted = decipher.update(payload.ciphertext, "hex", "utf8");
-  decrypted += decipher.final("utf8");
+      decipher.setAuthTag(Buffer.from(payload.authTag, "hex"));
 
-  return decrypted;
+      let decrypted = decipher.update(payload.ciphertext, "hex", "utf8");
+      decrypted += decipher.final("utf8");
+
+      return decrypted;
+    } catch (err: any) {
+      lastErr = err;
+    }
+  }
+
+  throw lastErr || new Error("Decryption failed");
 }
 
 /**
