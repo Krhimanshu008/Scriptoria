@@ -19,6 +19,7 @@ import {
   Pencil,
   Flame,
   Zap,
+  RefreshCw,
   X,
 } from "lucide-react";
 import type { PrewarmModelRef, PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
@@ -239,6 +240,33 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
   }
 
   const [hotReloadLoading, setHotReloadLoading] = useState(false);
+  const [syncLoading, setSyncLoading] = useState(false);
+
+  async function handleSyncVm() {
+    if (!primaryTarget) return;
+    setSyncLoading(true);
+    try {
+      const res = await fetch(`/api/vm/${encodeURIComponent(primaryTarget)}/sync`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Sync request failed");
+      }
+      if (data.tunnelAlive) {
+        toast.success(`VM Active & Verified! (${data.status})`);
+      } else if (data.kaggleState) {
+        toast.info(`Kaggle: ${data.kaggleState} (VM: ${data.status})`);
+      } else {
+        toast.success(`VM status synced: ${data.status}`);
+      }
+      onRefresh();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to sync VM status");
+    } finally {
+      setSyncLoading(false);
+    }
+  }
 
   async function handleHotReload() {
     if (!primaryTarget) return;
@@ -722,6 +750,21 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
               Open Colab
             </a>
           )}
+
+          <button
+            type="button"
+            onClick={handleSyncVm}
+            disabled={syncLoading || actionLoading}
+            title="Fetch & sync active status from Kaggle and live VM tunnel"
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-blue-500/40 bg-blue-500/15 px-2 text-xs font-medium text-blue-200 hover:bg-blue-500/25 transition disabled:opacity-40"
+          >
+            {syncLoading ? (
+              <Loader2 className="h-3 w-3 animate-spin text-blue-400" />
+            ) : (
+              <RefreshCw className="h-3 w-3 text-blue-400" />
+            )}
+            Fetch VM
+          </button>
 
           {anyActive && primaryVm?.publicUrl && (
             <button

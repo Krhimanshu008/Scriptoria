@@ -156,16 +156,11 @@ def post_heartbeat(step, status="STARTING", telemetry=None):
         HEARTBEAT_FAIL_STREAK = 0
     except urllib.error.HTTPError as he:
         if he.code == 410:
-            print("[HEARTBEAT] Session cancelled (410). Exiting to save quota.", flush=True)
-            if PROVIDER == "colab":
-                try:
-                    from google.colab import runtime
-                    runtime.unassign()
-                except Exception:
-                    pass
-            os._exit(0)
-        HEARTBEAT_FAIL_STREAK += 1
-        print(f"[HEARTBEAT] HTTP {he.code}: {he.reason}", flush=True)
+            print("[HEARTBEAT] Session notification: 410 received. Retrying...", flush=True)
+            time.sleep(2)
+        else:
+            HEARTBEAT_FAIL_STREAK += 1
+            print(f"[HEARTBEAT] HTTP {he.code}: {he.reason}", flush=True)
     except Exception as e:
         HEARTBEAT_FAIL_STREAK += 1
         print(f"[HEARTBEAT] Warning: {e}", flush=True)

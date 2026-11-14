@@ -20,6 +20,7 @@ import {
   UserCheck,
   AlertCircle,
   Zap,
+  RefreshCw,
   ChevronRight,
 } from "lucide-react";
 import type { PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
@@ -167,6 +168,33 @@ export const AccountClusterCard: React.FC<AccountClusterCardProps> = ({
   }
 
   const [hotReloadLoading, setHotReloadLoading] = useState(false);
+  const [syncLoading, setSyncLoading] = useState(false);
+
+  async function handleSyncVm() {
+    if (!primaryTarget) return;
+    setSyncLoading(true);
+    try {
+      const res = await fetch(`/api/vm/${encodeURIComponent(primaryTarget)}/sync`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Sync request failed");
+      }
+      if (data.tunnelAlive) {
+        toast.success(`VM Active & Verified! (${data.status})`);
+      } else if (data.kaggleState) {
+        toast.info(`Kaggle: ${data.kaggleState} (VM: ${data.status})`);
+      } else {
+        toast.success(`VM status synced: ${data.status}`);
+      }
+      onRefresh();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to sync VM status");
+    } finally {
+      setSyncLoading(false);
+    }
+  }
 
   async function handleHotReload() {
     if (!primaryTarget) return;
@@ -397,6 +425,21 @@ export const AccountClusterCard: React.FC<AccountClusterCardProps> = ({
                   <Power className="h-3.5 w-3.5" />
                 )}
                 {anyActive ? "Stop Dual-T4" : "Boot Dual-T4"}
+              </button>
+
+              <button
+                type="button"
+                onClick={handleSyncVm}
+                disabled={syncLoading || actionLoading}
+                title="Fetch & sync active status from Kaggle and live VM tunnel"
+                className="flex items-center justify-center gap-1.5 rounded-xl border border-blue-400/35 bg-blue-500/15 px-3 py-1.5 text-xs font-semibold text-blue-200 transition hover:bg-blue-500/25 disabled:opacity-40 whitespace-nowrap"
+              >
+                {syncLoading ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-400" />
+                ) : (
+                  <RefreshCw className="h-3.5 w-3.5 text-blue-400" />
+                )}
+                Fetch VM
               </button>
 
               {anyActive && primaryVm?.publicUrl && (
