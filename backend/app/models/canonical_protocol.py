@@ -161,3 +161,92 @@ class RollingEntityGlossary(BaseModel):
     book_id: str
     last_completed_chapter: int = Field(default=0)
     entities: List[RollingEntityGlossaryItem] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Layer D: Stage-2 Compiled Temporal Knowledge Graph Protocols
+# ---------------------------------------------------------------------------
+
+class EntityVisualTier(str, enum.Enum):
+    TIER_1_CORE = "TIER_1_CORE"
+    TIER_2_SUPPORTING = "TIER_2_SUPPORTING"
+    TIER_3_EXTRAS = "TIER_3_EXTRAS"
+
+
+class EntityStateSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    story_tick: int = Field(..., description="Chronological story tick")
+    narrative_seq: int = Field(..., description="Sequential reader discovery order")
+    scene_id: str = Field(..., description="Scene in which state was observed or updated")
+    outfit: Optional[str] = Field(None, description="Clothing worn")
+    physical_condition: Optional[str] = Field(None, description="Physical state e.g. exhausted, wounded, energetic")
+    injuries: List[str] = Field(default_factory=list, description="Active wounds, scars, burns")
+    items_held: List[str] = Field(default_factory=list, description="Items currently in custody")
+    is_stale: bool = Field(default=False, description="Flagged true when a time-skip invalidates ephemeral state")
+
+
+class CompiledEntity(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    entity_id: str
+    canonical_name: str
+    aliases: List[str] = Field(default_factory=list)
+    entity_type: EntityType
+    static_traits: str
+    visual_tier: EntityVisualTier
+    importance_score: float = Field(..., ge=0.0, le=1.0)
+    presence_score: float = Field(default=0.0)
+    agency_score: float = Field(default=0.0)
+    centrality_score: float = Field(default=0.0)
+    detail_density: float = Field(default=0.0)
+    state_history: List[EntityStateSnapshot] = Field(default_factory=list)
+
+
+class CompiledLocation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    location_id: str
+    canonical_name: str
+    parent_location_id: Optional[str] = Field(None, description="Direct parent container location ID")
+    materialized_path: str = Field(..., description="Hierarchical tree path e.g. /andalusia/church/sacristy")
+    environment_tags: List[str] = Field(default_factory=list)
+
+
+class CompiledTimelineTick(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    narrative_seq: int = Field(..., ge=1, description="Sequential reading order (1, 2, 3...)")
+    story_time_tick: int = Field(..., description="Chronological story timeline tick")
+    chapter_index: int
+    scene_id: str
+    time_type: TimeClueType
+    time_delta_hint: Optional[str] = None
+    location_id: str
+    active_characters: List[str] = Field(default_factory=list)
+    active_items: List[str] = Field(default_factory=list)
+
+
+class CompiledGraphEdge(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str
+    target_id: str
+    relationship_type: str
+    weight: float = Field(default=1.0)
+    narrative_seq: Optional[int] = None
+
+
+class CompiledBookGraph(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str = Field(default="1.0.0")
+    book_id: str
+    total_chapters: int
+    total_scenes: int
+    total_beats: int
+    timeline: List[CompiledTimelineTick] = Field(default_factory=list)
+    entities: Dict[str, CompiledEntity] = Field(default_factory=dict)
+    locations: Dict[str, CompiledLocation] = Field(default_factory=dict)
+    edges: List[CompiledGraphEdge] = Field(default_factory=list)
+

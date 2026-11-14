@@ -129,9 +129,12 @@ class R2StorageService:
             self.s3.head_object(Bucket=self.bucket_name, Key=key)
             return True
         except ClientError as e:
-            if e.response.get("Error", {}).get("Code") == "404":
+            if e.response.get("Error", {}).get("Code") in ("404", "NoSuchKey"):
                 return False
             raise
+
+    def file_exists(self, key: str) -> bool:
+        return self.exists(key)
 
     def list_keys(self, prefix: str) -> List[str]:
         keys = []
