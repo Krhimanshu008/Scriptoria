@@ -547,6 +547,7 @@ export function LlmStudioTab() {
         setTurns((prev) => [...prev, ...turnsToAdd]);
         toast.success(`Swarm complete (${turnsToAdd.length} models finished in parallel)`);
       } catch (err) {
+        console.error("Swarm dispatch error:", err);
         toast.error("Parallel swarm dispatch failed");
       } finally {
         setSending(false);
@@ -882,7 +883,9 @@ export function LlmStudioTab() {
             </div>
             <select
               value={selectedService}
-              onChange={(e) => setSelectedService(e.target.value as any)}
+              onChange={(e) =>
+                setSelectedService(e.target.value as "default" | "extract" | "tag" | "qc" | "rag")
+              }
               disabled={mode === "swarm_arena"}
               className="h-8 w-full rounded border border-zinc-800 bg-zinc-950 px-2 font-mono text-[11px] text-zinc-200 disabled:opacity-50"
             >

@@ -64,13 +64,14 @@ async function proxyRequest(request: NextRequest, { params }: { params: Promise<
       statusText: response.statusText,
       headers: resHeaders,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const err = error as { message?: string; cause?: unknown };
     console.error("Lab proxy error:", error);
     return NextResponse.json(
       {
         error: "Failed to connect to FastAPI Test Lab backend at http://127.0.0.1:8000",
-        details: error?.message || String(error),
-        cause: error?.cause ? String(error.cause) : undefined,
+        details: err?.message || String(error),
+        cause: err?.cause ? String(err.cause) : undefined,
       },
       { status: 502 }
     );

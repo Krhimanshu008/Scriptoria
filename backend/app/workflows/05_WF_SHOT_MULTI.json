@@ -1,0 +1,216 @@
+{
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "waiNSFWIllustrious_v110.safetensors"
+    }
+  },
+  "2": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "sdxl_vae_fp16_fix.safetensors"
+    }
+  },
+  "3": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": 1216,
+      "height": 832,
+      "batch_size": 1
+    }
+  },
+  "4": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "masterpiece, best quality, wide two-shot, ancient gothic cathedral interior, obsidian pillars, crimson twilight",
+      "clip": [
+        "1",
+        1
+      ]
+    }
+  },
+  "5": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "masterpiece, best quality, 1boy, pale skin, messy black hair, sharp dark onyx eyes, dark leather tunic",
+      "clip": [
+        "1",
+        1
+      ]
+    }
+  },
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "masterpiece, best quality, 1girl, silver hair, calm grey eyes, silver knight armor",
+      "clip": [
+        "1",
+        1
+      ]
+    }
+  },
+  "7": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "worst quality, normal quality, low quality, lowres, bad anatomy, bad hands, missing fingers, extra digit, fewer digits, cropped, signature, watermark, username, blurry, artist name",
+      "clip": [
+        "1",
+        1
+      ]
+    }
+  },
+  "8": {
+    "class_type": "SolidMask",
+    "inputs": {
+      "value": 0.0,
+      "width": 1216,
+      "height": 832
+    }
+  },
+  "9": {
+    "class_type": "SolidMask",
+    "inputs": {
+      "value": 1.0,
+      "width": 547,
+      "height": 666
+    }
+  },
+  "10": {
+    "class_type": "MaskComposite",
+    "inputs": {
+      "destination": [
+        "8",
+        0
+      ],
+      "source": [
+        "9",
+        0
+      ],
+      "x": 0,
+      "y": 83,
+      "operation": "add"
+    }
+  },
+  "11": {
+    "class_type": "MaskComposite",
+    "inputs": {
+      "destination": [
+        "8",
+        0
+      ],
+      "source": [
+        "9",
+        0
+      ],
+      "x": 669,
+      "y": 83,
+      "operation": "add"
+    }
+  },
+  "12": {
+    "class_type": "ConditioningSetMask",
+    "inputs": {
+      "conditioning": [
+        "5",
+        0
+      ],
+      "mask": [
+        "10",
+        0
+      ],
+      "strength": 1.0,
+      "set_cond_area": "default"
+    }
+  },
+  "13": {
+    "class_type": "ConditioningSetMask",
+    "inputs": {
+      "conditioning": [
+        "6",
+        0
+      ],
+      "mask": [
+        "11",
+        0
+      ],
+      "strength": 1.0,
+      "set_cond_area": "default"
+    }
+  },
+  "14": {
+    "class_type": "ConditioningCombine",
+    "inputs": {
+      "conditioning_1": [
+        "4",
+        0
+      ],
+      "conditioning_2": [
+        "12",
+        0
+      ]
+    }
+  },
+  "15": {
+    "class_type": "ConditioningCombine",
+    "inputs": {
+      "conditioning_1": [
+        "14",
+        0
+      ],
+      "conditioning_2": [
+        "13",
+        0
+      ]
+    }
+  },
+  "16": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 505,
+      "steps": 28,
+      "cfg": 6.5,
+      "sampler_name": "euler_ancestral",
+      "scheduler": "normal",
+      "denoise": 1.0,
+      "model": [
+        "1",
+        0
+      ],
+      "positive": [
+        "15",
+        0
+      ],
+      "negative": [
+        "7",
+        0
+      ],
+      "latent_image": [
+        "3",
+        0
+      ]
+    }
+  },
+  "17": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "16",
+        0
+      ],
+      "vae": [
+        "2",
+        0
+      ]
+    }
+  },
+  "18": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "17",
+        0
+      ],
+      "filename_prefix": "WF05_SHOT_MULTI"
+    }
+  }
+}

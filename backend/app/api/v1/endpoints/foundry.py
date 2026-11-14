@@ -1,0 +1,190 @@
+import logging
+from pathlib import Path
+from typing import Any, Dict, List
+from fastapi import APIRouter
+from sqlalchemy import select
+from app.core.database import AsyncSessionLocal
+from app.models.core_knowledge import KnowledgeNode, NodeCategory, NodeState
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+# Static asset manifest for verified foundry turnarounds and plates
+FOUNDRY_MANIFEST = [
+    {
+        "node_code": "CHAR-SUNNY-MASTER",
+        "category": "CHARACTER",
+        "tier": "LEVEL_0_MASTER",
+        "name": "Sunny (Sunless) - Master Face Plate",
+        "description": "Base master reference for face, bone structure, and onyx eyes. Parent for all downstream arc variants.",
+        "plate_filename": "CHAR_SUNNY_FOUNDRY_00001_.png",
+        "preview_url": "/media/foundry/CHAR_SUNNY_FOUNDRY_00001_.png",
+        "valid_chapters": "Ch 1 - 20+",
+    },
+    {
+        "node_code": "CHAR-SUNNY-SLAVE-ARC1",
+        "category": "CHARACTER",
+        "tier": "LEVEL_1_ARC",
+        "name": "Sunny - Temple Slave Arc State",
+        "description": "Emaciated, coarse burlap tunic, iron slave collar and wrist chains.",
+        "plate_filename": "CHAR_SUNNY_SLAVE_FOUNDRY_00001_.png",
+        "preview_url": "/media/foundry/CHAR_SUNNY_SLAVE_FOUNDRY_00001_.png",
+        "valid_chapters": "Ch 2 - 5",
+    },
+    {
+        "node_code": "CHAR-SUNNY-SLAVE-WHIPPED",
+        "category": "CHARACTER",
+        "tier": "LEVEL_2_MICRO",
+        "name": "Sunny - Whipped & Bloody Micro Loadout",
+        "description": "Generated via IP-Adapter conditioning on Level 0 Master Face. Fresh lacerations and blood soaking across shoulders.",
+        "plate_filename": "CHAR_SUNNY_TEMPLE_SLAVE_WHIPPED_FOUNDRY_00001_.png",
+        "preview_url": "/media/foundry/CHAR_SUNNY_TEMPLE_SLAVE_WHIPPED_FOUNDRY_00001_.png",
+        "valid_chapters": "Ch 2 (Beat 8+) - Ch 4",
+    },
+    {
+        "node_code": "CHAR-HERO-SOLDIER",
+        "category": "CHARACTER",
+        "tier": "LEVEL_1_ARC",
+        "name": "Heroic Young Soldier",
+        "description": "Young soldier in polished bronze-trimmed laminate armor atop white stallion.",
+        "plate_filename": "CHAR_HERO_SOLDIER_FOUNDRY_00001_.png",
+        "preview_url": "/media/foundry/CHAR_HERO_SOLDIER_FOUNDRY_00001_.png",
+        "valid_chapters": "Ch 2 - 3",
+    },
+    {
+        "node_code": "CHAR-VETERAN-SOLDIER",
+        "category": "CHARACTER",
+        "tier": "LEVEL_1_ARC",
+        "name": "Scarred Veteran Soldier",
+        "description": "Weather-beaten veteran guard wielding braided bullwhip.",
+        "plate_filename": "CHAR_VETERAN_SOLDIER_FOUNDRY_00001_.png",
+        "preview_url": "/media/foundry/CHAR_VETERAN_SOLDIER_FOUNDRY_00001_.png",
+        "valid_chapters": "Ch 2 - 3",
+    },
+    {
+        "node_code": "CHAR-SLAVE-SHIFTY",
+        "category": "CHARACTER",
+        "tier": "LEVEL_1_ARC",
+        "name": "Shifty Slave",
+        "description": "Lean, nervous slave with darting eyes, trying to hoard water.",
+        "plate_filename": "CHAR_SLAVE_SHIFTY_FOUNDRY_00001_.png",
+        "preview_url": "/media/foundry/CHAR_SLAVE_SHIFTY_FOUNDRY_00001_.png",
+        "valid_chapters": "Ch 2 - 4",
+    },
+    {
+        "node_code": "CHAR-SLAVE-SCHOLAR",
+        "category": "CHARACTER",
+        "tier": "LEVEL_1_ARC",
+        "name": "Scholar Slave",
+        "description": "Educated slave with spectacles and sunken scholarly face.",
+        "plate_filename": "CHAR_SLAVE_SCHOLAR_FOUNDRY_00001_.png",
+        "preview_url": "/media/foundry/CHAR_SLAVE_SCHOLAR_FOUNDRY_00001_.png",
+        "valid_chapters": "Ch 2 - 4",
+    },
+    {
+        "node_code": "CHAR-DUTY-OFFICER",
+        "category": "CHARACTER",
+        "tier": "LEVEL_0_MASTER",
+        "name": "Duty Desk Officer",
+        "description": "Fatigued outskirts precinct officer in tactical synth-vest.",
+        "plate_filename": "CHAR_DUTY_OFFICER_FOUNDRY_00001_.png",
+        "preview_url": "/media/foundry/CHAR_DUTY_OFFICER_FOUNDRY_00001_.png",
+        "valid_chapters": "Ch 1",
+    },
+    {
+        "node_code": "LOC-SHACKLE-PASS-A",
+        "category": "LOCATION",
+        "tier": "SPATIAL_KIT_ANGLE_A",
+        "name": "Mountain Pass - Establishing Vista (Angle A)",
+        "description": "Wide panoramic canyon establishing plate with towering jagged basalt cliffs and falling snow.",
+        "plate_filename": "LOC_SHACKLE_MOUNTAIN_PASS_00001_.png",
+        "preview_url": "/media/foundry/LOC_SHACKLE_MOUNTAIN_PASS_00001_.png",
+        "valid_chapters": "Ch 2 - 4",
+    },
+    {
+        "node_code": "LOC-SHACKLE-PASS-B",
+        "category": "LOCATION",
+        "tier": "SPATIAL_KIT_ANGLE_B",
+        "name": "Mountain Pass - 180° Reverse Path (Angle B)",
+        "description": "Reverse view looking down the snaking snow path toward the endless descent.",
+        "plate_filename": "LOC_SHACKLE_PASS_ANGLE_B_REVERSE_00001_.png",
+        "preview_url": "/media/foundry/LOC_SHACKLE_PASS_ANGLE_B_REVERSE_00001_.png",
+        "valid_chapters": "Ch 2 - 4",
+    },
+    {
+        "node_code": "LOC-SHACKLE-PASS-C",
+        "category": "LOCATION",
+        "tier": "SPATIAL_KIT_ANGLE_C",
+        "name": "Mountain Pass - Ground Level Corridor (Angle C)",
+        "description": "Low eye-level corridor framing trampled slush, boulders, and sheer frozen cliff base.",
+        "plate_filename": "LOC_SHACKLE_PASS_ANGLE_C_GROUND_LEVEL_00001_.png",
+        "preview_url": "/media/foundry/LOC_SHACKLE_PASS_ANGLE_C_GROUND_LEVEL_00001_.png",
+        "valid_chapters": "Ch 2 - 4",
+    },
+    {
+        "node_code": "LOC-PRECINCT-LOBBY",
+        "category": "LOCATION",
+        "tier": "LEVEL_0_MASTER",
+        "name": "Outskirts Police Station Lobby",
+        "description": "Flickering amber fluorescent lighting, reinforced plexiglass, dystopian bureaucracy.",
+        "plate_filename": "LOC_STATION_LOBBY_00001_.png",
+        "preview_url": "/media/foundry/LOC_STATION_LOBBY_00001_.png",
+        "valid_chapters": "Ch 1",
+    },
+    {
+        "node_code": "LOC-ISOLATION-CELL",
+        "category": "LOCATION",
+        "tier": "LEVEL_0_MASTER",
+        "name": "Precinct Isolation Cell",
+        "description": "Soundproof acoustic padded walls, single bolted steel chair, surveillance observation mirror.",
+        "plate_filename": "LOC_ISOLATION_CELL_00001_.png",
+        "preview_url": "/media/foundry/LOC_ISOLATION_CELL_00001_.png",
+        "valid_chapters": "Ch 1",
+    },
+    {
+        "node_code": "ITEM-SLAVE-SHACKLES",
+        "category": "ITEM_PROP",
+        "tier": "PROP_SHEET",
+        "name": "Heavy Iron Slave Shackles",
+        "description": "3-angle prop turnaround sheet: hand-hammered iron cuffs, blood crusted links, heavy locking keyway.",
+        "plate_filename": "ITEM_IRON_SLAVE_SHACKLES_FOUNDRY_00001_.png",
+        "preview_url": "/media/foundry/ITEM_IRON_SLAVE_SHACKLES_FOUNDRY_00001_.png",
+        "valid_chapters": "Ch 2 - 5",
+    },
+    {
+        "node_code": "ITEM-WATER-FLASK",
+        "category": "ITEM_PROP",
+        "tier": "PROP_SHEET",
+        "name": "Soldier Bronze Water Flask",
+        "description": "3-angle prop sheet: battered bronze military canteen with embossed sun sigil and leather harness strap.",
+        "plate_filename": "ITEM_SOLDIER_WATER_FLASK_FOUNDRY_00001_.png",
+        "preview_url": "/media/foundry/ITEM_SOLDIER_WATER_FLASK_FOUNDRY_00001_.png",
+        "valid_chapters": "Ch 2 - 4",
+    },
+    {
+        "node_code": "ITEM-PUNISHMENT-WHIP",
+        "category": "ITEM_PROP",
+        "tier": "PROP_SHEET",
+        "name": "Braided Punishment Whip",
+        "description": "3-angle weapon prop sheet: dark plaited leather bullwhip with notched bone handle and weighted barbed popper.",
+        "plate_filename": "ITEM_PUNISHMENT_WHIP_FOUNDRY_00001_.png",
+        "preview_url": "/media/foundry/ITEM_PUNISHMENT_WHIP_FOUNDRY_00001_.png",
+        "valid_chapters": "Ch 2 - 3",
+    },
+    {
+        "node_code": "TEXTILE-SLAVE-BURLAP",
+        "category": "TEXTILE",
+        "tier": "TEXTILE_MACRO",
+        "name": "Coarse Frayed Slave Burlap Fabric",
+        "description": "Macro material texture sheet: heavy uneven coarse weave, frayed ragged edges, weathered fiber tension.",
+        "plate_filename": "TEXTILE_SLAVE_BURLAP_FOUNDRY_00001_.png",
+        "preview_url": "/media/foundry/TEXTILE_SLAVE_BURLAP_FOUNDRY_00001_.png",
+        "valid_chapters": "Ch 2 - 5",
+    },
+]
+
+@router.get("/assets")
+async def get_foundry_assets() -> List[Dict[str, Any]]:
+    """Retrieve complete catalog of Pre-Production Foundry assets with preview paths."""
+    return FOUNDRY_MANIFEST
+

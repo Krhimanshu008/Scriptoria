@@ -1,7 +1,9 @@
 # Environment variables & secrets
 .env
 .env.*
+*.env
 !.env.example
+!*.env.example
 kaggle Legacy API 2nd Account.json
 *.token
 *.key
@@ -55,4 +57,10 @@ Thumbs.db
 
 # Runtime log files
 *.log
+
+# Python backend outputs & benchmarks
+/backend/output/
+/backend/Novels/
+.pytest_cache/
+
 

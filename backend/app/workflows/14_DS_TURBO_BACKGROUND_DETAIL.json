@@ -1,0 +1,134 @@
+{
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "DreamShaperXL_Turbo_v2_1.safetensors"
+    }
+  },
+  "2": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "ds_stage1_base.png"
+    }
+  },
+  "3": {
+    "class_type": "UltralyticsDetectorProvider",
+    "inputs": {
+      "model_name": "segm/person_yolov8m-seg.pt"
+    }
+  },
+  "4": {
+    "class_type": "SegmDetectorCombined",
+    "inputs": {
+      "segm_detector": [
+        "3",
+        1
+      ],
+      "image": [
+        "2",
+        0
+      ],
+      "threshold": 0.5,
+      "dilation": 10
+    }
+  },
+  "5": {
+    "class_type": "InvertMask",
+    "inputs": {
+      "mask": [
+        "4",
+        0
+      ]
+    }
+  },
+  "6": {
+    "class_type": "MaskToSEGS",
+    "inputs": {
+      "mask": [
+        "5",
+        0
+      ],
+      "combined": true,
+      "crop_factor": 1.2,
+      "bbox_fill": false,
+      "drop_size": 20
+    }
+  },
+  "7": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "1",
+        1
+      ],
+      "text": "intricate dark fantasy background, gothic stone architecture, detailed distant structures, textured stone and metal, atmospheric fog, controlled crimson light, clear depth separation, no people"
+    }
+  },
+  "8": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "1",
+        1
+      ],
+      "text": "person, character, blurry, low quality, watermark, text, oversaturated, burnt contrast"
+    }
+  },
+  "9": {
+    "class_type": "DetailerForEach",
+    "inputs": {
+      "image": [
+        "2",
+        0
+      ],
+      "segs": [
+        "6",
+        0
+      ],
+      "model": [
+        "1",
+        0
+      ],
+      "clip": [
+        "1",
+        1
+      ],
+      "vae": [
+        "1",
+        2
+      ],
+      "positive": [
+        "7",
+        0
+      ],
+      "negative": [
+        "8",
+        0
+      ],
+      "guide_size": 640,
+      "guide_size_for": "crop_region",
+      "max_size": 896,
+      "seed": 42003,
+      "steps": 6,
+      "cfg": 2.0,
+      "sampler_name": "dpmpp_sde",
+      "scheduler": "karras",
+      "denoise": 0.35,
+      "feather": 15,
+      "noise_mask": true,
+      "force_inpaint": true,
+      "wildcard": "",
+      "cycle": 1
+    }
+  },
+  "10": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "9",
+        0
+      ],
+      "filename_prefix": "DS_TURBO_Stage2_Background"
+    }
+  }
+}
