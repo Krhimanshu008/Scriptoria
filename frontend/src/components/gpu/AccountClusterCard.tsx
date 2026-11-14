@@ -19,6 +19,7 @@ import {
   Settings2,
   UserCheck,
   AlertCircle,
+  Zap,
   ChevronRight,
 } from "lucide-react";
 import type { PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
@@ -162,6 +163,30 @@ export const AccountClusterCard: React.FC<AccountClusterCardProps> = ({
       toast.error(`Network error toggling ${label}`);
     } finally {
       setActionLoading(false);
+    }
+  }
+
+  const [hotReloadLoading, setHotReloadLoading] = useState(false);
+
+  async function handleHotReload() {
+    if (!primaryTarget) return;
+    setHotReloadLoading(true);
+    try {
+      const res = await fetch(`/api/vm/${encodeURIComponent(primaryTarget)}/hot-reload`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profile: primaryVm?.workerProfile }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Hot reload request failed");
+      }
+      toast.success("Worker hot-reloaded! Restarting in-container (<3s)...");
+      onRefresh();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to hot reload worker");
+    } finally {
+      setHotReloadLoading(false);
     }
   }
 
@@ -373,6 +398,23 @@ export const AccountClusterCard: React.FC<AccountClusterCardProps> = ({
                 )}
                 {anyActive ? "Stop Dual-T4" : "Boot Dual-T4"}
               </button>
+
+              {anyActive && primaryVm?.publicUrl && (
+                <button
+                  type="button"
+                  onClick={handleHotReload}
+                  disabled={hotReloadLoading || actionLoading}
+                  title="Hot reload worker processes in <3s without terminating VM or re-downloading models"
+                  className="flex items-center justify-center gap-1.5 rounded-xl border border-cyan-400/40 bg-cyan-500/15 px-3 py-1.5 text-xs font-semibold text-cyan-200 transition hover:bg-cyan-500/25 disabled:opacity-40 whitespace-nowrap"
+                >
+                  {hotReloadLoading ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-400" />
+                  ) : (
+                    <Zap className="h-3.5 w-3.5 text-cyan-400" />
+                  )}
+                  Hot Reload
+                </button>
+              )}
 
               <button
                 type="button"

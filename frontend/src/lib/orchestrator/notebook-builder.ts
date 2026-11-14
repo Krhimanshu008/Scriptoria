@@ -566,6 +566,33 @@ class SidecarHandler(BaseHTTPRequestHandler):
             threading.Thread(target=terminate_vm, daemon=False).start()
             return
 
+        if self.path in ("/worker/restart", "/worker/stop", "/worker/start"):
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length) or b"{}") if length > 0 else {}
+            new_profile = body.get("profile")
+
+            if self.path == "/worker/stop":
+                if "stop_llm_workers" in globals():
+                    stop_llm_workers()
+                self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
+                self.wfile.write(b'{"ok":true,"status":"STOPPED"}')
+                return
+            elif self.path == "/worker/start":
+                if "start_llm_workers" in globals():
+                    start_llm_workers(new_profile)
+                self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
+                self.wfile.write(b'{"ok":true,"status":"STARTING"}')
+                return
+            elif self.path == "/worker/restart":
+                t_rst = time.time()
+                if "start_llm_workers" in globals():
+                    start_llm_workers(new_profile)
+                dur_ms = round((time.time() - t_rst) * 1000, 1)
+                log_event(f"Hot-reloaded LLM workers in {dur_ms}ms (cache hit - 0s download)!", category="SYSTEM", level="SUCCESS")
+                self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
+                self.wfile.write(json.dumps({"ok": True, "status": "RESTARTING", "elapsedMs": dur_ms}).encode())
+                return
+
         if self.path == "/save-workflow":
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length) or b"{}")
@@ -1320,93 +1347,115 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
         t_split = "50,50"
         ctx_size = "16384"
 
-    if PROFILE_ID == "LLM_LIGHTWEIGHT_SWARM":
-        q4_dir = f"{LOCAL_LLM_DIR}/qwen4b"
-        cpm_dir = f"{LOCAL_LLM_DIR}/cpm1b"
-        m4_path = f"{q4_dir}/Qwen3.5-4B-Q4_K_M.gguf"
-        cpm_path = f"{cpm_dir}/MiniCPM-V-4_7-1B-Q4_K_M.gguf"
+    WORKER_PROCS = {}
+    WORKER_LOCK = threading.Lock()
+    WORKER_STATE = {"status": "STARTING", "profile": PROFILE_ID}
 
-        # 1. Qwen3.5-9B on CUDA 0 (:8190)
-        cmd_9b = [
-            llama_bin, "-m", model_gguf, "--host", "127.0.0.1", "--port", "8190",
-            "-ngl", "99", "-c", "16384",
-            "--batch-size", "512", "--ubatch-size", "256",
-            "--parallel", "1", "--jinja",
-        ]
-        if mmproj_gguf:
-            cmd_9b.extend(["--mmproj", mmproj_gguf])
-        env_9b = ll_env.copy()
-        env_9b["CUDA_VISIBLE_DEVICES"] = "0"
-        ll_proc = subprocess.Popen(cmd_9b, env=env_9b, stdout=open("/tmp/llama_server.log", "w"), stderr=subprocess.STDOUT)
-        log_event("Launched Qwen3.5-9B QC VLM -> CUDA:0 (:8190)", category="SYSTEM", level="SUCCESS")
+    def stop_llm_workers():
+        with WORKER_LOCK:
+            for k, p in list(WORKER_PROCS.items()):
+                try:
+                    p.terminate()
+                    p.wait(timeout=2)
+                except Exception:
+                    try:
+                        p.kill()
+                    except Exception:
+                        pass
+            WORKER_PROCS.clear()
+            subprocess.run(["pkill", "-9", "-f", "llama-server"], check=False)
+            time.sleep(0.5)
+            WORKER_STATE["status"] = "STOPPED"
+            log_event("LLM worker processes stopped & VRAM cleared.", category="SYSTEM", level="WARN")
 
-        # 2. Qwen3.5-4B on CUDA 1 (:8191) - Fast Text Extractor
-        cmd_4b = [
-            llama_bin, "-m", m4_path, "--host", "127.0.0.1", "--port", "8191",
-            "-ngl", "99", "-c", "8192",
-            "--batch-size", "512", "--ubatch-size", "256",
-            "--parallel", "1", "--jinja",
-        ]
-        env_4b = ll_env.copy()
-        env_4b["CUDA_VISIBLE_DEVICES"] = "1"
-        proc_4b = subprocess.Popen(cmd_4b, env=env_4b, stdout=open("/tmp/llama_4b.log", "w"), stderr=subprocess.STDOUT)
-        log_event("Launched Qwen3.5-4B Fast Extractor -> CUDA:1 (:8191)", category="SYSTEM", level="SUCCESS")
+    def start_llm_workers(target_profile=None):
+        global PROFILE_ID, is_moe_35b, is_fast_8b, is_vlm_27b, model_gguf, mmproj_gguf, mode_label
+        with WORKER_LOCK:
+            stop_llm_workers()
+            if target_profile:
+                PROFILE_ID = target_profile
+                WORKER_STATE["profile"] = target_profile
+                is_moe_35b = (PROFILE_ID == "LLM_QWEN_MOE_35B")
+                is_fast_8b = (PROFILE_ID == "LLM_QWEN_FAST_8B")
+                is_vlm_27b = (PROFILE_ID == "LLM_QWEN_VLM")
 
-        # 3. MiniCPM-V 4.7-1B on CUDA 1 (:8192)
-        cmd_cpm = [
-            llama_bin, "-m", cpm_path, "--host", "127.0.0.1", "--port", "8192",
-            "-ngl", "99", "-c", "4096",
-            "--batch-size", "256", "--ubatch-size", "128",
-            "--parallel", "1",
-        ]
-        env_cpm = ll_env.copy()
-        env_cpm["CUDA_VISIBLE_DEVICES"] = "1"
-        proc_cpm = subprocess.Popen(cmd_cpm, env=env_cpm, stdout=open("/tmp/llama_cpm.log", "w"), stderr=subprocess.STDOUT)
-        log_event("Launched MiniCPM-V 4.7-1B Tagger -> CUDA:1 (:8192)", category="SYSTEM", level="SUCCESS")
-    else:
-        ll_cmd = [
-            llama_bin, "-m", model_gguf, "--host", "127.0.0.1", "--port", "8190",
-            "-ngl", "999",
-            "-dev", "CUDA0,CUDA1",
-            "--split-mode", "layer",
-            "--tensor-split", t_split,
-            "--fit", "off",
-            "--ctx-size", ctx_size,
-            "-ctk", "q8_0", "-ctv", "q8_0",
-            "--batch-size", "512",
-            "--ubatch-size", "256",
-            "--parallel", "1",
-            "--kv-unified",
-            "--jinja",
-            "--chat-template-kwargs", '{"enable_thinking":false}',
-        ]
+            WORKER_STATE["status"] = "STARTING"
+            model_gguf, mmproj_gguf, is_swarm = _resolve_qwen_ggufs()
 
-        # DFlash2 Speculative Decoding (per MO updated.md)
-        if dflash_gguf and os.path.exists(dflash_gguf):
-            ll_cmd.extend([
-                "-md", dflash_gguf,
-                "--spec-type", "draft-dflash",
-                "--spec-draft-n-max", "5",
-                "-ngld", "99",
-                "-devd", "CUDA1",
-                "-ctkd", "q8_0", "-ctvd", "q8_0",
-            ])
-            log_event(f"DFlash2 speculative drafter ACTIVE on CUDA1: {os.path.basename(dflash_gguf)} (n_max=5, -ngld 99)", category="LLAMA", level="SUCCESS")
-        elif PROFILE_ID in ("LLM_QWEN_TEXT_TURBO", "LLM_QWEN_VLM") and not mmproj_gguf:
-            ll_cmd.extend(["--spec-type", "draft-mtp", "--spec-draft-n-max", "2"])
-            log_event("Embedded MTP speculative decoding ACTIVE (--spec-type draft-mtp, n=2)", category="SYSTEM", level="SUCCESS")
+            if PROFILE_ID == "LLM_LIGHTWEIGHT_SWARM":
+                q4_dir = f"{LOCAL_LLM_DIR}/qwen4b"
+                cpm_dir = f"{LOCAL_LLM_DIR}/cpm1b"
+                m4_path = f"{q4_dir}/Qwen3.5-4B-Q4_K_M.gguf"
+                cpm_path = f"{cpm_dir}/MiniCPM-V-4_7-1B-Q4_K_M.gguf"
 
-        if mmproj_gguf and PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B"):
-            ll_cmd.extend(["--mmproj", mmproj_gguf])
-            log_event(f"Multimodal vision ACTIVE on CUDA1: {os.path.basename(mmproj_gguf)}", category="SYSTEM", level="SUCCESS")
-        ll_log = open("/tmp/llama_server.log", "w")
-        ll_proc = subprocess.Popen(ll_cmd, env=ll_env, stdout=ll_log, stderr=ll_log)
-        mode_label = (
-            "Qwen 8B Fast Vision (~45-60 tok/s)" if is_fast_8b
-            else ("Qwen 35B-A3B Vision MoE (~35-55 tok/s)" if is_moe_35b
-            else (("Vision + DFlash2 (~35-45 tok/s)" if dflash_gguf else "Vision + LLM (~16 tok/s)") if is_vlm_27b else "Ultra Text Turbo"))
-        )
-        log_event(f"Launched llama-server ({mode_label}, 2x T4 split) -> 127.0.0.1:8190 ({os.path.basename(model_gguf)})", category="SYSTEM")
+                # 1. Qwen3.5-9B on CUDA 0 (:8190)
+                cmd_9b = [
+                    llama_bin, "-m", model_gguf, "--host", "127.0.0.1", "--port", "8190",
+                    "-ngl", "99", "-c", "16384",
+                    "--batch-size", "512", "--ubatch-size", "256",
+                    "--parallel", "1", "--jinja",
+                ]
+                if mmproj_gguf:
+                    cmd_9b.extend(["--mmproj", mmproj_gguf])
+                env_9b = ll_env.copy()
+                env_9b["CUDA_VISIBLE_DEVICES"] = "0"
+                WORKER_PROCS["9b"] = subprocess.Popen(cmd_9b, env=env_9b, stdout=open("/tmp/llama_server.log", "w"), stderr=subprocess.STDOUT)
+                log_event("Launched Qwen3.5-9B QC VLM -> CUDA:0 (:8190)", category="SYSTEM", level="SUCCESS")
+
+                # 2. Qwen3.5-4B on CUDA 1 (:8191) - Fast Text Extractor
+                cmd_4b = [
+                    llama_bin, "-m", m4_path, "--host", "127.0.0.1", "--port", "8191",
+                    "-ngl", "99", "-c", "8192",
+                    "--batch-size", "512", "--ubatch-size", "256",
+                    "--parallel", "1", "--jinja",
+                ]
+                env_4b = ll_env.copy()
+                env_4b["CUDA_VISIBLE_DEVICES"] = "1"
+                WORKER_PROCS["4b"] = subprocess.Popen(cmd_4b, env=env_4b, stdout=open("/tmp/llama_4b.log", "w"), stderr=subprocess.STDOUT)
+                log_event("Launched Qwen3.5-4B Fast Extractor -> CUDA:1 (:8191)", category="SYSTEM", level="SUCCESS")
+
+                # 3. MiniCPM-V 4.7-1B on CUDA 1 (:8192)
+                cmd_cpm = [
+                    llama_bin, "-m", cpm_path, "--host", "127.0.0.1", "--port", "8192",
+                    "-ngl", "99", "-c", "4096",
+                    "--batch-size", "256", "--ubatch-size", "128",
+                    "--parallel", "1",
+                ]
+                env_cpm = ll_env.copy()
+                env_cpm["CUDA_VISIBLE_DEVICES"] = "1"
+                WORKER_PROCS["cpm"] = subprocess.Popen(cmd_cpm, env=env_cpm, stdout=open("/tmp/llama_cpm.log", "w"), stderr=subprocess.STDOUT)
+                log_event("Launched MiniCPM-V 4.7-1B Tagger -> CUDA:1 (:8192)", category="SYSTEM", level="SUCCESS")
+            else:
+                t_split = "52,48" if is_moe_35b else ("55,45" if is_vlm_27b else "50,50")
+                ctx_size = "8192" if is_vlm_27b else "16384"
+                ll_cmd = [
+                    llama_bin, "-m", model_gguf, "--host", "127.0.0.1", "--port", "8190",
+                    "-ngl", "999",
+                    "-dev", "CUDA0,CUDA1",
+                    "--split-mode", "layer",
+                    "--tensor-split", t_split,
+                    "--fit", "off",
+                    "--ctx-size", ctx_size,
+                    "-ctk", "q8_0", "-ctv", "q8_0",
+                    "--batch-size", "512",
+                    "--ubatch-size", "256",
+                    "--parallel", "1",
+                    "--kv-unified",
+                    "--jinja",
+                    "--chat-template-kwargs", '{"enable_thinking":false}',
+                ]
+                if mmproj_gguf and PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B"):
+                    ll_cmd.extend(["--mmproj", mmproj_gguf])
+                ll_log = open("/tmp/llama_server.log", "w")
+                WORKER_PROCS["main"] = subprocess.Popen(ll_cmd, env=ll_env, stdout=ll_log, stderr=ll_log)
+                mode_label = (
+                    "Qwen 8B Fast Vision (~45-60 tok/s)" if is_fast_8b
+                    else ("Qwen 35B-A3B Vision MoE (~35-55 tok/s)" if is_moe_35b
+                    else (("Vision + DFlash2 (~35-45 tok/s)" if dflash_gguf else "Vision + LLM (~16 tok/s)") if is_vlm_27b else "Ultra Text Turbo"))
+                )
+                log_event(f"Launched llama-server ({mode_label}, 2x T4 split) -> 127.0.0.1:8190 ({os.path.basename(model_gguf)})", category="SYSTEM")
+
+    start_llm_workers()
 
     def _tail_llama_log(log_path, label):
         time.sleep(2)
@@ -1592,17 +1641,16 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
         next_status = "ONLINE" if all_ready else "STARTING"
 
         dead_proc = None
-        if ll_proc.poll() is not None:
-            dead_proc = f"llama-server 9B (code={ll_proc.returncode})"
-        elif 'proc_4b' in locals() and proc_4b.poll() is not None:
-            dead_proc = f"llama-server 4B (code={proc_4b.returncode})"
-        elif 'proc_cpm' in locals() and proc_cpm.poll() is not None:
-            dead_proc = f"llama-server CPM (code={proc_cpm.returncode})"
+        with WORKER_LOCK:
+            for wname, wproc in list(WORKER_PROCS.items()):
+                if wproc.poll() is not None:
+                    dead_proc = f"Worker {wname} (code={wproc.returncode})"
+                    break
 
-        if dead_proc:
-            log_event(f"llama process exited unexpectedly: {dead_proc}", category="ERROR", level="ERROR")
-            post_heartbeat(0, "ERROR", telem)
-            break
+        if dead_proc and WORKER_STATE.get("status") not in ("STOPPED", "STARTING"):
+            log_event(f"Worker process died: {dead_proc}. Container daemon remains active for hot-reload.", category="ERROR", level="ERROR")
+            WORKER_STATE["status"] = "ERROR"
+            post_heartbeat(4, "ERROR", telem)
 
         if all_ready and CURRENT_STEP < 5:
             lbl = "Qwen Swarm (4B Extractor + 9B QC + MiniCPM-V 1B)" if PROFILE_ID == "LLM_LIGHTWEIGHT_SWARM" else f"{mode_label}"
@@ -1621,17 +1669,7 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
             break
         time.sleep(15 if all_ready else 3)
 
-    ll_proc.terminate()
-    if 'proc_4b' in locals():
-        try:
-            proc_4b.terminate()
-        except Exception:
-            pass
-    if 'proc_cpm' in locals():
-        try:
-            proc_cpm.terminate()
-        except Exception:
-            pass
+    stop_llm_workers()
     sys.exit(0)
 
 # -------------------------------------------------------------

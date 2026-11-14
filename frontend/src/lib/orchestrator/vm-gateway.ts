@@ -105,5 +105,30 @@ export class VmGateway {
       return false;
     }
   }
+
+  /**
+   * Sends hot-reload signal to the VM's in-band sidecar on port 9999.
+   * Restarts child worker processes in <3s without terminating the container or re-downloading models.
+   */
+  public static async hotReloadWorker(
+    vm: VmEndpointTarget,
+    payload: { profile?: string } = {}
+  ): Promise<{ ok: boolean; status?: string; message?: string }> {
+    try {
+      const res = await this.callJson<{ ok: boolean; status?: string; message?: string }>(
+        vm,
+        "/worker/restart",
+        {
+          method: "POST",
+          targetPort: 9999,
+          timeoutMs: 8000,
+          body: JSON.stringify(payload),
+        }
+      );
+      return res;
+    } catch (e: any) {
+      return { ok: false, message: e.message || String(e) };
+    }
+  }
 }
 
