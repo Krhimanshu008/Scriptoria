@@ -1170,7 +1170,6 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
             m9 = _fast_download_hf("unsloth/Qwen3.5-9B-GGUF", "Qwen3.5-9B-Q4_K_M.gguf", q9_dir, label="Qwen 9B QC")
             mm9 = _fast_download_hf("unsloth/Qwen3.5-9B-GGUF", "mmproj-F16.gguf", q9_dir, label="Qwen 9B mmproj")
             _fast_download_hf("unsloth/Qwen3.5-4B-GGUF", "Qwen3.5-4B-Q4_K_M.gguf", q4_dir, label="Qwen 4B Extractor")
-            _fast_download_hf("unsloth/Qwen3.5-4B-GGUF", "mmproj-F16.gguf", q4_dir, label="Qwen 4B mmproj")
             _fast_download_hf("openbmb/MiniCPM-V-4.7-1B-gguf", "MiniCPM-V-4_7-1B-Q4_K_M.gguf", cpm_dir, label="MiniCPM-V 1B")
             return m9, mm9, True
 
@@ -1325,7 +1324,6 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
         q4_dir = f"{LOCAL_LLM_DIR}/qwen4b"
         cpm_dir = f"{LOCAL_LLM_DIR}/cpm1b"
         m4_path = f"{q4_dir}/Qwen3.5-4B-Q4_K_M.gguf"
-        mm4_path = f"{q4_dir}/mmproj-F16.gguf"
         cpm_path = f"{cpm_dir}/MiniCPM-V-4_7-1B-Q4_K_M.gguf"
 
         # 1. Qwen3.5-9B on CUDA 0 (:8190)
@@ -1343,21 +1341,17 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
         ll_proc = subprocess.Popen(cmd_9b, env=env_9b, stdout=open("/tmp/llama_server.log", "w"), stderr=subprocess.STDOUT)
         log_event("Launched Qwen3.5-9B QC VLM -> CUDA:0 (:8190)", category="SYSTEM", level="SUCCESS")
 
-        # 2. Qwen3.5-4B on CUDA 1 (:8191) w/ Prompt Lookup
+        # 2. Qwen3.5-4B on CUDA 1 (:8191) - Fast Text Extractor
         cmd_4b = [
             llama_bin, "-m", m4_path, "--host", "127.0.0.1", "--port", "8191",
             "-ngl", "99", "--flash-attn", "on", "-c", "8192",
             "-ctk", "f16", "-ctv", "f16",
             "--batch-size", "512", "--ubatch-size", "256",
-            "--lookup-cache",
-            "--chat-template-kwargs", '{"enable_thinking":false}',
             "--parallel", "1", "--jinja",
         ]
-        if os.path.exists(mm4_path):
-            cmd_4b.extend(["--mmproj", mm4_path])
         env_4b = ll_env.copy()
         env_4b["CUDA_VISIBLE_DEVICES"] = "1"
-        subprocess.Popen(cmd_4b, env=env_4b, stdout=open("/tmp/llama_4b.log", "w"), stderr=subprocess.STDOUT)
+        proc_4b = subprocess.Popen(cmd_4b, env=env_4b, stdout=open("/tmp/llama_4b.log", "w"), stderr=subprocess.STDOUT)
         log_event("Launched Qwen3.5-4B Fast Extractor -> CUDA:1 (:8191)", category="SYSTEM", level="SUCCESS")
 
         # 3. MiniCPM-V 4.7-1B on CUDA 1 (:8192)
@@ -1369,7 +1363,7 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
         ]
         env_cpm = ll_env.copy()
         env_cpm["CUDA_VISIBLE_DEVICES"] = "1"
-        subprocess.Popen(cmd_cpm, env=env_cpm, stdout=open("/tmp/llama_cpm.log", "w"), stderr=subprocess.STDOUT)
+        proc_cpm = subprocess.Popen(cmd_cpm, env=env_cpm, stdout=open("/tmp/llama_cpm.log", "w"), stderr=subprocess.STDOUT)
         log_event("Launched MiniCPM-V 4.7-1B Tagger -> CUDA:1 (:8192)", category="SYSTEM", level="SUCCESS")
     else:
         ll_cmd = [
@@ -1417,21 +1411,25 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
         )
         log_event(f"Launched llama-server ({mode_label}, 2x T4 split) -> 127.0.0.1:8190 ({os.path.basename(model_gguf)})", category="SYSTEM")
 
-    def _tail_llama_log():
+    def _tail_llama_log(log_path, label):
         time.sleep(2)
         try:
-            with open("/tmp/llama_server.log", "r") as lf:
+            with open(log_path, "r") as lf:
                 while True:
                     line = lf.readline()
                     if line:
                         stripped = line.strip()
                         if stripped and any(k in stripped.lower() for k in ["error", "fail", "listening", "loaded", "eval time", "tokens", "http"]):
-                            log_event(f"llama-server: {stripped[:120]}", category="LLAMA", level="INFO")
+                            log_event(f"[{label}] {stripped[:120]}", category="LLAMA", level="INFO")
                     else:
                         time.sleep(0.5)
         except Exception:
             pass
-    threading.Thread(target=_tail_llama_log, daemon=True).start()
+
+    threading.Thread(target=_tail_llama_log, args=("/tmp/llama_server.log", "9B"), daemon=True).start()
+    if PROFILE_ID == "LLM_LIGHTWEIGHT_SWARM":
+        threading.Thread(target=_tail_llama_log, args=("/tmp/llama_4b.log", "4B"), daemon=True).start()
+        threading.Thread(target=_tail_llama_log, args=("/tmp/llama_cpm.log", "CPM"), daemon=True).start()
 
     def _query_nvidia_smi():
         try:
@@ -1596,13 +1594,22 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
         next_step = 5 if all_ready else (4 if (TUNNEL_URL and is_caddy_ready()) else 3)
         next_status = "ONLINE" if all_ready else "STARTING"
 
+        dead_proc = None
         if ll_proc.poll() is not None:
-            log_event(f"llama-server exited unexpectedly (code={ll_proc.returncode}).", category="ERROR", level="ERROR")
+            dead_proc = f"llama-server 9B (code={ll_proc.returncode})"
+        elif 'proc_4b' in locals() and proc_4b.poll() is not None:
+            dead_proc = f"llama-server 4B (code={proc_4b.returncode})"
+        elif 'proc_cpm' in locals() and proc_cpm.poll() is not None:
+            dead_proc = f"llama-server CPM (code={proc_cpm.returncode})"
+
+        if dead_proc:
+            log_event(f"llama process exited unexpectedly: {dead_proc}", category="ERROR", level="ERROR")
             post_heartbeat(0, "ERROR", telem)
             break
 
         if all_ready and CURRENT_STEP < 5:
-            log_event(f"Qwen 27B LLM+VLM ONLINE in {round(time.time() - t_boot_start, 1)}s -> {TUNNEL_URL}/v1", category="SYSTEM", level="SUCCESS")
+            lbl = "Qwen Swarm (4B Extractor + 9B QC + MiniCPM-V 1B)" if PROFILE_ID == "LLM_LIGHTWEIGHT_SWARM" else f"{mode_label}"
+            log_event(f"{lbl} ONLINE in {round(time.time() - t_boot_start, 1)}s -> {TUNNEL_URL}", category="SYSTEM", level="SUCCESS")
 
         hb_int = 20 if all_ready else 8
         if next_step != _llm_last_step or has_pending_logs() or (time.time() - LAST_HB_SENT) >= hb_int:
@@ -1618,6 +1625,16 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
         time.sleep(15 if all_ready else 3)
 
     ll_proc.terminate()
+    if 'proc_4b' in locals():
+        try:
+            proc_4b.terminate()
+        except Exception:
+            pass
+    if 'proc_cpm' in locals():
+        try:
+            proc_cpm.terminate()
+        except Exception:
+            pass
     sys.exit(0)
 
 # -------------------------------------------------------------
