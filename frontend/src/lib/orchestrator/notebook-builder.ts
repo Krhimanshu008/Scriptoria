@@ -1171,7 +1171,7 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
             mm9 = _fast_download_hf("unsloth/Qwen3.5-9B-GGUF", "mmproj-F16.gguf", q9_dir, label="Qwen 9B mmproj")
             _fast_download_hf("unsloth/Qwen3.5-4B-GGUF", "Qwen3.5-4B-Q4_K_M.gguf", q4_dir, label="Qwen 4B Extractor")
             _fast_download_hf("unsloth/Qwen3.5-4B-GGUF", "mmproj-F16.gguf", q4_dir, label="Qwen 4B mmproj")
-            _fast_download_hf("openbmb/MiniCPM-V-4.7-1B-gguf", "MiniCPM-V-4.7-1B-Q4_K_M.gguf", cpm_dir, label="MiniCPM-V 1B")
+            _fast_download_hf("openbmb/MiniCPM-V-4.7-1B-gguf", "MiniCPM-V-4_7-1B-Q4_K_M.gguf", cpm_dir, label="MiniCPM-V 1B")
             return m9, mm9, True
 
         needs_vision = (PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B"))
@@ -1322,11 +1322,11 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
         ctx_size = "16384"
 
     if PROFILE_ID == "LLM_LIGHTWEIGHT_SWARM":
-        q4_dir = f"{LOCAL_LLM_DIR}/q4b"
+        q4_dir = f"{LOCAL_LLM_DIR}/qwen4b"
         cpm_dir = f"{LOCAL_LLM_DIR}/cpm1b"
         m4_path = f"{q4_dir}/Qwen3.5-4B-Q4_K_M.gguf"
         mm4_path = f"{q4_dir}/mmproj-F16.gguf"
-        cpm_path = f"{cpm_dir}/MiniCPM-V-4.7-1B-Q4_K_M.gguf"
+        cpm_path = f"{cpm_dir}/MiniCPM-V-4_7-1B-Q4_K_M.gguf"
 
         # 1. Qwen3.5-9B on CUDA 0 (:8190)
         cmd_9b = [

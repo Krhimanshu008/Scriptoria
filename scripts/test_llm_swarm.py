@@ -51,7 +51,7 @@ SERVICES = {
         "port": 8192,
         "cuda": "1",
         "repo": "openbmb/MiniCPM-V-4.7-1B-gguf",
-        "model_file": "MiniCPM-V-4.7-1B-Q4_K_M.gguf",
+        "model_file": "MiniCPM-V-4_7-1B-Q4_K_M.gguf",
         "mmproj_file": None,
         "ctx": 4096,
         "flags": ["-ngl", "99", "--flash-attn", "on", "--batch-size", "256", "--ubatch-size", "128"],
