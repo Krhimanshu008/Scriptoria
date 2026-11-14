@@ -40,7 +40,9 @@ export function TestbenchShell() {
     try {
       const res = await fetch(`/api/pipeline/health${activeBookId ? `?book_id=${activeBookId}` : ""}`);
       const data = await res.json();
-      setHealth(data);
+      if (data && typeof data === "object") {
+        setHealth(data);
+      }
     } catch (err) {
       console.error("Health check error:", err);
     }

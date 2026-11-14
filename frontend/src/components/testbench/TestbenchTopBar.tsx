@@ -28,10 +28,10 @@ export interface BookSummary {
 }
 
 export interface HealthState {
-  r2: { connected: boolean; latency_ms?: number; object_count?: number; bucket?: string };
-  supabase: { connected: boolean; books_count?: number; status?: string };
-  turso: { connected: boolean; status?: string };
-  vm_swarm: { online: boolean; active_targets?: Array<{ target: string; public_url: string }> };
+  r2?: { connected?: boolean; latency_ms?: number; object_count?: number; bucket?: string };
+  supabase?: { connected?: boolean; books_count?: number; status?: string };
+  turso?: { connected?: boolean; status?: string };
+  vm_swarm?: { online?: boolean; active_targets?: Array<{ target: string; public_url: string }> };
 }
 
 interface TestbenchTopBarProps {
@@ -138,13 +138,13 @@ export function TestbenchTopBar({
         >
           <Cloud
             className={`h-3.5 w-3.5 ${
-              health?.r2.connected ? "text-cyan-400" : "text-red-400 animate-pulse"
+              health?.r2?.connected ? "text-cyan-400" : "text-red-400 animate-pulse"
             }`}
           />
           <span className="font-medium text-zinc-300">R2:</span>
-          {health?.r2.connected ? (
+          {health?.r2?.connected ? (
             <span className="text-zinc-400">
-              {health.r2.latency_ms}ms · {health.r2.object_count ?? 0} objs
+              {health.r2.latency_ms ?? 0}ms · {health.r2.object_count ?? 0} objs
             </span>
           ) : (
             <span className="text-red-400">Error</span>
@@ -159,12 +159,12 @@ export function TestbenchTopBar({
         >
           <Database
             className={`h-3.5 w-3.5 ${
-              health?.supabase.connected ? "text-emerald-400" : "text-red-400 animate-pulse"
+              health?.supabase?.connected ? "text-emerald-400" : "text-red-400 animate-pulse"
             }`}
           />
           <span className="font-medium text-zinc-300">Supabase:</span>
           <span className="text-zinc-400">
-            {health?.supabase.connected ? `${health.supabase.books_count} books` : "Offline"}
+            {health?.supabase?.connected ? `${health.supabase.books_count ?? 0} books` : "Offline"}
           </span>
         </div>
 
@@ -176,12 +176,12 @@ export function TestbenchTopBar({
         >
           <Server
             className={`h-3.5 w-3.5 ${
-              health?.turso.connected ? "text-indigo-400" : "text-red-400 animate-pulse"
+              health?.turso?.connected ? "text-indigo-400" : "text-red-400 animate-pulse"
             }`}
           />
           <span className="font-medium text-zinc-300">Turso:</span>
           <span className="text-zinc-400">
-            {health?.turso.connected ? "104 KB / 8 MB" : "Offline"}
+            {health?.turso?.connected ? "104 KB / 8 MB" : "Offline"}
           </span>
         </div>
 
@@ -193,16 +193,16 @@ export function TestbenchTopBar({
         >
           <Cpu
             className={`h-3.5 w-3.5 ${
-              health?.vm_swarm.online ? "text-green-400 animate-pulse" : "text-zinc-500"
+              health?.vm_swarm?.online ? "text-green-400 animate-pulse" : "text-zinc-500"
             }`}
           />
           <span className="font-medium text-zinc-300">VM Swarm:</span>
           <span
             className={
-              health?.vm_swarm.online ? "font-semibold text-green-400" : "text-zinc-500"
+              health?.vm_swarm?.online ? "font-semibold text-green-400" : "text-zinc-500"
             }
           >
-            {health?.vm_swarm.online ? "ONLINE (dual-T4)" : "OFFLINE"}
+            {health?.vm_swarm?.online ? "ONLINE (dual-T4)" : "OFFLINE"}
           </span>
         </div>
 
