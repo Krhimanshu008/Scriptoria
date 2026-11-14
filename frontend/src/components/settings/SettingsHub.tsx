@@ -133,6 +133,7 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
   const [gdriveRawJson, setGdriveRawJson] = useState("");
   const [gdriveBaseFolderInput, setGdriveBaseFolder] = useState<string | null>(null);
   const [savingGdrive, setSavingGdrive] = useState(false);
+  const [refreshingGdriveKey, setRefreshingGdriveKey] = useState<string | null>(null);
 
   const [sourceKind, setSourceKind] = useState<"huggingface" | "civitai">("huggingface");
   const [sourceSecret, setSourceSecret] = useState("");
@@ -239,6 +240,50 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
         [k]: { loading: false, ok: false, detail: "Network request failed" },
       }));
       toast.error(`Failed testing ${provider} (${accountAlias})`);
+    }
+  }
+
+  async function handleRefreshGdriveToken(accountAlias = "default") {
+    const k = testKeyId("gdrive", accountAlias);
+    setRefreshingGdriveKey(accountAlias);
+    setTestResults((prev) => ({ ...prev, [k]: { loading: true } }));
+    try {
+      const res = await fetch("/api/vault/refresh-token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: "gdrive", accountAlias }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setTestResults((prev) => ({
+          ...prev,
+          [k]: {
+            loading: false,
+            ok: false,
+            detail: data.error || data.detail || "Refresh failed",
+          },
+        }));
+        toast.error(`Google Drive token refresh failed: ${data.error || data.detail || "Check credentials"}`);
+        return;
+      }
+      setTestResults((prev) => ({
+        ...prev,
+        [k]: {
+          loading: false,
+          ok: true,
+          detail: data.detail || "Token refreshed & verified",
+        },
+      }));
+      toast.success("Google Drive OAuth token successfully refreshed!");
+      await Promise.all([refetchVault(), refetchReadiness()]);
+    } catch {
+      setTestResults((prev) => ({
+        ...prev,
+        [k]: { loading: false, ok: false, detail: "Network error during token refresh" },
+      }));
+      toast.error("Failed to reach server for token refresh");
+    } finally {
+      setRefreshingGdriveKey(null);
     }
   }
 
@@ -375,6 +420,8 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
           accountAlias: "default",
           username: "personal-drive",
           rawSecret,
+          clientId: gdriveClientId.trim() || undefined,
+          clientSecret: gdriveClientSecret.trim() || undefined,
           metadata: {
             baseFolder: gdriveBaseFolder.trim() || "NovelVisualizer/ComfyUI_Storage",
           },
@@ -390,6 +437,8 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
       setGdriveRawJson("");
       setAddModalOpen(false);
       await Promise.all([refetchVault(), refetchReadiness()]);
+      // Proactively test/refresh the newly stored token
+      handleRefreshGdriveToken("default").catch(() => null);
     } finally {
       setSavingGdrive(false);
     }
@@ -670,6 +719,23 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
 
                       <td className="px-3.5 py-2.5 text-right whitespace-nowrap">
                         <div className="inline-flex items-center gap-1.5">
+                          {item.provider === "gdrive" && item.configured && (
+                            <button
+                              type="button"
+                              disabled={Boolean(tState?.loading) || refreshingGdriveKey === item.accountAlias}
+                              onClick={() => handleRefreshGdriveToken(item.accountAlias)}
+                              className="inline-flex h-7 items-center gap-1 rounded border border-indigo-700/60 bg-indigo-950/60 px-2 text-[11px] font-medium text-indigo-300 hover:bg-indigo-900/80 hover:text-indigo-100"
+                              title="Refresh Google OAuth2 access token"
+                            >
+                              {refreshingGdriveKey === item.accountAlias ? (
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              ) : (
+                                <RefreshCw className="h-3 w-3" />
+                              )}
+                              Refresh
+                            </button>
+                          )}
+
                           {(item.configured || item.provider === "webhook") && (
                             <button
                               type="button"
@@ -819,6 +885,22 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
                           <div className="inline-flex items-center gap-1.5">
                             {!isInternal && (
                               <>
+                                {c.provider === "gdrive" && (
+                                  <button
+                                    type="button"
+                                    disabled={Boolean(tState?.loading) || refreshingGdriveKey === c.accountAlias}
+                                    onClick={() => handleRefreshGdriveToken(c.accountAlias)}
+                                    className="inline-flex h-7 items-center gap-1.5 rounded border border-indigo-700/60 bg-indigo-950/60 px-2.5 text-[11px] font-medium text-indigo-300 hover:bg-indigo-900/80 hover:text-indigo-100 shadow-sm"
+                                    title="Refresh Google OAuth2 token using refresh_token and client credentials"
+                                  >
+                                    {refreshingGdriveKey === c.accountAlias ? (
+                                      <Loader2 className="h-3 w-3 animate-spin" />
+                                    ) : (
+                                      <RefreshCw className="h-3 w-3 text-indigo-400" />
+                                    )}
+                                    Refresh Token
+                                  </button>
+                                )}
                                 <button
                                   type="button"
                                   disabled={Boolean(tState?.loading)}
@@ -1422,12 +1504,37 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
               </div>
 
               {editingCred.provider === "gdrive" && (
-                <div className="space-y-1">
-                  <Label className="text-xs">Google Drive Base Folder</Label>
-                  <Input
-                    value={editBaseFolder}
-                    onChange={(e) => setEditBaseFolder(e.target.value)}
-                  />
+                <div className="space-y-3">
+                  <div className="space-y-1">
+                    <Label className="text-xs">Google Drive Base Folder</Label>
+                    <Input
+                      value={editBaseFolder}
+                      onChange={(e) => setEditBaseFolder(e.target.value)}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between rounded border border-indigo-900/50 bg-indigo-950/20 p-2.5">
+                    <div>
+                      <div className="text-xs font-medium text-white">OAuth Access Token</div>
+                      <div className="text-[10px] text-zinc-400">
+                        Exchange refresh_token for a fresh OAuth access token
+                      </div>
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={refreshingGdriveKey === editingCred.accountAlias}
+                      onClick={() => handleRefreshGdriveToken(editingCred.accountAlias)}
+                      className="border-indigo-700/60 bg-indigo-950/60 text-xs text-indigo-300 hover:bg-indigo-900/80"
+                    >
+                      {refreshingGdriveKey === editingCred.accountAlias ? (
+                        <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                      ) : (
+                        <RefreshCw className="mr-1 h-3 w-3" />
+                      )}
+                      Refresh Now
+                    </Button>
+                  </div>
                 </div>
               )}
 

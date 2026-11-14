@@ -120,10 +120,10 @@ export async function POST(req: NextRequest) {
       try {
         const obj = JSON.parse(rawSecret);
         if (!obj.client_id) {
-          obj.client_id = process.env.GDRIVE_CLIENT_ID || process.env.CLIENT_ID;
+          obj.client_id = body.clientId || process.env.GDRIVE_CLIENT_ID || process.env.CLIENT_ID;
         }
         if (!obj.client_secret) {
-          obj.client_secret = process.env.GDRIVE_CLIENT_SECRET || process.env.SECRET;
+          obj.client_secret = body.clientSecret || process.env.GDRIVE_CLIENT_SECRET || process.env.SECRET;
         }
         finalSecret = JSON.stringify(obj);
       } catch {
@@ -221,9 +221,17 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
+    let secretToUpdate = rawSecret;
     if (rawSecret && provider === "gdrive") {
       try {
-        JSON.parse(rawSecret);
+        const obj = JSON.parse(rawSecret);
+        if (!obj.client_id) {
+          obj.client_id = body.clientId || process.env.GDRIVE_CLIENT_ID || process.env.CLIENT_ID;
+        }
+        if (!obj.client_secret) {
+          obj.client_secret = body.clientSecret || process.env.GDRIVE_CLIENT_SECRET || process.env.SECRET;
+        }
+        secretToUpdate = JSON.stringify(obj);
       } catch {
         return NextResponse.json(
           { error: "Google Drive secret must be a valid Rclone / OAuth JSON string." },
@@ -242,7 +250,7 @@ export async function PATCH(req: NextRequest) {
       accountAlias,
       newAccountAlias,
       username,
-      rawSecret,
+      rawSecret: secretToUpdate,
       metadata,
     });
 

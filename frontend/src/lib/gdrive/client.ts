@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db/prisma";
-import { decryptSecret } from "@/lib/crypto/vault";
+import { decryptSecret, encryptSecret } from "@/lib/crypto/vault";
 
 export interface GDriveTokenPayload {
   access_token?: string;
@@ -11,6 +11,8 @@ export interface GDriveTokenPayload {
 }
 
 export interface ResolvedGDriveCredential {
+  id?: string;
+  accountAlias?: string;
   rawTokenJson: string;
   parsed: GDriveTokenPayload;
   baseFolder: string;
@@ -26,14 +28,31 @@ export interface GDriveModelFile {
 
 const DEFAULT_BASE_FOLDER = process.env.GDRIVE_BASE_FOLDER || "Scriptoria";
 
+function formatBytesToTbOrGb(bytesStr?: string | number): string {
+  const bytes = Number(bytesStr || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 GB";
+  const tb = bytes / 1024 ** 4;
+  if (tb >= 0.5) return `${tb.toFixed(2)} TB`;
+  return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+}
+
 /**
  * Loads and decrypts the user's Google Drive credential from the Vault.
  */
-export async function getUserGDriveCredential(userId: string): Promise<ResolvedGDriveCredential | null> {
-  const cred = await prisma.credential.findFirst({
-    where: { userId, provider: "gdrive" },
-    orderBy: { updatedAt: "desc" },
-  });
+export async function getUserGDriveCredential(
+  userId: string,
+  accountAlias?: string
+): Promise<ResolvedGDriveCredential | null> {
+  const cred =
+    (accountAlias
+      ? await prisma.credential.findFirst({
+          where: { userId, provider: "gdrive", accountAlias },
+        })
+      : null) ||
+    (await prisma.credential.findFirst({
+      where: { userId, provider: "gdrive" },
+      orderBy: { updatedAt: "desc" },
+    }));
 
   if (!cred) return null;
 
@@ -62,14 +81,204 @@ export async function getUserGDriveCredential(userId: string): Promise<ResolvedG
     }
   }
 
-  return { rawTokenJson, parsed, baseFolder };
+  return { id: cred.id, accountAlias: cred.accountAlias, rawTokenJson, parsed, baseFolder };
+}
+
+/**
+ * Refreshes the Google Drive OAuth token using refresh_token, client_id, and client_secret,
+ * updates the encrypted record in the database, and returns the fresh access token and quota info.
+ */
+export async function refreshAndPersistGDriveToken(
+  userId: string,
+  accountAlias = "default",
+  overrides?: { clientId?: string; clientSecret?: string; refreshToken?: string }
+): Promise<{
+  accessToken: string;
+  email: string;
+  used: string;
+  limit: string;
+  baseFolder: string;
+  expiresAt: string;
+}> {
+  const cred =
+    (await prisma.credential.findFirst({
+      where: { userId, provider: "gdrive", accountAlias },
+    })) ||
+    (await prisma.credential.findFirst({
+      where: { userId, provider: "gdrive" },
+      orderBy: { updatedAt: "desc" },
+    }));
+
+  if (!cred) {
+    throw new Error(`Google Drive credential '${accountAlias}' not found in Vault.`);
+  }
+
+  let rawTokenJson = "";
+  let parsed: GDriveTokenPayload = {};
+  try {
+    rawTokenJson = decryptSecret({
+      ciphertext: cred.encryptedKey,
+      iv: cred.iv,
+      authTag: cred.authTag,
+    });
+    parsed = JSON.parse(rawTokenJson);
+  } catch {
+    parsed = {};
+  }
+
+  const clientId =
+    overrides?.clientId ||
+    parsed.client_id ||
+    process.env.GDRIVE_CLIENT_ID ||
+    process.env.CLIENT_ID;
+
+  const clientSecret =
+    overrides?.clientSecret ||
+    parsed.client_secret ||
+    process.env.GDRIVE_CLIENT_SECRET ||
+    process.env.SECRET;
+
+  const refreshToken =
+    overrides?.refreshToken ||
+    parsed.refresh_token ||
+    process.env.GDRIVE_REFRESH_TOKEN;
+
+  if (!refreshToken) {
+    throw new Error("No refresh_token found in stored credential or environment. Please re-enter credentials.");
+  }
+
+  if (!clientId || !clientSecret) {
+    throw new Error("Google OAuth client_id and client_secret are required to refresh Google Drive access tokens.");
+  }
+
+  const tokenParams = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    refresh_token: refreshToken,
+    grant_type: "refresh_token",
+  });
+
+  const res = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: tokenParams.toString(),
+    cache: "no-store",
+  });
+
+  const tokenData = (await res.json().catch(() => ({}))) as {
+    access_token?: string;
+    expires_in?: number;
+    token_type?: string;
+    error?: string;
+    error_description?: string;
+  };
+
+  if (!res.ok || !tokenData.access_token) {
+    const errorMsg =
+      tokenData.error_description ||
+      tokenData.error ||
+      `Google OAuth refresh failed with HTTP ${res.status}`;
+    throw new Error(errorMsg);
+  }
+
+  const newAccessToken = tokenData.access_token;
+  const expiresInSec = Number(tokenData.expires_in || 3599);
+  const newExpiry = new Date(Date.now() + expiresInSec * 1000).toISOString();
+
+  let baseFolder = DEFAULT_BASE_FOLDER;
+  let prevMeta: Record<string, unknown> = {};
+  if (cred.metadataJson) {
+    try {
+      prevMeta = JSON.parse(cred.metadataJson);
+      if (typeof prevMeta?.baseFolder === "string" && prevMeta.baseFolder.trim()) {
+        baseFolder = prevMeta.baseFolder.trim().replace(/^\/+|\/+$/g, "");
+      }
+    } catch {}
+  }
+
+  const updatedPayload: GDriveTokenPayload = {
+    ...parsed,
+    access_token: newAccessToken,
+    token_type: tokenData.token_type || "Bearer",
+    refresh_token: refreshToken,
+    client_id: clientId,
+    client_secret: clientSecret,
+    expiry: newExpiry,
+  };
+
+  const newPlainJson = JSON.stringify(updatedPayload);
+  const enc = encryptSecret(newPlainJson);
+
+  const updatedMeta = {
+    ...prevMeta,
+    baseFolder,
+    secretHint: `OAuth (${refreshToken.slice(0, 4)}••••${refreshToken.slice(-4)})`,
+    lastRefreshedAt: new Date().toISOString(),
+  };
+
+  await prisma.credential.update({
+    where: { id: cred.id },
+    data: {
+      encryptedKey: enc.ciphertext,
+      iv: enc.iv,
+      authTag: enc.authTag,
+      metadataJson: JSON.stringify(updatedMeta),
+    },
+  });
+
+  let email = "Google Drive User";
+  let used = "0 GB";
+  let limit = "Unlimited";
+
+  try {
+    const aboutRes = await fetch(
+      "https://www.googleapis.com/drive/v3/about?fields=user(emailAddress,displayName),storageQuota(limit,usage)",
+      {
+        headers: { Authorization: `Bearer ${newAccessToken}` },
+        cache: "no-store",
+        signal: AbortSignal.timeout(10000),
+      }
+    );
+    if (aboutRes.ok) {
+      const dData = (await aboutRes.json()) as {
+        user?: { emailAddress?: string };
+        storageQuota?: { limit?: string; usage?: string };
+      };
+      if (dData.user?.emailAddress) email = dData.user.emailAddress;
+      if (dData.storageQuota?.usage) used = formatBytesToTbOrGb(dData.storageQuota.usage);
+      if (dData.storageQuota?.limit) limit = formatBytesToTbOrGb(dData.storageQuota.limit);
+    }
+  } catch (aboutErr) {
+    console.warn("[refreshAndPersistGDriveToken] /about verification check failed:", aboutErr);
+  }
+
+  return {
+    accessToken: newAccessToken,
+    email,
+    used,
+    limit,
+    baseFolder,
+    expiresAt: newExpiry,
+  };
 }
 
 /**
  * Mints a fresh Google OAuth2 access token using refresh_token + client_id + client_secret,
- * or falls back to the stored access_token if refresh metadata is absent.
+ * auto-refreshing expired tokens and persisting updates to the database when userId is provided.
  */
-export async function mintGDriveAccessToken(parsed: GDriveTokenPayload): Promise<string> {
+export async function mintGDriveAccessToken(
+  parsed: GDriveTokenPayload,
+  userId?: string,
+  accountAlias = "default"
+): Promise<string> {
+  // Check if current access token is still valid (with 60-second safety cushion)
+  if (parsed.access_token && parsed.expiry) {
+    const expiresAt = new Date(parsed.expiry).getTime();
+    if (!Number.isNaN(expiresAt) && Date.now() < expiresAt - 60000) {
+      return parsed.access_token;
+    }
+  }
+
   const clientId =
     parsed.client_id ||
     process.env.GDRIVE_CLIENT_ID ||
@@ -83,6 +292,19 @@ export async function mintGDriveAccessToken(parsed: GDriveTokenPayload): Promise
     process.env.GDRIVE_REFRESH_TOKEN;
 
   if (refreshToken && clientId && clientSecret) {
+    if (userId) {
+      try {
+        const refreshed = await refreshAndPersistGDriveToken(userId, accountAlias, {
+          clientId,
+          clientSecret,
+          refreshToken,
+        });
+        return refreshed.accessToken;
+      } catch (err) {
+        console.warn("[mintGDriveAccessToken] refreshAndPersistGDriveToken failed:", err);
+      }
+    }
+
     const body = new URLSearchParams({
       client_id: clientId,
       client_secret: clientSecret,

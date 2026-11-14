@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthUser } from "@/lib/auth/session";
 import { getDecryptedCredential } from "@/lib/crypto/credentials";
-import { getUserGDriveCredential, mintGDriveAccessToken } from "@/lib/gdrive/client";
+import {
+  getUserGDriveCredential,
+  mintGDriveAccessToken,
+  refreshAndPersistGDriveToken,
+} from "@/lib/gdrive/client";
 import { KaggleOrchestrator } from "@/lib/orchestrator/kaggle-client";
 import { resolveReachableWebhookBaseUrl } from "@/lib/orchestrator/webhook-tunnel";
 import { callLlmWithTools, defaultBaseUrlForProvider, type ResolvedLlmConfig } from "@/lib/agent/llm-client";
@@ -78,7 +82,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (provider === "gdrive") {
-      const gdrive = await getUserGDriveCredential(user.userId);
+      const gdrive = await getUserGDriveCredential(user.userId, accountAlias);
       if (!gdrive) {
         return NextResponse.json(
           { ok: false, detail: "Google Drive credential not configured." },
@@ -86,8 +90,17 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const accessToken = await mintGDriveAccessToken(gdrive.parsed);
-      const res = await fetch(
+      let accessToken: string;
+      try {
+        accessToken = await mintGDriveAccessToken(gdrive.parsed, user.userId, gdrive.accountAlias);
+      } catch (err) {
+        return NextResponse.json({
+          ok: false,
+          detail: err instanceof Error ? err.message : "Failed to obtain access token",
+        });
+      }
+
+      let res = await fetch(
         "https://www.googleapis.com/drive/v3/about?fields=user(emailAddress,displayName),storageQuota(limit,usage)",
         {
           headers: { Authorization: `Bearer ${accessToken}` },
@@ -95,6 +108,24 @@ export async function POST(req: NextRequest) {
           signal: AbortSignal.timeout(10000),
         }
       );
+
+      // If token is rejected with 401, automatically trigger refresh and retry
+      if (res.status === 401) {
+        try {
+          const refreshed = await refreshAndPersistGDriveToken(user.userId, gdrive.accountAlias);
+          accessToken = refreshed.accessToken;
+          res = await fetch(
+            "https://www.googleapis.com/drive/v3/about?fields=user(emailAddress,displayName),storageQuota(limit,usage)",
+            {
+              headers: { Authorization: `Bearer ${accessToken}` },
+              cache: "no-store",
+              signal: AbortSignal.timeout(10000),
+            }
+          );
+        } catch {
+          // If refresh also fails, proceed to return the response error
+        }
+      }
 
       if (!res.ok) {
         const text = await res.text().catch(() => "");
