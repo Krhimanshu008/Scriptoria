@@ -1371,7 +1371,6 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
             "--split-mode", "layer",
             "--tensor-split", t_split,
             "--fit", "off",
-            "--flash-attn", "on",
             "--ctx-size", ctx_size,
             "-ctk", "q8_0", "-ctv", "q8_0",
             "--batch-size", "512",
