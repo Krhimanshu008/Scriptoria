@@ -61,6 +61,8 @@ Thumbs.db
 # Python backend outputs & benchmarks
 /backend/output/
 /backend/Novels/
+/backend/data/
+*.db
 /Books/
 .pytest_cache/
 
