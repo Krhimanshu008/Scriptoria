@@ -21,8 +21,10 @@ import { LabNavigation } from "@/components/lab/LabNavigation";
 import { Station1Ingestion } from "@/components/lab/stations/Station1Ingestion";
 import { Station2Extraction } from "@/components/lab/stations/Station2Extraction";
 import { LabStation, IngestionMode } from "@/types/lab";
+import { TestbenchShell } from "@/components/testbench/TestbenchShell";
 
 export default function VisualiserLabPage() {
+  const [labMode, setLabMode] = useState<"pipeline_testbench" | "legacy_stations">("pipeline_testbench");
   const [activeStation, setActiveStation] = useState<LabStation>("ingestion");
   const [loading, setLoading] = useState(false);
 
@@ -608,8 +610,39 @@ export default function VisualiserLabPage() {
     }
   };
 
+  if (labMode === "pipeline_testbench") {
+    return (
+      <div className="flex flex-col h-screen w-full overflow-hidden bg-zinc-950">
+        <div className="flex items-center justify-between px-6 py-2 bg-zinc-900/90 border-b border-zinc-800 text-xs">
+          <div className="flex items-center gap-2">
+            <span className="font-bold text-amber-400">⚡ SCRIPTORIA INTERACTIVE TESTBENCH</span>
+            <span className="text-zinc-500">|</span>
+            <span className="text-zinc-300">Checkpoints 0 through 5 Live Manual Inspector</span>
+          </div>
+          <button
+            onClick={() => setLabMode("legacy_stations")}
+            className="text-zinc-400 hover:text-amber-400 transition underline font-medium"
+          >
+            Switch to Legacy Station Lab →
+          </button>
+        </div>
+        <div className="flex-1 overflow-hidden">
+          <TestbenchShell />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-6 p-4 md:p-8 max-w-7xl mx-auto text-neutral-100 min-h-screen">
+      <div className="flex justify-end">
+        <button
+          onClick={() => setLabMode("pipeline_testbench")}
+          className="px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/40 text-amber-300 text-xs font-semibold hover:bg-amber-500/20 transition"
+        >
+          ← Return to Interactive Pipeline Testbench (Checkpoints 0–5)
+        </button>
+      </div>
       {/* Header Banner */}
       <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 p-6 rounded-2xl bg-neutral-900/80 border border-neutral-800 shadow-2xl backdrop-blur-xl">
         <div className="flex items-center gap-4">
