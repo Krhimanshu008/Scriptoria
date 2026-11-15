@@ -115,10 +115,10 @@ class ScriptoriaRAGRetriever:
         cur = conn.cursor()
 
         # Step A: FTS5 BM25 Search
-        # Sanitize query for FTS5 (escape special characters)
-        clean_fts_query = re.sub(r'["\*\+\-\^\:]', " ", query).strip()
-        words = [w for w in clean_fts_query.split() if len(w) > 2]
-        fts_term = " OR ".join(words) if words else query
+        # Robust sanitization for SQLite FTS5: strip punctuation and wrap each token in quotes
+        raw_words = [re.sub(r"[^a-zA-Z0-9_\u0080-\uffff]", "", w) for w in query.split()]
+        valid_words = [f'"{w}"' for w in raw_words if len(w) > 1]
+        fts_term = " OR ".join(valid_words) if valid_words else ""
 
         bm25_ranks: Dict[str, int] = {}
         if fts_term:

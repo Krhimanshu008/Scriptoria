@@ -1357,10 +1357,20 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                 except Exception:
                     pass
         WORKER_PROCS.clear()
+        # Mutual process eviction: kill both llama-server and any running ComfyUI instances
         subprocess.run(["pkill", "-9", "-f", "llama-server"], check=False)
+        subprocess.run(["pkill", "-9", "-f", "ComfyUI/main.py"], check=False)
+        subprocess.run(["pkill", "-9", "-f", "main.py --listen"], check=False)
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
+        except Exception:
+            pass
         time.sleep(0.5)
         WORKER_STATE["status"] = "STOPPED"
-        log_event("LLM worker processes stopped & VRAM cleared.", category="SYSTEM", level="WARN")
+        log_event("Worker processes evicted & GPU VRAM cleared.", category="SYSTEM", level="WARN")
 
     def stop_llm_workers():
         with WORKER_LOCK:
@@ -1871,6 +1881,15 @@ for idx, port in enumerate(active_ports):
                 pass
             _tail_comfy_logs(4)
             time.sleep(1.5)
+    # Mutual eviction: ensure no orphan llama-servers occupy GPU memory
+    subprocess.run(["pkill", "-9", "-f", "llama-server"], check=False)
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+    except Exception:
+        pass
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = str(idx)
     env["PYTHONUNBUFFERED"] = "1"

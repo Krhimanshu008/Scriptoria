@@ -48,7 +48,21 @@ export async function runPipelineBridge<T = any>(
         return;
       }
       try {
-        const parsed = JSON.parse(stdout.trim());
+        const trimmed = stdout.trim();
+        // Locate first '{' or '[' and last matching '}' or ']'
+        const firstBrace = trimmed.indexOf("{");
+        const lastBrace = trimmed.lastIndexOf("}");
+        const firstBracket = trimmed.indexOf("[");
+        const lastBracket = trimmed.lastIndexOf("]");
+
+        let jsonCandidate = trimmed;
+        if (firstBrace !== -1 && lastBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) {
+          jsonCandidate = trimmed.slice(firstBrace, lastBrace + 1);
+        } else if (firstBracket !== -1 && lastBracket !== -1) {
+          jsonCandidate = trimmed.slice(firstBracket, lastBracket + 1);
+        }
+
+        const parsed = JSON.parse(jsonCandidate);
         resolve(parsed as T);
       } catch (err) {
         // Return raw text if not JSON

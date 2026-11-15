@@ -75,7 +75,11 @@ export function Tab1Parser({ activeBookId }: Tab1ParserProps) {
       const res = await fetch(`/api/pipeline/books/${activeBookId}/manifest`);
       if (res.ok) {
         const data = await res.json();
-        setManifest(data);
+        if (data && Array.isArray(data.sections)) {
+          setManifest(data);
+        } else {
+          setManifest({ book_id: activeBookId, total_sections: 0, total_story_chapters: 0, sections: [] });
+        }
       } else {
         setManifest(null);
       }
@@ -179,8 +183,8 @@ export function Tab1Parser({ activeBookId }: Tab1ParserProps) {
 
   // Toggle Section Classification (FRONTMATTER <-> STORY)
   const handleToggleClassification = async (secIndex: number) => {
-    if (!manifest) return;
-    const updated = { ...manifest };
+    if (!manifest || !Array.isArray(manifest.sections)) return;
+    const updated = { ...manifest, sections: [...manifest.sections] };
     const target = updated.sections.find((s) => s.chapter_index === secIndex);
     if (!target) return;
 
@@ -244,23 +248,23 @@ export function Tab1Parser({ activeBookId }: Tab1ParserProps) {
   };
 
   return (
-    <div className="flex flex-col gap-6 p-6 max-w-[1600px] mx-auto text-zinc-100">
+    <div className="flex flex-col gap-4 p-5 max-w-[1600px] mx-auto text-zinc-100 h-full">
       {/* Header Banner */}
-      <div className="flex items-center justify-between border-b border-zinc-800 pb-4">
+      <div className="flex items-center justify-between border-b border-zinc-800 pb-3 flex-shrink-0">
         <div>
           <h1 className="text-xl font-bold tracking-tight text-zinc-100 flex items-center gap-2">
             <FileText className="h-5 w-5 text-cyan-400" />
             Checkpoint 1: Deterministic Novel Parser Inspector (Zero-LLM)
           </h1>
-          <p className="text-sm text-zinc-400 mt-1">
+          <p className="text-xs text-zinc-400 mt-0.5">
             Standardize scene breaks to &lt;SCENE_BREAK /&gt;, normalize ligatures (fi, fl), join broken hyphens, split oversized chapters (&gt;4,500 words), and verify frontmatter classification.
           </p>
         </div>
       </div>
 
       {/* Parser Config Bar */}
-      <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 shadow-sm flex flex-wrap items-center justify-between gap-4">
-        <div className="flex flex-wrap items-center gap-6 text-xs text-zinc-300">
+      <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3.5 shadow-sm flex flex-wrap items-center justify-between gap-3 flex-shrink-0">
+        <div className="flex flex-wrap items-center gap-5 text-xs text-zinc-300">
           <div className="flex items-center gap-2">
             <Settings2 className="h-4 w-4 text-amber-400" />
             <span className="font-semibold text-zinc-200">Parser Config:</span>
@@ -318,10 +322,10 @@ export function Tab1Parser({ activeBookId }: Tab1ParserProps) {
       </div>
 
       {/* Main Split Grid: Navigator (Left) + Markdown / Diff Viewer (Right) */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-[600px]">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 flex-1 min-h-0">
         {/* Left Pane (4 cols): Chapter & Section Navigator */}
-        <div className="lg:col-span-4 rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 shadow-sm flex flex-col">
-          <div className="flex items-center justify-between border-b border-zinc-800 pb-2 mb-3">
+        <div className="lg:col-span-4 rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 shadow-sm flex flex-col min-h-0 h-full">
+          <div className="flex items-center justify-between border-b border-zinc-800 pb-2 mb-3 flex-shrink-0">
             <div className="text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
               <Layers className="h-4 w-4 text-cyan-400" />
               Sections ({manifest?.sections?.length || 0})
@@ -335,13 +339,13 @@ export function Tab1Parser({ activeBookId }: Tab1ParserProps) {
             <div className="flex items-center justify-center p-12 text-xs text-zinc-500">
               <RefreshCw className="h-4 w-4 animate-spin mr-2" /> Loading manifest...
             </div>
-          ) : !manifest || manifest.sections?.length === 0 ? (
+          ) : !manifest?.sections || !Array.isArray(manifest.sections) || manifest.sections.length === 0 ? (
             <div className="p-8 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-lg">
               No parsed sections found. Click &quot;Run Deterministic Parser&quot; to parse EPUB.
             </div>
           ) : (
-            <div className="flex flex-col gap-2 overflow-y-auto max-h-[640px] pr-1">
-              {manifest.sections.map((sec) => {
+            <div className="flex flex-col gap-2 overflow-y-auto flex-1 min-h-0 pr-1">
+              {(manifest.sections || []).map((sec) => {
                 const isSelected = sec.chapter_index === selectedSectionIdx;
                 return (
                   <div
@@ -389,9 +393,9 @@ export function Tab1Parser({ activeBookId }: Tab1ParserProps) {
         </div>
 
         {/* Right Pane (8 cols): Sanitization & Markdown Viewer */}
-        <div className="lg:col-span-8 rounded-xl border border-zinc-800 bg-zinc-900/60 p-5 shadow-sm flex flex-col">
+        <div className="lg:col-span-8 rounded-xl border border-zinc-800 bg-zinc-900/60 p-5 shadow-sm flex flex-col min-h-0 h-full">
           {/* Section Toolbar */}
-          <div className="flex items-center justify-between border-b border-zinc-800 pb-3 mb-4">
+          <div className="flex items-center justify-between border-b border-zinc-800 pb-3 mb-4 flex-shrink-0">
             <div>
               <h2 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
                 <BookOpen className="h-4 w-4 text-amber-400" />
@@ -431,7 +435,7 @@ export function Tab1Parser({ activeBookId }: Tab1ParserProps) {
 
           {/* Leftover Artifacts Warning Pill */}
           {artifactHits.length > 0 && (
-            <div className="mb-4 rounded-lg border border-amber-900/80 bg-amber-950/30 p-3 text-xs text-amber-300">
+            <div className="mb-4 rounded-lg border border-amber-900/80 bg-amber-950/30 p-3 text-xs text-amber-300 flex-shrink-0">
               <div className="flex items-center gap-1.5 font-semibold text-amber-200 mb-1">
                 <AlertTriangle className="h-3.5 w-3.5 text-amber-400" />
                 {artifactHits.length} Potential Cleanup Artifacts Detected:
@@ -450,7 +454,7 @@ export function Tab1Parser({ activeBookId }: Tab1ParserProps) {
           )}
 
           {/* Content Pane */}
-          <div className="flex-1 overflow-y-auto max-h-[560px] rounded-lg border border-zinc-800 bg-zinc-950 p-5">
+          <div className="flex-1 overflow-y-auto min-h-0 rounded-lg border border-zinc-800 bg-zinc-950 p-5">
             {mdLoading ? (
               <div className="flex items-center justify-center p-16 text-zinc-500 text-xs">
                 <RefreshCw className="h-5 w-5 animate-spin mr-2 text-cyan-400" /> Fetching section from Cloudflare R2...

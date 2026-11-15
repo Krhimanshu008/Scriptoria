@@ -19,7 +19,10 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 
 from bs4 import BeautifulSoup, NavigableString, Tag
-import fitz  # PyMuPDF
+try:
+    import pymupdf as fitz
+except ImportError:
+    import fitz  # PyMuPDF
 
 
 LIGATURES_MAP = {

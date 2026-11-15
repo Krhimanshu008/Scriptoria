@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { TestbenchTopBar, BookSummary, HealthState } from "./TestbenchTopBar";
 import { TestbenchNavRail, TestbenchTabId } from "./TestbenchNavRail";
 import { Tab0Plumbing } from "./tabs/Tab0Plumbing";
@@ -9,14 +10,49 @@ import { Tab2Extraction } from "./tabs/Tab2Extraction";
 import { Tab3GraphStudio } from "./tabs/Tab3GraphStudio";
 import { Tab4RAGWorkbench } from "./tabs/Tab4RAGWorkbench";
 import { Tab5Scorecard } from "./tabs/Tab5Scorecard";
+import type { PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
+import type { KaggleAccountSummary, ColabAccountSummary } from "@/app/api/vm/accounts/route";
 import { toast } from "sonner";
 
 export function TestbenchShell() {
+  const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<TestbenchTabId>("tab0");
   const [books, setBooks] = useState<BookSummary[]>([]);
   const [activeBookId, setActiveBookId] = useState<string>("");
   const [health, setHealth] = useState<HealthState | null>(null);
   const [booksLoading, setBooksLoading] = useState(true);
+
+  // Cluster VM Status Query (shared with DashboardShell and GPU Cluster)
+  const { data: vmData, refetch: refetchVms } = useQuery<{ vms: PublicVmInstance[] }>({
+    queryKey: ["vm-status"],
+    queryFn: async () => {
+      const res = await fetch("/api/vm/status");
+      if (!res.ok) throw new Error("Failed to fetch VM status");
+      return res.json();
+    },
+    refetchInterval: (query) => {
+      const list = query.state.data?.vms ?? [];
+      return list.some((v) => v.status === "STARTING") ? 2500 : 5000;
+    },
+    staleTime: 2500,
+  });
+
+  // Cluster Accounts Query (Kaggle Quota, Colab Tokens)
+  const { data: accountsData, refetch: refetchAccounts } = useQuery<{
+    kaggleAccounts: KaggleAccountSummary[];
+    colabAccounts: ColabAccountSummary[];
+    googleOAuthAvailable: boolean;
+  }>({
+    queryKey: ["vm-accounts"],
+    queryFn: async () => {
+      const res = await fetch("/api/vm/accounts");
+      if (!res.ok) throw new Error("Failed to fetch cluster accounts");
+      return res.json();
+    },
+    refetchInterval: 60000,
+  });
+
+  const vms = vmData?.vms ?? [];
 
   // Fetch books list from Supabase
   const fetchBooks = async () => {
@@ -48,6 +84,12 @@ export function TestbenchShell() {
     }
   };
 
+  const handleRefreshCluster = () => {
+    fetchHealth();
+    queryClient.invalidateQueries({ queryKey: ["vm-status"] });
+    queryClient.invalidateQueries({ queryKey: ["vm-accounts"] });
+  };
+
   useEffect(() => {
     fetchBooks();
     fetchHealth();
@@ -60,7 +102,7 @@ export function TestbenchShell() {
   }, [activeBookId]);
 
   return (
-    <div className="flex h-screen w-full flex-col bg-zinc-950 font-sans text-zinc-100 overflow-hidden">
+    <div className="flex h-full w-full flex-col bg-zinc-950 font-sans text-zinc-100 overflow-hidden">
       {/* Pinned Top Bar */}
       <TestbenchTopBar
         books={books}
@@ -69,18 +111,34 @@ export function TestbenchShell() {
         health={health}
         onRefreshHealth={fetchHealth}
         onOpenUploadModal={() => setActiveTab("tab0")}
+        vms={vms}
+        kaggleAccounts={accountsData?.kaggleAccounts || []}
+        colabAccounts={accountsData?.colabAccounts || []}
+        onRefreshVms={handleRefreshCluster}
       />
 
       {/* Main Body: Nav Rail (Left) + Active Tab (Right) */}
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 min-h-0 overflow-hidden">
         <TestbenchNavRail activeTab={activeTab} onSelectTab={(tab) => setActiveTab(tab)} />
 
-        <main className="flex-1 overflow-y-auto bg-zinc-950/50">
+        <main
+          className={`flex-1 min-h-0 bg-zinc-950/50 ${
+            activeTab === "tab1" ? "overflow-hidden" : "overflow-y-auto"
+          }`}
+        >
           {activeTab === "tab0" && (
             <Tab0Plumbing activeBookId={activeBookId} onRefreshBooks={fetchBooks} />
           )}
           {activeTab === "tab1" && <Tab1Parser activeBookId={activeBookId} />}
-          {activeTab === "tab2" && <Tab2Extraction activeBookId={activeBookId} />}
+          {activeTab === "tab2" && (
+            <Tab2Extraction
+              activeBookId={activeBookId}
+              vms={vms}
+              kaggleAccounts={accountsData?.kaggleAccounts || []}
+              colabAccounts={accountsData?.colabAccounts || []}
+              onRefreshVms={handleRefreshCluster}
+            />
+          )}
           {activeTab === "tab3" && <Tab3GraphStudio activeBookId={activeBookId} />}
           {activeTab === "tab4" && <Tab4RAGWorkbench activeBookId={activeBookId} />}
           {activeTab === "tab5" && (

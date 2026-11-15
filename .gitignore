@@ -62,6 +62,7 @@ Thumbs.db
 /backend/output/
 /backend/Novels/
 /backend/data/
+/data/
 *.db
 /Books/
 .pytest_cache/

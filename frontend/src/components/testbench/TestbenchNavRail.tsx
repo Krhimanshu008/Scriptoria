@@ -64,8 +64,8 @@ const TABS: Array<{
 
 export function TestbenchNavRail({ activeTab, onSelectTab }: TestbenchNavRailProps) {
   return (
-    <aside className="w-64 border-r border-zinc-800 bg-zinc-950 p-3 flex flex-col gap-1.5 shrink-0 select-none">
-      <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+    <aside className="w-60 md:w-64 border-r border-zinc-800/90 bg-[#09090b] p-3 flex flex-col gap-1.5 shrink-0 select-none overflow-y-auto">
+      <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
         Testbench Checkpoints
       </div>
 

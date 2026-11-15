@@ -21,6 +21,7 @@ import {
   HardDrive,
   Copy,
   Check,
+  Cpu,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -118,6 +119,8 @@ export function Tab0Plumbing({ activeBookId, onRefreshBooks }: Tab0PlumbingProps
   const [tursoPingLoading, setTursoPingLoading] = useState(false);
   const [supaHealthResult, setSupaHealthResult] = useState<any>(null);
   const [supaHealthLoading, setSupaHealthLoading] = useState(false);
+  const [vmPingResult, setVmPingResult] = useState<any>(null);
+  const [vmPingLoading, setVmPingLoading] = useState(false);
 
   // Schema fault injector state
   const [schemaJson, setSchemaJson] = useState(JSON.stringify(VALID_SAMPLE_OBSERVATION, null, 2));
@@ -221,6 +224,36 @@ export function Tab0Plumbing({ activeBookId, onRefreshBooks }: Tab0PlumbingProps
       toast.error("Supabase check error: " + err.message);
     } finally {
       setSupaHealthLoading(false);
+    }
+  };
+
+  // Run VM Swarm Ping
+  const handleVmPing = async () => {
+    setVmPingLoading(true);
+    try {
+      const res = await fetch("/api/vm/status");
+      const data = await res.json();
+      const vms = data.vms || [];
+      const online = vms.filter((v: any) => v.status === "ONLINE" || v.status === "BUSY");
+      const starting = vms.filter((v: any) => v.status === "STARTING");
+      setVmPingResult({
+        success: true,
+        onlineCount: online.length,
+        startingCount: starting.length,
+        totalCount: vms.length,
+        online: online.length > 0,
+      });
+      if (online.length > 0) {
+        toast.success(`VM Swarm Online: ${online.length}/${vms.length} active GPUs`);
+      } else if (starting.length > 0) {
+        toast.info(`VM Swarm Starting: ${starting.length} booting`);
+      } else {
+        toast.info("VM Swarm Offline (0/6 online)");
+      }
+    } catch (err: any) {
+      toast.error("VM ping error: " + err.message);
+    } finally {
+      setVmPingLoading(false);
     }
   };
 
@@ -584,7 +617,7 @@ export function Tab0Plumbing({ activeBookId, onRefreshBooks }: Tab0PlumbingProps
               Live Infrastructure Smoke Tests
             </h2>
 
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               {/* R2 Card */}
               <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 flex flex-col justify-between">
                 <div>
@@ -655,6 +688,31 @@ export function Tab0Plumbing({ activeBookId, onRefreshBooks }: Tab0PlumbingProps
                 >
                   {tursoPingLoading ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
                   Ping Turso
+                </button>
+              </div>
+
+              {/* VM Swarm Card */}
+              <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center justify-between text-xs font-semibold text-zinc-300">
+                    <span className="flex items-center gap-1.5">
+                      <Cpu className="h-3.5 w-3.5 text-purple-400" /> VM Swarm
+                    </span>
+                    {vmPingResult?.online && <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />}
+                  </div>
+                  <div className="mt-1 text-[11px] text-zinc-400">
+                    {vmPingResult
+                      ? `${vmPingResult.onlineCount}/${vmPingResult.totalCount || 6} online`
+                      : "Dual-T4 & Colab cluster"}
+                  </div>
+                </div>
+                <button
+                  onClick={handleVmPing}
+                  disabled={vmPingLoading}
+                  className="mt-3 w-full h-7 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[11px] font-medium flex items-center justify-center gap-1.5 transition disabled:opacity-50"
+                >
+                  {vmPingLoading ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
+                  Ping Swarm
                 </button>
               </div>
             </div>

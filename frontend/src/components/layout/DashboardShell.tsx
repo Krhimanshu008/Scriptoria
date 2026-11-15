@@ -81,6 +81,8 @@ export function DashboardShell({
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
 
+  const isFullBleed = pathname.startsWith("/testbench");
+
   const activeStream = useClusterStore((s) => s.activeStream);
   const setActiveStream = useClusterStore((s) => s.setActiveStream);
   const syncTargetWithVms = useClusterStore((s) => s.syncTargetWithVms);
@@ -466,7 +468,7 @@ export function DashboardShell({
       )}
 
       {/* Main Content Area */}
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className={`flex min-w-0 flex-1 flex-col ${isFullBleed ? "h-screen overflow-hidden" : ""}`}>
         {/* Slim 48px Header */}
         <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center justify-between gap-3 border-b border-zinc-800/90 bg-[#09090b]/95 px-4 backdrop-blur-sm">
           <div className="flex min-w-0 items-center gap-2.5">
@@ -515,7 +517,15 @@ export function DashboardShell({
           </div>
         </header>
 
-        <main className="mx-auto w-full max-w-[1440px] flex-1 p-4 md:p-5">{children}</main>
+        <main
+          className={
+            isFullBleed
+              ? "flex-1 min-h-0 w-full overflow-hidden p-0 max-w-none flex flex-col"
+              : "mx-auto w-full max-w-[1440px] flex-1 p-4 md:p-5"
+          }
+        >
+          {children}
+        </main>
       </div>
     </div>
   );

@@ -61,6 +61,7 @@ def test_discourse_beat_chunker_and_80_to_100_shot_allocator():
     assert total_allocated_shots == 90
 
 
+@pytest.mark.requires_postgres
 @pytest.mark.asyncio
 async def test_retroactive_retcon_inpainting_triage():
     async with AsyncSessionLocal() as session:

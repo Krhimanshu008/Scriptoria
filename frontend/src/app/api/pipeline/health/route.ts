@@ -57,7 +57,11 @@ export async function GET(req: NextRequest) {
     const args = bookId ? [bookId] : [];
     const bridgeHealth = await runPipelineBridge("health", args, undefined, 10000);
     if (bridgeHealth && typeof bridgeHealth === "object" && bridgeHealth.r2) {
-      return NextResponse.json(bridgeHealth);
+      return NextResponse.json({
+        ...bridgeHealth,
+        turso: bridgeHealth.turso?.connected ? bridgeHealth.turso : tursoHealth,
+        vm_swarm: bridgeHealth.vm_swarm?.online ? bridgeHealth.vm_swarm : vmSwarmHealth,
+      });
     }
   } catch {
     // Python not installed (e.g. Vercel) or timed out; fall back to direct Node health

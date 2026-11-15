@@ -13,7 +13,15 @@ import {
   CheckCircle2,
   AlertCircle,
   HardDrive,
+  Zap,
+  Settings2,
+  ChevronDown,
+  Loader2,
+  ExternalLink,
 } from "lucide-react";
+import type { PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
+import type { KaggleAccountSummary, ColabAccountSummary } from "@/app/api/vm/accounts/route";
+import { TestbenchVmModal } from "./TestbenchVmModal";
 import { toast } from "sonner";
 
 export interface BookSummary {
@@ -41,6 +49,10 @@ interface TestbenchTopBarProps {
   health: HealthState | null;
   onRefreshHealth: () => void;
   onOpenUploadModal: () => void;
+  vms?: PublicVmInstance[];
+  kaggleAccounts?: KaggleAccountSummary[];
+  colabAccounts?: ColabAccountSummary[];
+  onRefreshVms?: () => void;
 }
 
 export function TestbenchTopBar({
@@ -50,10 +62,26 @@ export function TestbenchTopBar({
   health,
   onRefreshHealth,
   onOpenUploadModal,
+  vms = [],
+  kaggleAccounts = [],
+  colabAccounts = [],
+  onRefreshVms,
 }: TestbenchTopBarProps) {
   const [isKilling, setIsKilling] = useState(false);
+  const [isBooting, setIsBooting] = useState(false);
+  const [vmModalOpen, setVmModalOpen] = useState(false);
+
   const activeBook = books.find((b) => b.book_id === activeBookId);
 
+  // Swarm state computation
+  const isSwarmOnline = Boolean(
+    health?.vm_swarm?.online || vms.some((v) => v.status === "ONLINE" || v.status === "BUSY")
+  );
+  const startingVm = vms.find((v) => v.status === "STARTING");
+  const isStarting = !isSwarmOnline && Boolean(startingVm);
+  const primaryOnlineVm = vms.find((v) => v.status === "ONLINE" || v.status === "BUSY");
+
+  // Emergency Panic Kill
   const handlePanicKill = async () => {
     setIsKilling(true);
     try {
@@ -63,10 +91,33 @@ export function TestbenchTopBar({
         description: JSON.stringify(data.results || {}),
       });
       onRefreshHealth();
+      onRefreshVms?.();
     } catch (err: any) {
       toast.error("Failed to dispatch panic kill: " + err.message);
     } finally {
       setIsKilling(false);
+    }
+  };
+
+  // Direct Boot (defaults to primary configured target e.g. gpu0)
+  const handleBootPrimary = async (target = "gpu0") => {
+    setIsBooting(true);
+    try {
+      const res = await fetch(`/api/vm/${encodeURIComponent(target)}/toggle`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || `Failed to boot ${target}`);
+        return;
+      }
+      toast.success(`⚡ Boot signal sent to ${target.toUpperCase()}! Initializing kernel & tunnel...`);
+      onRefreshHealth();
+      onRefreshVms?.();
+    } catch (err: any) {
+      toast.error("Boot request failed: " + err.message);
+    } finally {
+      setIsBooting(false);
     }
   };
 
@@ -85,19 +136,19 @@ export function TestbenchTopBar({
   };
 
   return (
-    <header className="sticky top-0 z-40 flex h-16 w-full items-center justify-between border-b border-zinc-800 bg-zinc-950/90 px-6 backdrop-blur">
-      {/* Left: Active Book Switcher */}
-      <div className="flex items-center gap-3">
-        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-zinc-800/80 border border-zinc-700/60 text-zinc-100">
-          <BookOpen className="h-5 w-5 text-amber-400" />
-        </div>
+    <>
+      <header className="sticky top-0 z-40 flex h-14 w-full shrink-0 items-center justify-between border-b border-zinc-800 bg-[#09090b]/95 px-4 md:px-5 backdrop-blur-sm select-none">
+        {/* Left: Active Book Switcher & Status */}
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-zinc-900 border border-zinc-700/80 text-zinc-100 shrink-0">
+            <BookOpen className="h-4 w-4 text-amber-400" />
+          </div>
 
-        <div className="flex flex-col">
           <div className="flex items-center gap-2">
             <select
               value={activeBookId}
               onChange={(e) => onSelectBook(e.target.value)}
-              className="h-8 max-w-[280px] rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-1 text-sm font-medium text-zinc-100 hover:border-zinc-600 focus:border-amber-500 focus:outline-none"
+              className="h-8 max-w-[240px] sm:max-w-[300px] rounded-md border border-zinc-700 bg-zinc-900 px-2.5 text-xs font-medium text-zinc-100 hover:border-zinc-600 focus:border-amber-500 focus:outline-none truncate"
             >
               {books.map((b) => (
                 <option key={b.book_id} value={b.book_id}>
@@ -109,7 +160,7 @@ export function TestbenchTopBar({
 
             {activeBook && (
               <span
-                className={`rounded-full border px-2.5 py-0.5 text-xs font-semibold uppercase tracking-wider ${getStatusBadge(
+                className={`hidden sm:inline-flex h-8 items-center rounded-md border px-2.5 text-[11px] font-semibold uppercase tracking-wider ${getStatusBadge(
                   activeBook.status
                 )}`}
               >
@@ -119,114 +170,174 @@ export function TestbenchTopBar({
 
             <button
               onClick={onOpenUploadModal}
-              className="flex h-8 items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800/80 px-2.5 text-xs font-medium text-zinc-200 transition-colors hover:border-zinc-500 hover:bg-zinc-700"
+              className="flex h-8 items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-900 px-2.5 text-xs font-medium text-zinc-200 transition-colors hover:border-zinc-500 hover:bg-zinc-800 shrink-0"
+              title="Upload new novel to R2 lake"
             >
               <Plus className="h-3.5 w-3.5 text-amber-400" />
-              Upload Book
+              <span className="hidden xs:inline">Upload</span>
             </button>
           </div>
         </div>
-      </div>
 
-      {/* Center: Live Cloud Health Pills */}
-      <div className="hidden lg:flex items-center gap-2.5">
-        {/* R2 Pill */}
-        <div
-          onClick={onRefreshHealth}
-          className="flex cursor-pointer items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900/80 px-3 py-1.5 text-xs transition-all hover:border-zinc-600"
-          title="Click to refresh cloud health"
-        >
-          <Cloud
-            className={`h-3.5 w-3.5 ${
-              health?.r2?.connected ? "text-cyan-400" : "text-red-400 animate-pulse"
-            }`}
-          />
-          <span className="font-medium text-zinc-300">R2:</span>
-          {health?.r2?.connected ? (
+        {/* Center: Live Cloud Health & VM Swarm State */}
+        <div className="hidden lg:flex items-center gap-2">
+          {/* R2 Pill */}
+          <div
+            onClick={onRefreshHealth}
+            className="flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900/90 px-2.5 text-xs transition-all hover:border-zinc-600"
+            title="Click to refresh R2 storage health"
+          >
+            <Cloud
+              className={`h-3.5 w-3.5 ${
+                health?.r2?.connected ? "text-cyan-400" : "text-red-400 animate-pulse"
+              }`}
+            />
+            <span className="font-medium text-zinc-300">R2:</span>
+            {health?.r2?.connected ? (
+              <span className="text-zinc-400">
+                {health.r2.latency_ms ?? 0}ms · {health.r2.object_count ?? 0} objs
+              </span>
+            ) : (
+              <span className="text-red-400">Error</span>
+            )}
+          </div>
+
+          {/* Supabase Pill */}
+          <div
+            onClick={onRefreshHealth}
+            className="flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900/90 px-2.5 text-xs transition-all hover:border-zinc-600"
+            title="Click to refresh Supabase catalog health"
+          >
+            <Database
+              className={`h-3.5 w-3.5 ${
+                health?.supabase?.connected ? "text-emerald-400" : "text-red-400 animate-pulse"
+              }`}
+            />
+            <span className="font-medium text-zinc-300">Supabase:</span>
             <span className="text-zinc-400">
-              {health.r2.latency_ms ?? 0}ms · {health.r2.object_count ?? 0} objs
+              {health?.supabase?.connected ? `${health.supabase.books_count ?? 0} books` : "Offline"}
             </span>
+          </div>
+
+          {/* Turso Pill */}
+          <div
+            onClick={onRefreshHealth}
+            className="flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900/90 px-2.5 text-xs transition-all hover:border-zinc-600"
+            title="Click to refresh Turso LibSQL state"
+          >
+            <Server
+              className={`h-3.5 w-3.5 ${
+                health?.turso?.connected ? "text-indigo-400" : "text-red-400 animate-pulse"
+              }`}
+            />
+            <span className="font-medium text-zinc-300">Turso:</span>
+            <span className="text-zinc-400">
+              {health?.turso?.connected ? "104 KB" : "Offline"}
+            </span>
+          </div>
+
+          {/* VM Swarm Pill (Interactive - opens Quick Drawer) */}
+          <div
+            onClick={() => setVmModalOpen(true)}
+            className={`flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 text-xs transition-all ${
+              isSwarmOnline
+                ? "border-emerald-800/80 bg-emerald-950/40 text-emerald-300 hover:border-emerald-600"
+                : isStarting
+                ? "border-amber-800/80 bg-amber-950/40 text-amber-300 hover:border-amber-600 animate-pulse"
+                : "border-zinc-800 bg-zinc-900/90 text-zinc-400 hover:border-zinc-600"
+            }`}
+            title="Click to manage Cloud VM Swarm & targets"
+          >
+            <Cpu className="h-3.5 w-3.5" />
+            <span className="font-medium">Swarm:</span>
+            <span>
+              {isSwarmOnline
+                ? `ONLINE (${primaryOnlineVm?.target.toUpperCase() || "Dual-T4"})`
+                : isStarting
+                ? `STARTING (${startingVm?.stepProgress || 1}/5)`
+                : "OFFLINE"}
+            </span>
+            <ChevronDown className="h-3 w-3 opacity-60 ml-0.5" />
+          </div>
+
+          <button
+            onClick={() => {
+              onRefreshHealth();
+              onRefreshVms?.();
+            }}
+            className="h-8 w-8 inline-flex items-center justify-center rounded-lg border border-zinc-800 bg-zinc-900/90 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700 transition"
+            title="Refresh All Cloud Health & VM Swarm"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        {/* Right: DYNAMIC ACTION BUTTON (Switches from Boot to Kill) */}
+        <div className="flex items-center gap-2">
+          {/* Quick Targets Modal Trigger */}
+          <button
+            onClick={() => setVmModalOpen(true)}
+            className="hidden sm:flex h-8 items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900/90 px-2.5 text-xs font-medium text-zinc-300 hover:border-zinc-700 hover:bg-zinc-800 transition"
+            title="Configure VM Swarm Targets & LLM Profiles"
+          >
+            <Settings2 className="h-3.5 w-3.5 text-zinc-400" />
+            <span>Manage Swarm</span>
+          </button>
+
+          {/* DYNAMIC PRIMARY BUTTON */}
+          {isSwarmOnline ? (
+            /* ONLINE -> Switches dynamically to /vm-kill Panic button */
+            <button
+              onClick={handlePanicKill}
+              disabled={isKilling}
+              className="flex h-8 items-center gap-1.5 rounded-lg border border-red-700/80 bg-red-950/80 px-3.5 text-xs font-semibold text-red-300 shadow-sm transition-all hover:bg-red-900 hover:border-red-500 active:scale-95 disabled:opacity-50"
+              title="Swarm is ONLINE. Click to immediately terminate GPU sessions and save quota."
+            >
+              <Power className={`h-3.5 w-3.5 text-red-400 ${isKilling ? "animate-spin" : ""}`} />
+              <span>{isKilling ? "Stopping..." : "🛑 /vm-kill Panic"}</span>
+            </button>
+          ) : isStarting ? (
+            /* STARTING -> Progress indicator + Cancel option */
+            <button
+              onClick={handlePanicKill}
+              disabled={isKilling}
+              className="flex h-8 items-center gap-1.5 rounded-lg border border-amber-600/80 bg-amber-950/80 px-3 text-xs font-semibold text-amber-300 shadow-sm transition-all hover:bg-amber-900 active:scale-95"
+              title="VM Kernel is booting. Click to cancel."
+            >
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-400" />
+              <span>Starting ({startingVm?.stepProgress || 1}/5) · Cancel</span>
+            </button>
           ) : (
-            <span className="text-red-400">Error</span>
+            /* OFFLINE -> Direct 1-Click BOOT SWARM Button */
+            <button
+              onClick={() => handleBootPrimary("gpu0")}
+              disabled={isBooting}
+              className="flex h-8 items-center gap-1.5 rounded-lg border border-amber-500 bg-amber-500 px-3.5 text-xs font-semibold text-zinc-950 shadow-sm transition-all hover:bg-amber-400 active:scale-95 disabled:opacity-50"
+              title="Swarm is OFFLINE. Click to boot Kaggle Dual-T4 Swarm (gpu0) with 1 click!"
+            >
+              {isBooting ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Zap className="h-3.5 w-3.5 fill-current" />
+              )}
+              <span>{isBooting ? "Booting..." : "⚡ Boot Swarm"}</span>
+            </button>
           )}
         </div>
+      </header>
 
-        {/* Supabase Pill */}
-        <div
-          onClick={onRefreshHealth}
-          className="flex cursor-pointer items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900/80 px-3 py-1.5 text-xs transition-all hover:border-zinc-600"
-          title="Click to refresh cloud health"
-        >
-          <Database
-            className={`h-3.5 w-3.5 ${
-              health?.supabase?.connected ? "text-emerald-400" : "text-red-400 animate-pulse"
-            }`}
-          />
-          <span className="font-medium text-zinc-300">Supabase:</span>
-          <span className="text-zinc-400">
-            {health?.supabase?.connected ? `${health.supabase.books_count ?? 0} books` : "Offline"}
-          </span>
-        </div>
-
-        {/* Turso Pill */}
-        <div
-          onClick={onRefreshHealth}
-          className="flex cursor-pointer items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900/80 px-3 py-1.5 text-xs transition-all hover:border-zinc-600"
-          title="Click to refresh cloud health"
-        >
-          <Server
-            className={`h-3.5 w-3.5 ${
-              health?.turso?.connected ? "text-indigo-400" : "text-red-400 animate-pulse"
-            }`}
-          />
-          <span className="font-medium text-zinc-300">Turso:</span>
-          <span className="text-zinc-400">
-            {health?.turso?.connected ? "104 KB / 8 MB" : "Offline"}
-          </span>
-        </div>
-
-        {/* VM Swarm Pill */}
-        <div
-          onClick={onRefreshHealth}
-          className="flex cursor-pointer items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900/80 px-3 py-1.5 text-xs transition-all hover:border-zinc-600"
-          title="Click to refresh cloud health"
-        >
-          <Cpu
-            className={`h-3.5 w-3.5 ${
-              health?.vm_swarm?.online ? "text-green-400 animate-pulse" : "text-zinc-500"
-            }`}
-          />
-          <span className="font-medium text-zinc-300">VM Swarm:</span>
-          <span
-            className={
-              health?.vm_swarm?.online ? "font-semibold text-green-400" : "text-zinc-500"
-            }
-          >
-            {health?.vm_swarm?.online ? "ONLINE (dual-T4)" : "OFFLINE"}
-          </span>
-        </div>
-
-        <button
-          onClick={onRefreshHealth}
-          className="p-1.5 rounded-md hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors"
-          title="Refresh All Cloud Health"
-        >
-          <RefreshCw className="h-3.5 w-3.5" />
-        </button>
-      </div>
-
-      {/* Right: Emergency Panic Kill Button */}
-      <div className="flex items-center gap-3">
-        <button
-          onClick={handlePanicKill}
-          disabled={isKilling}
-          className="flex items-center gap-2 rounded-lg border border-red-700/80 bg-red-950/80 px-3.5 py-1.5 text-xs font-semibold text-red-300 shadow-sm transition-all hover:bg-red-900 hover:border-red-500 active:scale-95 disabled:opacity-50"
-          title="Emergency Stop: Immediately dispatches /vm-kill to Kaggle/Colab to preserve weekly GPU quota"
-        >
-          <Power className={`h-4 w-4 text-red-400 ${isKilling ? "animate-spin" : ""}`} />
-          <span>{isKilling ? "Terminating..." : "🛑 /vm-kill Panic"}</span>
-        </button>
-      </div>
-    </header>
+      {/* VM Swarm & Target Configuration Modal */}
+      <TestbenchVmModal
+        open={vmModalOpen}
+        onOpenChange={setVmModalOpen}
+        vms={vms}
+        kaggleAccounts={kaggleAccounts}
+        colabAccounts={colabAccounts}
+        onRefresh={() => {
+          onRefreshHealth();
+          onRefreshVms?.();
+        }}
+      />
+    </>
   );
 }

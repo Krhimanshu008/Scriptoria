@@ -18,6 +18,7 @@ class MockLLMArbitrator:
     async def verify_entity_identity(self, **kwargs) -> bool:
         return True
 
+@pytest.mark.requires_postgres
 @pytest.mark.asyncio
 async def test_multi_book_physics_deduplication_and_provenance():
     async with AsyncSessionLocal() as session:
@@ -78,6 +79,7 @@ async def test_multi_book_physics_deduplication_and_provenance():
         assert outcome_b.variance_notice is not None
         await session.rollback()
 
+@pytest.mark.requires_postgres
 @pytest.mark.asyncio
 async def test_fiction_canon_protection_retcon_and_state_evolution():
     async with AsyncSessionLocal() as session:

@@ -2,6 +2,7 @@
 Cloudflare R2 Blob Lake Storage Service.
 Provides uniform S3-compatible API for raw books, chapter markdown,
 scene JSON checkpoints, and compiled database artifacts.
+Transparently falls back to local disk storage lake if cloud credentials are not supplied.
 """
 
 from __future__ import annotations
@@ -9,19 +10,32 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import List, Optional, Union, Dict, Any
 
-import boto3
-from botocore.config import Config
-from botocore.exceptions import ClientError
 from dotenv import load_dotenv
 
-load_dotenv()
+# Resolve project paths
+SCRIPT_PATH = Path(__file__).resolve()
+PROJECT_ROOT = SCRIPT_PATH.parents[3]
+
+load_dotenv(PROJECT_ROOT / ".env")
+load_dotenv(PROJECT_ROOT / "backend" / ".env")
+load_dotenv(PROJECT_ROOT / "frontend" / ".env")
+load_dotenv(PROJECT_ROOT / "frontend" / ".env.local")
+
+try:
+    import boto3
+    from botocore.config import Config
+    from botocore.exceptions import ClientError
+    _BOTO3_AVAILABLE = True
+except ImportError:
+    _BOTO3_AVAILABLE = False
 
 
 class R2StorageService:
-    """Manages blob storage operations against Cloudflare R2."""
+    """Manages blob storage operations against Cloudflare R2 (or local disk fallback)."""
 
     def __init__(
         self,
@@ -35,17 +49,26 @@ class R2StorageService:
         self.secret_access_key = secret_access_key or os.getenv("R2_SECRET_ACCESS_KEY")
         self.bucket_name = bucket_name or os.getenv("R2_BUCKET_NAME", "scriptoria")
 
-        if not (self.endpoint_url and self.access_key_id and self.secret_access_key):
-            raise ValueError("Missing Cloudflare R2 credentials in environment variables")
+        # Determine cloud vs local disk lake
+        has_cloud_creds = bool(self.endpoint_url and self.access_key_id and self.secret_access_key)
+        self.is_cloud = bool(has_cloud_creds and _BOTO3_AVAILABLE)
 
-        self.s3 = boto3.client(
-            "s3",
-            endpoint_url=self.endpoint_url,
-            aws_access_key_id=self.access_key_id,
-            aws_secret_access_key=self.secret_access_key,
-            config=Config(signature_version="s3v4"),
-            region_name="auto",
-        )
+        if self.is_cloud:
+            self.s3 = boto3.client(
+                "s3",
+                endpoint_url=self.endpoint_url,
+                aws_access_key_id=self.access_key_id,
+                aws_secret_access_key=self.secret_access_key,
+                config=Config(signature_version="s3v4"),
+                region_name="auto",
+            )
+            self.storage_mode = "cloudflare_r2"
+        else:
+            # Local disk lake fallback
+            self.s3 = None
+            self.local_root = PROJECT_ROOT / "data" / "r2_lake"
+            self.local_root.mkdir(parents=True, exist_ok=True)
+            self.storage_mode = "local_lake"
 
     # -----------------------------------------------------------------------
     # Canonical Key Builders
@@ -78,13 +101,19 @@ class R2StorageService:
     # Basic Blob Operations
     # -----------------------------------------------------------------------
     def put_bytes(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> str:
-        self.s3.put_object(
-            Bucket=self.bucket_name,
-            Key=key,
-            Body=data,
-            ContentType=content_type,
-        )
-        return key
+        clean_key = key.lstrip("/")
+        if self.is_cloud:
+            self.s3.put_object(
+                Bucket=self.bucket_name,
+                Key=clean_key,
+                Body=data,
+                ContentType=content_type,
+            )
+        else:
+            p = self.local_root / clean_key
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(data)
+        return clean_key
 
     def put_text(self, key: str, text: str, content_type: str = "text/plain; charset=utf-8") -> str:
         return self.put_bytes(key, text.encode("utf-8"), content_type=content_type)
@@ -94,8 +123,15 @@ class R2StorageService:
         return self.put_text(key, body, content_type="application/json; charset=utf-8")
 
     def get_bytes(self, key: str) -> bytes:
-        res = self.s3.get_object(Bucket=self.bucket_name, Key=key)
-        return res["Body"].read()
+        clean_key = key.lstrip("/")
+        if self.is_cloud:
+            res = self.s3.get_object(Bucket=self.bucket_name, Key=clean_key)
+            return res["Body"].read()
+        else:
+            p = self.local_root / clean_key
+            if not p.exists():
+                raise FileNotFoundError(f"Key not found in R2 storage: {clean_key}")
+            return p.read_bytes()
 
     def get_text(self, key: str) -> str:
         return self.get_bytes(key).decode("utf-8")
@@ -108,44 +144,72 @@ class R2StorageService:
         p = Path(local_path)
         if not p.exists():
             raise FileNotFoundError(f"Local file does not exist: {local_path}")
-        
-        extra_args = {}
-        if content_type:
-            extra_args["ContentType"] = content_type
-        elif p.suffix.lower() == ".epub":
-            extra_args["ContentType"] = "application/epub+zip"
-        elif p.suffix.lower() == ".pdf":
-            extra_args["ContentType"] = "application/pdf"
-        elif p.suffix.lower() == ".md":
-            extra_args["ContentType"] = "text/markdown; charset=utf-8"
-        elif p.suffix.lower() == ".json":
-            extra_args["ContentType"] = "application/json; charset=utf-8"
 
-        self.s3.upload_file(str(p), self.bucket_name, key, ExtraArgs=extra_args or None)
-        return key
+        clean_key = key.lstrip("/")
+        if self.is_cloud:
+            extra_args = {}
+            if content_type:
+                extra_args["ContentType"] = content_type
+            elif p.suffix.lower() == ".epub":
+                extra_args["ContentType"] = "application/epub+zip"
+            elif p.suffix.lower() == ".pdf":
+                extra_args["ContentType"] = "application/pdf"
+            elif p.suffix.lower() == ".md":
+                extra_args["ContentType"] = "text/markdown; charset=utf-8"
+            elif p.suffix.lower() == ".json":
+                extra_args["ContentType"] = "application/json; charset=utf-8"
+
+            self.s3.upload_file(str(p), self.bucket_name, clean_key, ExtraArgs=extra_args or None)
+        else:
+            target = self.local_root / clean_key
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(p), str(target))
+        return clean_key
 
     def exists(self, key: str) -> bool:
-        try:
-            self.s3.head_object(Bucket=self.bucket_name, Key=key)
-            return True
-        except ClientError as e:
-            if e.response.get("Error", {}).get("Code") in ("404", "NoSuchKey"):
-                return False
-            raise
+        clean_key = key.lstrip("/")
+        if self.is_cloud:
+            try:
+                self.s3.head_object(Bucket=self.bucket_name, Key=clean_key)
+                return True
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") in ("404", "NoSuchKey"):
+                    return False
+                raise
+        else:
+            return (self.local_root / clean_key).exists()
 
     def file_exists(self, key: str) -> bool:
         return self.exists(key)
 
-    def list_keys(self, prefix: str) -> List[str]:
-        keys = []
-        paginator = self.s3.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=self.bucket_name, Prefix=prefix):
-            for obj in page.get("Contents", []):
-                keys.append(obj["Key"])
-        return sorted(keys)
+    def list_keys(self, prefix: str = "") -> List[str]:
+        clean_prefix = prefix.lstrip("/")
+        if self.is_cloud:
+            keys = []
+            paginator = self.s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=self.bucket_name, Prefix=clean_prefix):
+                for obj in page.get("Contents", []):
+                    keys.append(obj["Key"])
+            return sorted(keys)
+        else:
+            if not self.local_root.exists():
+                return []
+            keys = []
+            for item in self.local_root.rglob("*"):
+                if item.is_file():
+                    rel = str(item.relative_to(self.local_root)).replace("\\", "/")
+                    if not clean_prefix or rel.startswith(clean_prefix):
+                        keys.append(rel)
+            return sorted(keys)
 
     def delete_key(self, key: str) -> None:
-        self.s3.delete_object(Bucket=self.bucket_name, Key=key)
+        clean_key = key.lstrip("/")
+        if self.is_cloud:
+            self.s3.delete_object(Bucket=self.bucket_name, Key=clean_key)
+        else:
+            p = self.local_root / clean_key
+            if p.exists():
+                p.unlink()
 
 
 # Global singleton instance helper

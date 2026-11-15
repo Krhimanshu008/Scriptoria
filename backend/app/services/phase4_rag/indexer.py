@@ -7,6 +7,7 @@ and 768-dim vector embeddings into a standalone SQLite/Turso database.
 from __future__ import annotations
 
 import os
+import re
 import json
 import sqlite3
 import logging
@@ -307,3 +308,51 @@ class HybridRAGIndexer:
         self.r2.upload_file(local_db_path, out_key, content_type="application/vnd.sqlite3")
         logger.info(f"✅ Snapshot stored in R2: {out_key}")
         return out_key
+
+    def sync_to_turso_cloud(self, local_db_path: str, book_id: str, slug: str) -> Optional[str]:
+        """
+        Provisions a dedicated per-book Turso Cloud database (Task B.2)
+        and creates native DiskANN vector index.
+        Returns the libsql:// URL on success, or None if credentials are unset.
+        """
+        api_token = os.getenv("TURSO_API_TOKEN") or os.getenv("TURSO_AUTH_TOKEN")
+        org_slug = os.getenv("TURSO_ORG_SLUG")
+        if not api_token or not org_slug:
+            logger.info("Turso API token or org slug not set; skipping live Turso Cloud provisioning.")
+            return None
+
+        import requests
+        clean_slug = re.sub(r"[^a-zA-Z0-9-]", "-", slug.lower())[:28].strip("-")
+        db_name = f"book-{clean_slug}"
+        headers = {
+            "Authorization": f"Bearer {api_token}",
+            "Content-Type": "application/json",
+        }
+
+        # 1. Provision database on Turso Cloud if not exists
+        try:
+            create_url = f"https://api.turso.tech/v1/organizations/{org_slug}/databases"
+            payload = {"name": db_name, "group": "default"}
+            res = requests.post(create_url, headers=headers, json=payload, timeout=8)
+            if res.status_code in (200, 201):
+                logger.info(f"✅ Provisioned Turso Cloud database: {db_name}")
+            elif res.status_code == 409 or "already exists" in res.text:
+                logger.info(f"Turso Cloud database {db_name} already exists.")
+            else:
+                logger.warning(f"Turso DB create response ({res.status_code}): {res.text}")
+        except Exception as e:
+            logger.warning(f"Turso Cloud provisioning failed: {e}")
+            return None
+
+        # 2. Add native DiskANN vector index on rag_chunks
+        turso_db_url = f"https://{db_name}-{org_slug}.turso.io"
+        vector_ddl = "CREATE INDEX IF NOT EXISTS idx_chunks_vec ON rag_chunks(libsql_vector_idx(embedding, 'metric=cosine'));"
+        try:
+            pipeline_url = f"{turso_db_url}/v2/pipeline"
+            q = {"requests": [{"type": "execute", "stmt": {"sql": vector_ddl}}]}
+            requests.post(pipeline_url, headers=headers, json=q, timeout=5)
+            logger.info(f"✅ Created DiskANN vector index on Turso Cloud: {db_name}")
+        except Exception as e:
+            logger.warning(f"Could not initialize vector index on Turso: {e}")
+
+        return f"libsql://{db_name}-{org_slug}.turso.io"
