@@ -10,6 +10,7 @@ from app.core.config import settings
 from app.middleware.bridge_guard import install_bridge_guard
 from app.routers import (
     extraction_lab,
+    graph_studio,
     parser_inspector,
     testbench_system,
     vm_swarm_control,
@@ -45,6 +46,7 @@ app.include_router(testbench_system.router, prefix="/api/v1")
 app.include_router(parser_inspector.router, prefix="/api/v1")
 app.include_router(vm_swarm_control.router, prefix="/api/v1")
 app.include_router(extraction_lab.router, prefix="/api/v1")
+app.include_router(graph_studio.router, prefix="/api/v1")
 
 # Static media mounts
 shots_dir = Path("output/shots")

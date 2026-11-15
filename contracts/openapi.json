@@ -247,6 +247,279 @@
         "title": "CharacterPresence",
         "type": "object"
       },
+      "CharacterRegistryResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "book_id": {
+            "title": "Book Id",
+            "type": "string"
+          },
+          "characters": {
+            "items": {
+              "$ref": "#/components/schemas/CompiledEntitySummary"
+            },
+            "title": "Characters",
+            "type": "array"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "tier_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Tier Counts",
+            "type": "object"
+          },
+          "trace_id": {
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trace_id",
+          "book_id",
+          "characters",
+          "tier_counts"
+        ],
+        "title": "CharacterRegistryResponse",
+        "type": "object"
+      },
+      "CompileBookRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "book_id": {
+            "minLength": 1,
+            "title": "Book Id",
+            "type": "string"
+          },
+          "use_demo_if_empty": {
+            "default": true,
+            "title": "Use Demo If Empty",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "book_id"
+        ],
+        "title": "CompileBookRequest",
+        "type": "object"
+      },
+      "CompiledBookGraphResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "book_id": {
+            "minLength": 1,
+            "title": "Book Id",
+            "type": "string"
+          },
+          "cycle_break_count": {
+            "default": 0,
+            "title": "Cycle Break Count",
+            "type": "integer"
+          },
+          "duration_sec": {
+            "default": 0.15,
+            "minimum": 0.0,
+            "title": "Duration Sec",
+            "type": "number"
+          },
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/GraphEdgeSummary"
+            },
+            "title": "Edges",
+            "type": "array"
+          },
+          "entities": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/CompiledEntitySummary"
+            },
+            "title": "Entities",
+            "type": "object"
+          },
+          "has_cycles_detected": {
+            "default": false,
+            "title": "Has Cycles Detected",
+            "type": "boolean"
+          },
+          "locations": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/CompiledLocationSummary"
+            },
+            "title": "Locations",
+            "type": "object"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "timeline": {
+            "items": {
+              "$ref": "#/components/schemas/TimelineTickSummary"
+            },
+            "title": "Timeline",
+            "type": "array"
+          },
+          "total_beats": {
+            "minimum": 0.0,
+            "title": "Total Beats",
+            "type": "integer"
+          },
+          "total_chapters": {
+            "minimum": 0.0,
+            "title": "Total Chapters",
+            "type": "integer"
+          },
+          "total_scenes": {
+            "minimum": 0.0,
+            "title": "Total Scenes",
+            "type": "integer"
+          },
+          "trace_id": {
+            "minLength": 1,
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trace_id",
+          "book_id",
+          "total_chapters",
+          "total_scenes",
+          "total_beats",
+          "entities",
+          "locations",
+          "timeline",
+          "edges"
+        ],
+        "title": "CompiledBookGraphResponse",
+        "type": "object"
+      },
+      "CompiledEntitySummary": {
+        "additionalProperties": false,
+        "properties": {
+          "aliases": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Aliases",
+            "type": "array"
+          },
+          "base_anatomy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Anatomy"
+          },
+          "canonical_name": {
+            "title": "Canonical Name",
+            "type": "string"
+          },
+          "entity_id": {
+            "title": "Entity Id",
+            "type": "string"
+          },
+          "entity_type": {
+            "enum": [
+              "CHARACTER",
+              "LOCATION",
+              "ITEM",
+              "FACTION"
+            ],
+            "title": "Entity Type",
+            "type": "string"
+          },
+          "first_seen_chapter": {
+            "minimum": 0.0,
+            "title": "First Seen Chapter",
+            "type": "integer"
+          },
+          "importance_score": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Importance Score",
+            "type": "number"
+          },
+          "scene_presence_count": {
+            "default": 1,
+            "minimum": 0.0,
+            "title": "Scene Presence Count",
+            "type": "integer"
+          },
+          "visual_tier": {
+            "enum": [
+              "TIER_1_CORE",
+              "TIER_2",
+              "TIER_3"
+            ],
+            "title": "Visual Tier",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity_id",
+          "canonical_name",
+          "entity_type",
+          "visual_tier",
+          "importance_score",
+          "first_seen_chapter"
+        ],
+        "title": "CompiledEntitySummary",
+        "type": "object"
+      },
+      "CompiledLocationSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "canonical_name": {
+            "title": "Canonical Name",
+            "type": "string"
+          },
+          "environment_tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Environment Tags",
+            "type": "array"
+          },
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "materialized_path": {
+            "title": "Materialized Path",
+            "type": "string"
+          },
+          "parent_location_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Location Id"
+          }
+        },
+        "required": [
+          "location_id",
+          "canonical_name",
+          "materialized_path"
+        ],
+        "title": "CompiledLocationSummary",
+        "type": "object"
+      },
       "ContractLimits": {
         "additionalProperties": false,
         "description": "Enforced operational limits advertised by the FastAPI bridge.",
@@ -939,6 +1212,54 @@
         "title": "ExtractionCheckpointsResponse",
         "type": "object"
       },
+      "GraphEdgeSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "bidirectional": {
+            "default": true,
+            "title": "Bidirectional",
+            "type": "boolean"
+          },
+          "edge_id": {
+            "title": "Edge Id",
+            "type": "string"
+          },
+          "edge_type": {
+            "enum": [
+              "CO_OCCURRENCE",
+              "INTERACTION",
+              "LOCATED_IN",
+              "POSSESSES",
+              "FAMILY",
+              "ALLIANCE"
+            ],
+            "title": "Edge Type",
+            "type": "string"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          },
+          "target_id": {
+            "title": "Target Id",
+            "type": "string"
+          },
+          "weight": {
+            "default": 1,
+            "minimum": 1.0,
+            "title": "Weight",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "edge_id",
+          "source_id",
+          "target_id",
+          "edge_type"
+        ],
+        "title": "GraphEdgeSummary",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -950,6 +1271,52 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "LocationTreeResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "book_id": {
+            "title": "Book Id",
+            "type": "string"
+          },
+          "cycle_free_verified": {
+            "default": true,
+            "title": "Cycle Free Verified",
+            "type": "boolean"
+          },
+          "locations": {
+            "items": {
+              "$ref": "#/components/schemas/CompiledLocationSummary"
+            },
+            "title": "Locations",
+            "type": "array"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "root_locations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Root Locations",
+            "type": "array"
+          },
+          "trace_id": {
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trace_id",
+          "book_id",
+          "locations",
+          "root_locations"
+        ],
+        "title": "LocationTreeResponse",
         "type": "object"
       },
       "ParseDiagnostic": {
@@ -1684,6 +2051,126 @@
         "title": "SystemHealthResponse",
         "type": "object"
       },
+      "TimelineResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "book_id": {
+            "title": "Book Id",
+            "type": "string"
+          },
+          "flashback_count": {
+            "title": "Flashback Count",
+            "type": "integer"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "ticks": {
+            "items": {
+              "$ref": "#/components/schemas/TimelineTickSummary"
+            },
+            "title": "Ticks",
+            "type": "array"
+          },
+          "total_ticks": {
+            "title": "Total Ticks",
+            "type": "integer"
+          },
+          "trace_id": {
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trace_id",
+          "book_id",
+          "total_ticks",
+          "flashback_count",
+          "ticks"
+        ],
+        "title": "TimelineResponse",
+        "type": "object"
+      },
+      "TimelineTickSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "chapter_index": {
+            "minimum": 0.0,
+            "title": "Chapter Index",
+            "type": "integer"
+          },
+          "characters_present": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Characters Present",
+            "type": "array"
+          },
+          "is_flashback": {
+            "title": "Is Flashback",
+            "type": "boolean"
+          },
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "location_name": {
+            "title": "Location Name",
+            "type": "string"
+          },
+          "narrative_seq": {
+            "minimum": 1.0,
+            "title": "Narrative Seq",
+            "type": "integer"
+          },
+          "scene_id": {
+            "title": "Scene Id",
+            "type": "string"
+          },
+          "story_time_tick": {
+            "minimum": 0.0,
+            "title": "Story Time Tick",
+            "type": "integer"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "tick_index": {
+            "minimum": 1.0,
+            "title": "Tick Index",
+            "type": "integer"
+          },
+          "time_type": {
+            "default": "PRESENT",
+            "enum": [
+              "PRESENT",
+              "FLASHBACK",
+              "DREAM",
+              "TIME_SKIP",
+              "PARALLEL_POV"
+            ],
+            "title": "Time Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tick_index",
+          "narrative_seq",
+          "story_time_tick",
+          "chapter_index",
+          "scene_id",
+          "is_flashback",
+          "location_id",
+          "location_name",
+          "summary"
+        ],
+        "title": "TimelineTickSummary",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -1879,6 +2366,215 @@
           }
         },
         "summary": "Serve Index"
+      }
+    },
+    "/api/v1/compiler/characters/{book_id}": {
+      "get": {
+        "operationId": "get_character_registry_api_v1_compiler_characters__book_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "book_id",
+            "required": true,
+            "schema": {
+              "title": "Book Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CharacterRegistryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Character Registry",
+        "tags": [
+          "graph-studio"
+        ]
+      }
+    },
+    "/api/v1/compiler/compile": {
+      "post": {
+        "operationId": "compile_book_endpoint_api_v1_compiler_compile_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompileBookRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompiledBookGraphResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Compile Book Endpoint",
+        "tags": [
+          "graph-studio"
+        ]
+      }
+    },
+    "/api/v1/compiler/graph/{book_id}": {
+      "get": {
+        "operationId": "get_compiled_book_graph_api_v1_compiler_graph__book_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "book_id",
+            "required": true,
+            "schema": {
+              "title": "Book Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompiledBookGraphResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Compiled Book Graph",
+        "tags": [
+          "graph-studio"
+        ]
+      }
+    },
+    "/api/v1/compiler/locations/{book_id}": {
+      "get": {
+        "operationId": "get_location_tree_api_v1_compiler_locations__book_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "book_id",
+            "required": true,
+            "schema": {
+              "title": "Book Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocationTreeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Location Tree",
+        "tags": [
+          "graph-studio"
+        ]
+      }
+    },
+    "/api/v1/compiler/timeline/{book_id}": {
+      "get": {
+        "operationId": "get_compiled_timeline_api_v1_compiler_timeline__book_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "book_id",
+            "required": true,
+            "schema": {
+              "title": "Book Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimelineResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Compiled Timeline",
+        "tags": [
+          "graph-studio"
+        ]
       }
     },
     "/api/v1/extraction/chapter": {

@@ -1,5 +1,5 @@
 export const EXPECTED_CONTRACT_HASH =
-  "08e0a0b8a38adab857ec8d2c933dfd88fbbed1e0036ff675f0a18b165f036292" as const;
+  "067e55d57c8e86b56f624f7293f771365784f2ca217b9214922da510905c55da" as const;
 
 export type ErrorCode =
   | "VALIDATION_ERROR"
@@ -344,6 +344,118 @@ export interface CrashSimulationResponse {
   completed_before_crash: number[];
   resumable_chapter: number;
   idempotent_verified: boolean;
+}
+
+// ============================================================================
+// Sprint 3: Stage-2 Book Compiler & Temporal Graph Contracts
+// ============================================================================
+
+export type EntityVisualTier = "TIER_1_CORE" | "TIER_2" | "TIER_3";
+export type CompiledEntityType = "CHARACTER" | "LOCATION" | "ITEM" | "FACTION";
+
+export interface CompiledEntitySummary {
+  entity_id: string;
+  canonical_name: string;
+  aliases: string[];
+  entity_type: CompiledEntityType;
+  visual_tier: EntityVisualTier;
+  importance_score: number;
+  base_anatomy?: string | null;
+  first_seen_chapter: number;
+  scene_presence_count: number;
+}
+
+export interface CompiledLocationSummary {
+  location_id: string;
+  canonical_name: string;
+  parent_location_id?: string | null;
+  materialized_path: string;
+  environment_tags: string[];
+}
+
+export type TimelineTimeType =
+  | "PRESENT"
+  | "FLASHBACK"
+  | "DREAM"
+  | "TIME_SKIP"
+  | "PARALLEL_POV";
+
+export interface TimelineTickSummary {
+  tick_index: number;
+  narrative_seq: number;
+  story_time_tick: number;
+  chapter_index: number;
+  scene_id: string;
+  time_type: TimelineTimeType;
+  is_flashback: boolean;
+  location_id: string;
+  location_name: string;
+  characters_present: string[];
+  summary: string;
+}
+
+export type GraphEdgeType =
+  | "CO_OCCURRENCE"
+  | "INTERACTION"
+  | "LOCATED_IN"
+  | "POSSESSES"
+  | "FAMILY"
+  | "ALLIANCE";
+
+export interface GraphEdgeSummary {
+  edge_id: string;
+  source_id: string;
+  target_id: string;
+  edge_type: GraphEdgeType;
+  weight: number;
+  bidirectional: boolean;
+}
+
+export interface CompileBookRequest {
+  book_id: string;
+  use_demo_if_empty?: boolean;
+}
+
+export interface CompiledBookGraphResponse {
+  ok: true;
+  trace_id: string;
+  book_id: string;
+  total_chapters: number;
+  total_scenes: number;
+  total_beats: number;
+  entities: Record<string, CompiledEntitySummary>;
+  locations: Record<string, CompiledLocationSummary>;
+  timeline: TimelineTickSummary[];
+  edges: GraphEdgeSummary[];
+  has_cycles_detected: boolean;
+  cycle_break_count: number;
+  duration_sec: number;
+}
+
+export interface TimelineResponse {
+  ok: true;
+  trace_id: string;
+  book_id: string;
+  total_ticks: number;
+  flashback_count: number;
+  ticks: TimelineTickSummary[];
+}
+
+export interface CharacterRegistryResponse {
+  ok: true;
+  trace_id: string;
+  book_id: string;
+  characters: CompiledEntitySummary[];
+  tier_counts: Record<string, number>;
+}
+
+export interface LocationTreeResponse {
+  ok: true;
+  trace_id: string;
+  book_id: string;
+  locations: CompiledLocationSummary[];
+  root_locations: string[];
+  cycle_free_verified: boolean;
 }
 
 export type ApiResult<T extends { ok: true }> = T | ApiErrorEnvelope;

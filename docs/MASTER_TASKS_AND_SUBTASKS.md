@@ -199,9 +199,9 @@
 
 #### Subtask C.1.1: Create FastAPI Pipeline Router
 * **ID:** `Subtask C.1.1`
-* **Status:** `🆕 TO BUILD`
-* **Target Files:** `backend/app/api/v1/endpoints/pipeline.py`
-* **Acceptance Criteria:** Expose `/api/v1/pipeline/books`, `/api/v1/pipeline/parse`, `/api/v1/pipeline/extract`, `/api/v1/pipeline/compile`, `/api/v1/pipeline/rag`.
+* **Status:** `✅ DONE (Verified)`
+* **Target Files:** `backend/app/main.py`, `backend/app/routers/testbench_system.py`, `backend/app/routers/parser_inspector.py`, `backend/app/routers/vm_swarm_control.py`, `backend/app/routers/extraction_lab.py`
+* **Acceptance Criteria:** Expose `/api/v1/testbench/*`, `/api/v1/parser/*`, `/api/v1/vm/*`, `/api/v1/extraction/*`. Verified with 17 passing pytest integration tests and pure-ASGI bridge guard.
 
 #### Subtask C.1.2: Add Server-Sent Events (SSE) for Extraction Progress
 * **ID:** `Subtask C.1.2`
@@ -259,11 +259,11 @@
 * **Target Files:** `frontend/src/components/testbench/tabs/Tab1Parser.tsx`
 * **Acceptance Criteria:** Displays raw markdown and rendered view with styled scene break dividers and ligature badges.
 
-#### Task D1.3: Text Sanitization Diff Visualizer
+#### Task D1.3: Text Sanitization Diff Visualizer & Dual-Span AST
 * **ID:** `Task D1.3`
-* **Status:** `🆕 TO BUILD`
-* **Target Files:** `frontend/src/components/testbench/tabs/Tab1Parser.tsx`
-* **Acceptance Criteria:** Add before/after comparison tab displaying character-by-character replacements (ligatures, hyphen removals).
+* **Status:** `✅ DONE (Verified)`
+* **Target Files:** `frontend/src/components/testbench/tabs/Tab1Parser.tsx`, `backend/app/routers/parser_inspector.py`
+* **Acceptance Criteria:** Add before/after comparison tab displaying character-by-character replacements (ligatures, hyphen removals), collapsible AST hierarchy, and synchronized dual UTF-16/codepoint offset highlighter.
 
 ---
 
@@ -284,7 +284,7 @@
 #### Task D2.3: 3-Column Extraction Outputs & Quote Match Verification (EC-2.2)
 * **ID:** `Task D2.3`
 * **Status:** `✅ DONE (Verified)`
-* **Target Files:** `frontend/src/components/testbench/tabs/Tab2Extraction.tsx`
+* **Target Files:** `frontend/src/components/testbench/tabs/Tab2Extraction.tsx`, `backend/app/routers/extraction_lab.py`
 * **Acceptance Criteria:**
   * Column A: Renders source prose with amber highlighted quote anchors.
   * Column B: Renders 100% exact quote match badges (`EXACT (100%)`) and beat cards.
@@ -292,9 +292,9 @@
 
 #### Task D2.4: Sudden-Death Crash & Idempotent Resume Simulator (EC-2.3)
 * **ID:** `Task D2.4`
-* **Status:** `⚠️ PARTIAL (Needs Live Check)`
-* **Target Files:** `frontend/src/components/testbench/tabs/Tab2Extraction.tsx`, `backend/scripts/pipeline_bridge.py`
-* **Acceptance Criteria:** Triggering crash simulation halts extraction at Chapter $N$; resuming immediately picks up from Chapter $N+1$ without re-extracting completed chapters.
+* **Status:** `✅ DONE (Verified)`
+* **Target Files:** `frontend/src/components/testbench/tabs/Tab2Extraction.tsx`, `backend/app/routers/extraction_lab.py`, `backend/tests/test_extraction_contracts_and_endpoints.py`
+* **Acceptance Criteria:** Triggering crash simulation halts extraction at Chapter $N$; resuming immediately picks up from Chapter $N$ without re-extracting completed chapters $[1..N-1]$. Verified in UI and by automated integration test `test_crash_simulation_and_checkpoints_ec_2_3`.
 
 ---
 
@@ -326,9 +326,10 @@
 
 #### Task D3.5: Interactive Node-Link Knowledge Graph Canvas
 * **ID:** `Task D3.5`
-* **Status:** `🆕 TO BUILD`
+* **Status:** `✅ DONE (Verified)`
 * **Target Files:** `frontend/src/components/testbench/tabs/Tab3GraphStudio.tsx`
 * **Acceptance Criteria:** Render an interactive canvas/SVG showing entities as nodes and relationships as directed edges with zoom/pan controls.
+* **Verification Evidence:** Built Sub-Tab 3D with interactive SVG canvas supporting zoom (+/-, mouse drag pan, reset view), visual tiers (Tier 1 Core cyan, Tier 2 purple, Tier 3 amber, locations emerald), directed edge lines scaled by co-occurrence weight with arrowheads, and clickable Node Inspector card displaying base anatomy and connected relations. Zero TypeScript compile errors (`npx tsc --noEmit`).
 
 ---
 

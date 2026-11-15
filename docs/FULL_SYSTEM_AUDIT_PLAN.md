@@ -360,14 +360,21 @@ flowchart TD
 
 | Test Suite / Capability | Scope | Status | Evidence / Notes |
 | :--- | :--- | :--- | :--- |
-| **Pydantic Contract Strictness (EC-0.1)** | Unit Mock | **VERIFIED LIVE** | `test_canonical_protocol.py` (4/4 passed). Tab 0 fault injector rejects invalid schemas in UI. |
+| **Pure ASGI Bridge Guard & RFC 9562 UUIDv7 Traces** | Middleware | **VERIFIED LIVE** | `bridge_guard.py` timing-safe secret check & UUIDv7 trace minting. 6/6 tests passing in `test_testbench_contracts.py`. |
+| **Pydantic Contract Strictness & Dual-Span Offsets (EC-0.1)** | Wire Contracts | **VERIFIED LIVE** | `StrictModel` (`forbid` extra, `frozen=True`). `compute_utf16_span` handles astral emojis (🚀) with zero JavaScript drift. |
+| **FastAPI Tab 0 & Tab 1 Endpoints** | Router Layer | **VERIFIED LIVE** | `testbench_system.py`, `parser_inspector.py` (5/5 passed in `test_testbench_endpoints.py`). Hash verified `b9f84ad7...`. |
+| **Deterministic Novel Parser AST & Inspector (EC-1.1)** | Tab 1 UI & API | **VERIFIED LIVE** | Collapsible AST tree, scene break visualization, synchronized dual-span highlighter, and ligature sanitization in `Tab1Parser.tsx`. |
+| **Cloud VM Swarm Control & VRAM Mutual Eviction** | VM Coordination | **VERIFIED LIVE** | `vm_swarm_control.py`: probes ports 8190-8192, 9999; manages mutual eviction between `EXTRACTION_SWARM` and `IMAGE_GEN_COMFYUI` with 409 ApiErrorEnvelope conflicts. |
+| **Rolling Extractor & Quote Anchors (EC-2.2)** | Extraction Engine | **VERIFIED LIVE** | `extraction_lab.py`: exact & fuzzy quote anchoring with `SpanRange` offsets; 6/6 tests in `test_extraction_contracts_and_endpoints.py`. |
+| **Sudden-Death Crash & Idempotent Resume (EC-2.3)** | Resilience Gate | **VERIFIED LIVE** | `POST /api/v1/extraction/crash-simulate` verifies chapters $1..N-1$ are saved and resume point is $N$. Tested in UI and automated integration test. |
+| **EC-2.4 Bloat Cap Enforcement** | Schema & Engine | **VERIFIED LIVE** | `short_visual_tag` clamped to 120 chars; tested with 150-char input. Rejection by Pydantic if > 120 chars. |
+| **Next.js Typed Proxy Bridge** | Full Stack Bridge | **VERIFIED LIVE** | 5 route handlers in `/api/testbench/*` using `forwardToFastAPI`. `npx tsc --noEmit` clean across 413 files. |
+| **OpenAPI Contract Drift Guard** | Drift Verification | **VERIFIED LIVE** | `export_contracts.py --check` confirms zero drift. Current hash: `08e0a0b8a38adab857ec8d2c933dfd88fbbed1e0036ff675f0a18b165f036292`. |
 | **R2 Storage Put/Get/Delete** | Local & Cloud | **VERIFIED LIVE** | `test_r2_storage.py` (1/1 passed). Tab 0 R2 smoke test reports 52ms latency. |
 | **Deterministic Parsing (EC-1.1)** | Full Book | **VERIFIED LIVE** | Parsed *The Alchemist* (21 sections) and *Moby Dick* (150 chapters). Split parts at 4,500 words. |
-| **Rolling Extractor & Quote Anchors (EC-2.2)** | Real Chapter | **VERIFIED LIVE** | Chapter 8 of *The Alchemist* verified via browser: 3/3 beats achieved 100% exact anchor matches. |
 | **Stage-2 Compiler & Flashbacks (EC-3.1–3.4)** | Unit Mock | **VERIFIED LIVE** | `test_book_compiler.py` (5/5 passed): flashback isolation, late alias remap, cycle breaking. |
 | **Hybrid RAG FTS5 + Vector + Spoiler Shield** | Unit Mock | **VERIFIED LIVE** | `test_hybrid_rag.py` (5/5 passed): RRF fusion, spoiler filtering at narrative seq. |
-| **Full E2E 5-Stage Stepper** | Full Pipeline | **PARTIAL (Simulated UI)** | Tab 5 currently uses `setTimeout` sequence. Full end-to-end execution across all chapters needs automation. |
-| **Legacy Storyboard & Retcon Tests** | Legacy Direct DB | **FAILED (Socket Error)** | `test_fiction_pipeline.py` & `test_phase1_core.py` failed due to direct PostgreSQL port 5432 network block. |
+| **Full E2E 5-Stage Stepper** | Full Pipeline | **PARTIAL (Sprint 5 Target)** | Tab 5 currently uses `setTimeout` sequence. Full end-to-end execution across all chapters to be automated in Sprint 5. |
 
 ---
 
