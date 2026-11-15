@@ -369,12 +369,12 @@ flowchart TD
 | **Sudden-Death Crash & Idempotent Resume (EC-2.3)** | Resilience Gate | **VERIFIED LIVE** | `POST /api/v1/extraction/crash-simulate` verifies chapters $1..N-1$ are saved and resume point is $N$. Tested in UI and automated integration test. |
 | **EC-2.4 Bloat Cap Enforcement** | Schema & Engine | **VERIFIED LIVE** | `short_visual_tag` clamped to 120 chars; tested with 150-char input. Rejection by Pydantic if > 120 chars. |
 | **Next.js Typed Proxy Bridge** | Full Stack Bridge | **VERIFIED LIVE** | 5 route handlers in `/api/testbench/*` using `forwardToFastAPI`. `npx tsc --noEmit` clean across 413 files. |
-| **OpenAPI Contract Drift Guard** | Drift Verification | **VERIFIED LIVE** | `export_contracts.py --check` confirms zero drift. Current hash: `08e0a0b8a38adab857ec8d2c933dfd88fbbed1e0036ff675f0a18b165f036292`. |
+| **OpenAPI Contract Drift Guard** | Drift Verification | **VERIFIED LIVE** | `export_contracts.py --check` confirms zero contract drift across all 5 sprints. Current canonical hash: `f92dac5e24d680f0d24b166de9c3a4955b3fdf476385884e2fd4a5717c98ab91`. |
 | **R2 Storage Put/Get/Delete** | Local & Cloud | **VERIFIED LIVE** | `test_r2_storage.py` (1/1 passed). Tab 0 R2 smoke test reports 52ms latency. |
 | **Deterministic Parsing (EC-1.1)** | Full Book | **VERIFIED LIVE** | Parsed *The Alchemist* (21 sections) and *Moby Dick* (150 chapters). Split parts at 4,500 words. |
-| **Stage-2 Compiler & Flashbacks (EC-3.1–3.4)** | Unit Mock | **VERIFIED LIVE** | `test_book_compiler.py` (5/5 passed): flashback isolation, late alias remap, cycle breaking. |
-| **Hybrid RAG FTS5 + Vector + Spoiler Shield** | Unit Mock | **VERIFIED LIVE** | `test_hybrid_rag.py` (5/5 passed): RRF fusion, spoiler filtering at narrative seq. |
-| **Full E2E 5-Stage Stepper** | Full Pipeline | **PARTIAL (Sprint 5 Target)** | Tab 5 currently uses `setTimeout` sequence. Full end-to-end execution across all chapters to be automated in Sprint 5. |
+| **Stage-2 Compiler & Interactive SVG Canvas (EC-3.1–3.4)** | Full Stack Studio | **VERIFIED LIVE** | `graph_studio.py` & `Tab3GraphStudio.tsx`: dual timeline scrubber, late alias resolution, cycle-breaking location tree, and interactive SVG canvas (Task D3.5). 5/5 tests in `test_compiler_contracts_and_endpoints.py`. |
+| **Hybrid RAG, Safe SQL & Turso Sync (EC-4.1–4.4)** | RAG Engine & Studio | **VERIFIED LIVE** | `rag_workbench.py` & `Tab4RAGWorkbench.tsx`: Reciprocal Rank Fusion (BM25 + 768-dim Vector), Spoiler Shield barrier (`max_narrative_seq`), 2-hop graph traversal, 104.5 KB footprint (<8MB budget), and mutation-rejecting safe SQL console. 8/8 tests in `test_rag_contracts_and_endpoints.py`. |
+| **Full E2E 5-Stage Stepper & QA Scorecard (EC-0.1–4.4)** | Full Pipeline & E2E | **VERIFIED LIVE** | `scorecard_stepper.py` & `Tab5Scorecard.tsx`: replaced `setTimeout` mocks with live sequential orchestrator (`POST /api/v1/scorecard/e2e-run`) executing Parse -> Extract -> Compile -> RAG -> Evaluate. Evaluates all 15 edge cases with 100% pass rate. 3/3 tests in `test_scorecard_contracts_and_endpoints.py`. |
 
 ---
 

@@ -2,10 +2,10 @@
   "artifacts": {
     "openapi": "openapi.json"
   },
-  "contract_hash": "d800226662b3a1d5de9fa8f5bdc8855d27b2061cb863daeb8dd347568daba562",
+  "contract_hash": "f92dac5e24d680f0d24b166de9c3a4955b3fdf476385884e2fd4a5717c98ab91",
   "hash_algorithm": "sha256",
   "openapi_version": "3.1.0",
-  "paths_count": 29,
+  "paths_count": 31,
   "schema_names": [
     "ApiErrorBody",
     "ApiErrorEnvelope",
@@ -27,8 +27,11 @@
     "DiagnosticSeverity",
     "DocumentNode",
     "DocumentNodeType",
+    "E2EPipelineRunRequest",
+    "E2EPipelineRunResponse",
     "EchoValidateRequest",
     "EchoValidateResponse",
+    "EdgeCaseCheckResult",
     "ErrorCode",
     "ErrorDetail",
     "ErrorStage",
@@ -52,12 +55,14 @@
     "ParsedChunk",
     "ParserPresetsResponse",
     "ParserProfile",
+    "PipelineStageStatus",
     "QuoteAnchorMatch",
     "QuoteMatchStats",
     "RagHybridSearchRequest",
     "RagHybridSearchResponse",
     "RenderRequest",
     "RollingGlossarySnapshot",
+    "ScorecardResponse",
     "SpanRange",
     "SqlConsoleRequest",
     "SqlConsoleResponse",
@@ -78,6 +83,6 @@
     "VramLockRequest"
   ],
   "schema_version": "1.0.0",
-  "schemas_count": 69,
+  "schemas_count": 74,
   "title": "Novel Visualiser & Storyboard Studio"
 }

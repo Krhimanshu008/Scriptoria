@@ -850,6 +850,81 @@
         "title": "DocumentNodeType",
         "type": "string"
       },
+      "E2EPipelineRunRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "book_id": {
+            "default": "book-demo",
+            "minLength": 1,
+            "title": "Book Id",
+            "type": "string"
+          },
+          "force_recompile": {
+            "default": true,
+            "title": "Force Recompile",
+            "type": "boolean"
+          },
+          "force_reextract": {
+            "default": true,
+            "title": "Force Reextract",
+            "type": "boolean"
+          },
+          "force_repackage": {
+            "default": true,
+            "title": "Force Repackage",
+            "type": "boolean"
+          },
+          "force_reparse": {
+            "default": true,
+            "title": "Force Reparse",
+            "type": "boolean"
+          }
+        },
+        "title": "E2EPipelineRunRequest",
+        "type": "object"
+      },
+      "E2EPipelineRunResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "book_id": {
+            "title": "Book Id",
+            "type": "string"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "scorecard": {
+            "$ref": "#/components/schemas/ScorecardResponse"
+          },
+          "stages": {
+            "items": {
+              "$ref": "#/components/schemas/PipelineStageStatus"
+            },
+            "title": "Stages",
+            "type": "array"
+          },
+          "total_duration_sec": {
+            "title": "Total Duration Sec",
+            "type": "number"
+          },
+          "trace_id": {
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trace_id",
+          "book_id",
+          "total_duration_sec",
+          "stages",
+          "scorecard"
+        ],
+        "title": "E2EPipelineRunResponse",
+        "type": "object"
+      },
       "EchoValidateRequest": {
         "additionalProperties": false,
         "description": "Round-trip contract and Unicode span parity verification request.",
@@ -988,6 +1063,61 @@
           "full_span"
         ],
         "title": "EchoValidateResponse",
+        "type": "object"
+      },
+      "EdgeCaseCheckResult": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "evidence": {
+            "title": "Evidence",
+            "type": "string"
+          },
+          "id": {
+            "description": "Edge case identifier, e.g. EC-0.1",
+            "title": "Id",
+            "type": "string"
+          },
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "number"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "score": {
+            "title": "Score",
+            "type": "string"
+          },
+          "stage": {
+            "title": "Stage",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "PASS",
+              "WARN",
+              "FAIL"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "stage",
+          "status",
+          "score",
+          "description",
+          "evidence",
+          "latency_ms"
+        ],
+        "title": "EdgeCaseCheckResult",
         "type": "object"
       },
       "ErrorCode": {
@@ -2036,6 +2166,53 @@
         "title": "ParserProfile",
         "type": "object"
       },
+      "PipelineStageStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "duration_ms": {
+            "title": "Duration Ms",
+            "type": "number"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "output_summary": {
+            "additionalProperties": true,
+            "title": "Output Summary",
+            "type": "object"
+          },
+          "stage_name": {
+            "title": "Stage Name",
+            "type": "string"
+          },
+          "stage_num": {
+            "maximum": 5.0,
+            "minimum": 1.0,
+            "title": "Stage Num",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "PENDING",
+              "RUNNING",
+              "COMPLETED",
+              "FAILED"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stage_num",
+          "stage_name",
+          "status",
+          "message",
+          "duration_ms"
+        ],
+        "title": "PipelineStageStatus",
+        "type": "object"
+      },
       "QuoteAnchorMatch": {
         "additionalProperties": false,
         "properties": {
@@ -2246,6 +2423,79 @@
           }
         },
         "title": "RollingGlossarySnapshot",
+        "type": "object"
+      },
+      "ScorecardResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "book_id": {
+            "title": "Book Id",
+            "type": "string"
+          },
+          "checks": {
+            "items": {
+              "$ref": "#/components/schemas/EdgeCaseCheckResult"
+            },
+            "title": "Checks",
+            "type": "array"
+          },
+          "evaluated_at_utc": {
+            "title": "Evaluated At Utc",
+            "type": "string"
+          },
+          "failed_checks": {
+            "title": "Failed Checks",
+            "type": "integer"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "overall_score_percent": {
+            "title": "Overall Score Percent",
+            "type": "number"
+          },
+          "overall_status": {
+            "enum": [
+              "PASSED",
+              "WARNING",
+              "FAILED"
+            ],
+            "title": "Overall Status",
+            "type": "string"
+          },
+          "passed_checks": {
+            "title": "Passed Checks",
+            "type": "integer"
+          },
+          "total_checks": {
+            "title": "Total Checks",
+            "type": "integer"
+          },
+          "trace_id": {
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "warn_checks": {
+            "title": "Warn Checks",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "trace_id",
+          "book_id",
+          "total_checks",
+          "passed_checks",
+          "warn_checks",
+          "failed_checks",
+          "overall_score_percent",
+          "overall_status",
+          "checks",
+          "evaluated_at_utc"
+        ],
+        "title": "ScorecardResponse",
         "type": "object"
       },
       "SpanRange": {
@@ -3772,6 +4022,91 @@
         "summary": "Sync To Turso Cloud",
         "tags": [
           "Hybrid RAG Workbench"
+        ]
+      }
+    },
+    "/api/v1/scorecard/e2e-run": {
+      "post": {
+        "description": "Executes the true sequential 5-stage pipeline:\nStage 1: EPUB Parser & Dual-Span Normalization\nStage 2: Rolling Context Extraction Loop & Quote Anchoring\nStage 3: Stage-2 Knowledge Graph Compiler & Dual Timeline\nStage 4: Hybrid RAG Packaging (book.db & Turso sync)\nStage 5: Automated Edge-Case Regression Scorecard Evaluation",
+        "operationId": "run_full_e2e_pipeline_api_v1_scorecard_e2e_run_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/E2EPipelineRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/E2EPipelineRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Full E2E Pipeline",
+        "tags": [
+          "Scorecard & E2E Stepper"
+        ]
+      }
+    },
+    "/api/v1/scorecard/{book_id}": {
+      "get": {
+        "description": "Returns the automated QA regression scorecard across all edge cases (EC-0.1 to EC-4.4).",
+        "operationId": "get_qa_scorecard_api_v1_scorecard__book_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "book_id",
+            "required": true,
+            "schema": {
+              "title": "Book Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScorecardResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Qa Scorecard",
+        "tags": [
+          "Scorecard & E2E Stepper"
         ]
       }
     },

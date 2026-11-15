@@ -1,5 +1,5 @@
 export const EXPECTED_CONTRACT_HASH =
-  "d800226662b3a1d5de9fa8f5bdc8855d27b2061cb863daeb8dd347568daba562" as const;
+  "f92dac5e24d680f0d24b166de9c3a4955b3fdf476385884e2fd4a5717c98ab91" as const;
 
 export type ErrorCode =
   | "VALIDATION_ERROR"
@@ -603,6 +603,67 @@ export interface PackageRAGResponse {
   within_budget: boolean;
   r2_key: string;
   duration_sec: number;
+}
+
+// ============================================================================
+// Sprint 5: E2E Pipeline Stepper & QA Scorecard Contracts
+// ============================================================================
+
+export type EdgeCaseStatus = "PASS" | "WARN" | "FAIL";
+
+export interface EdgeCaseCheckResult {
+  id: string;
+  name: string;
+  stage: string;
+  status: EdgeCaseStatus;
+  score: string;
+  description: string;
+  evidence: string;
+  latency_ms: number;
+}
+
+export type ScorecardOverallStatus = "PASSED" | "WARNING" | "FAILED";
+
+export interface ScorecardResponse {
+  ok: true;
+  trace_id: string;
+  book_id: string;
+  total_checks: number;
+  passed_checks: number;
+  warn_checks: number;
+  failed_checks: number;
+  overall_score_percent: number;
+  overall_status: ScorecardOverallStatus;
+  checks: EdgeCaseCheckResult[];
+  evaluated_at_utc: string;
+}
+
+export type PipelineStageExecutionStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED";
+
+export interface PipelineStageStatus {
+  stage_num: number;
+  stage_name: string;
+  status: PipelineStageExecutionStatus;
+  message: string;
+  duration_ms: number;
+  output_summary: Record<string, any>;
+}
+
+export interface E2EPipelineRunRequest {
+  book_id?: string;
+  force_reparse?: boolean;
+  force_reextract?: boolean;
+  force_recompile?: boolean;
+  force_repackage?: boolean;
+}
+
+export interface E2EPipelineRunResponse {
+  ok: true;
+  trace_id: string;
+  book_id: string;
+  total_duration_sec: number;
+  stages: PipelineStageStatus[];
+  scorecard: ScorecardResponse;
 }
 
 export type ApiResult<T extends { ok: true }> = T | ApiErrorEnvelope;

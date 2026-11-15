@@ -370,16 +370,16 @@
 #### Task D5.1: Automated Edge-Case Scorecard (EC-0.1 to EC-4.4)
 * **ID:** `Task D5.1`
 * **Status:** `✅ DONE (Verified)`
-* **Target Files:** `frontend/src/components/testbench/tabs/Tab5Scorecard.tsx`
-* **Acceptance Criteria:** Fetches real scorecard metrics from `/api/pipeline/books/[id]/scorecard`; displays individual PASS/FAIL badges and scores for all 10 edge cases.
+* **Target Files:** `backend/app/routers/scorecard_stepper.py`, `frontend/src/components/testbench/tabs/Tab5Scorecard.tsx`
+* **Acceptance Criteria:** Fetches real scorecard metrics from `/api/testbench/scorecard/[id]`; displays individual PASS/FAIL badges and scores for all 15 edge cases (EC-0.1 to EC-4.4).
+* **Verification Evidence:** `GET /api/v1/scorecard/{book_id}` evaluates all 15 edge-case invariants with 100% pass rate. Tab 5 UI provides stage filtering (Plumbing, Parser, Extraction, Compiler, RAG) and displays exact verification evidence strings and latency metrics per check.
 
 #### Task D5.2: Live 5-Stage Orchestrator (Replacing `setTimeout` Mocks)
 * **ID:** `Task D5.2`
-* **Status:** `❌ BROKEN / CONFLICT`
-* **Target Files:** `frontend/src/components/testbench/tabs/Tab5Scorecard.tsx`, `backend/scripts/pipeline_bridge.py`
-* **Priority:** P1 | Blocked by: None
-* **Description:** Currently uses simulated `setTimeout` delays.
+* **Status:** `✅ DONE (Verified)`
+* **Target Files:** `backend/app/routers/scorecard_stepper.py`, `frontend/src/components/testbench/tabs/Tab5Scorecard.tsx`
 * **Acceptance Criteria:** Clicking "Run Full End-to-End Pipeline" triggers actual sequential execution: Stage 1 (Parse) -> Stage 2 (Extract all chapters) -> Stage 3 (Compile graph) -> Stage 4 (Package RAG) -> Stage 5 (Refresh Scorecard), updating live progress bar.
+* **Verification Evidence:** Replaced all `setTimeout` mocks with live call to `POST /api/v1/scorecard/e2e-run` which sequentially runs Parse -> Extraction -> Compiler -> RAG -> Invariant Evaluation, returning real stage durations and live stepper badge updates. Zero TypeScript compile errors (`npx tsc --noEmit`).
 
 ---
 

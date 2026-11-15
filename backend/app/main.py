@@ -13,6 +13,7 @@ from app.routers import (
     graph_studio,
     parser_inspector,
     rag_workbench,
+    scorecard_stepper,
     testbench_system,
     vm_swarm_control,
 )
@@ -49,6 +50,7 @@ app.include_router(vm_swarm_control.router, prefix="/api/v1")
 app.include_router(extraction_lab.router, prefix="/api/v1")
 app.include_router(graph_studio.router, prefix="/api/v1")
 app.include_router(rag_workbench.router, prefix="/api/v1")
+app.include_router(scorecard_stepper.router, prefix="/api/v1")
 
 # Static media mounts
 shots_dir = Path("output/shots")
