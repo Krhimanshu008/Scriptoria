@@ -1,0 +1,34 @@
+{
+  "artifacts": {
+    "openapi": "openapi.json"
+  },
+  "contract_hash": "b9f84ad7eac059f176856cb7494625e513693aed0a26dbd224bc4e54ffb1881a",
+  "hash_algorithm": "sha256",
+  "openapi_version": "3.1.0",
+  "paths_count": 12,
+  "schema_names": [
+    "ContractLimits",
+    "ContractManifestResponse",
+    "DependencyHealth",
+    "DependencyStatus",
+    "DiagnosticSeverity",
+    "DocumentNode",
+    "DocumentNodeType",
+    "EchoValidateRequest",
+    "EchoValidateResponse",
+    "HTTPValidationError",
+    "ParseDiagnostic",
+    "ParseInspectRequest",
+    "ParseInspectResponse",
+    "ParsedChunk",
+    "ParserPresetsResponse",
+    "ParserProfile",
+    "RenderRequest",
+    "SpanRange",
+    "SystemHealthResponse",
+    "ValidationError"
+  ],
+  "schema_version": "1.0.0",
+  "schemas_count": 20,
+  "title": "Novel Visualiser & Storyboard Studio"
+}

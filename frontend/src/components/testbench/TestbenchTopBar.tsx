@@ -22,6 +22,7 @@ import {
 import type { PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
 import type { KaggleAccountSummary, ColabAccountSummary } from "@/app/api/vm/accounts/route";
 import { TestbenchVmModal } from "./TestbenchVmModal";
+import { ContractHashBadge } from "./ContractHashBadge";
 import { toast } from "sonner";
 
 export interface BookSummary {
@@ -181,6 +182,9 @@ export function TestbenchTopBar({
 
         {/* Center: Live Cloud Health & VM Swarm State */}
         <div className="hidden lg:flex items-center gap-2">
+          {/* Contract Hash Parity Badge */}
+          <ContractHashBadge />
+
           {/* R2 Pill */}
           <div
             onClick={onRefreshHealth}

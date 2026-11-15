@@ -24,6 +24,7 @@ import {
   Cpu,
 } from "lucide-react";
 import { toast } from "sonner";
+import { FastApiBridgeCard } from "@/components/testbench/FastApiBridgeCard";
 
 interface Tab0PlumbingProps {
   activeBookId: string;
@@ -261,10 +262,18 @@ export function Tab0Plumbing({ activeBookId, onRefreshBooks }: Tab0PlumbingProps
   const handleValidateSchema = async () => {
     setIsValidating(true);
     try {
+      let parsedPayload: unknown;
+      try {
+        parsedPayload = JSON.parse(schemaJson);
+      } catch {
+        toast.error("Invalid JSON syntax in editor");
+        setIsValidating(false);
+        return;
+      }
       const res = await fetch("/api/pipeline/contracts/validate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ payload: schemaJson }),
+        body: JSON.stringify(parsedPayload),
       });
       const data = await res.json();
       setValidationResult(data);
@@ -397,6 +406,9 @@ export function Tab0Plumbing({ activeBookId, onRefreshBooks }: Tab0PlumbingProps
           </p>
         </div>
       </div>
+
+      {/* Live FastAPI Bridge & Unicode Parity Probe */}
+      <FastApiBridgeCard />
 
       {/* Grid: 2 Columns */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">

@@ -16,7 +16,7 @@ import unicodedata
 import zipfile
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any, Tuple, Union
 
 from bs4 import BeautifulSoup, NavigableString, Tag
 try:

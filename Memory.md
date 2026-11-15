@@ -123,3 +123,44 @@ See [`MEMORY.md`](file:///c:/Users/5480/Desktop/Automation/Book_Visualiser/MEMOR
 1. Run end-to-end **`Book Graph`** chapter ingestion, Knowledge Graph extraction, Foundry plate rendering (`ACC1`), and Batch VLM Shot QA (`ACC2` Qwen 27B `/v1`).
 2. Verify Scriptoria `ApiToken` bridge (`/api/v1/llm-endpoint`, `/api/v1/ingest`, `/api/v1/batch`) with `Book Graph`.
 3. Optionally cache Qwen 27B GGUF + `llama-server` binaries to Google Drive to cut cold-boot time from ~4.5 min to <1 min.
+
+---
+
+## 7. Google AI Studio (Gemini 4 Hydrogen) Integration & Active Sprint
+
+- **Integration Mode:** Antigravity orchestrator connected to **Google AI Studio Playground** (`himanshu20031225@gmail.com` PRO) via Browser Subagent.
+- **Model Configuration:** `Gemini 4 Hydrogen` (`gemini-4-hydrogen`), Thinking Mode: `High`, Grounding with Google Search: `ON`.
+- **Session Persistence Directory:** [`docs/ai_studio/`](file:///c:/Users/Himan/OneDrive/Desktop/Himanshu/Scriptoria/docs/ai_studio/)
+  - Master Manifest: [`sessions_manifest.json`](file:///c:/Users/Himan/OneDrive/Desktop/Himanshu/Scriptoria/docs/ai_studio/sessions_manifest.json)
+  - Active Pointer: [`ACTIVE_SESSION.json`](file:///c:/Users/Himan/OneDrive/Desktop/Himanshu/Scriptoria/docs/ai_studio/ACTIVE_SESSION.json)
+  - Active Session: [`session_001_kickoff_and_task_alignment.md`](file:///c:/Users/Himan/OneDrive/Desktop/Himanshu/Scriptoria/docs/ai_studio/sessions/session_001_kickoff_and_task_alignment.md) & [`.json`](file:///c:/Users/Himan/OneDrive/Desktop/Himanshu/Scriptoria/docs/ai_studio/sessions/session_001_kickoff_and_task_alignment.json)
+  - Browser Recording: [`recording.mp4`](file:///C:/Users/Himan/.gemini/antigravity/brain/718865cc-13dd-4292-bda9-cb3b4748a7dc/recording.mp4)
+- **Architectural Directive from Gemini 4 Hydrogen:**
+  - *Observability & Contract Truth Before Feature UI:* Build Tab 0 (Plumbing & Contracts) before Tab 1 (Parser Inspector).
+  - *Unicode Offset Parity:* Mandatory dual-span `codepoint_span` and `utf16_span` computed on canonical normalized text to eliminate JavaScript UTF-16 vs. Python Unicode code-point highlight mismatches on emojis/smart quotes/em-dashes.
+  - *Unified Error Envelope:* Strict `ApiErrorEnvelope` with `X-Trace-ID`, `stage`, and `retryable` flags across all 4xx, 5xx, and proxy abort events.
+- **Active Sprint Workstreams:**
+  - **Workstream A (COMPLETED & VERIFIED):** Canonical Contracts & FastAPI Bridge Foundation.
+    - Implemented [`backend/app/schemas/testbench_contracts.py`](file:///c:/Users/Himan/OneDrive/Desktop/Himanshu/Scriptoria/backend/app/schemas/testbench_contracts.py) with dual UTF-16/codepoint offset math and strict Pydantic v2 schemas.
+    - Implemented [`backend/app/middleware/bridge_guard.py`](file:///c:/Users/Himan/OneDrive/Desktop/Himanshu/Scriptoria/backend/app/middleware/bridge_guard.py) with ASGI `X-Trace-ID`, UUIDv7, and `secrets.compare_digest` secret verification.
+    - Fixed missing `Union` import in [`deterministic_parser.py`](file:///c:/Users/Himan/OneDrive/Desktop/Himanshu/Scriptoria/backend/app/services/phase2_ingestion/deterministic_parser.py).
+    - Added [`backend/tests/test_testbench_contracts.py`](file:///c:/Users/Himan/OneDrive/Desktop/Himanshu/Scriptoria/backend/tests/test_testbench_contracts.py) (6/6 tests passing in 0.25s).
+  - **Workstream B (COMPLETED & VERIFIED):** Tab 0 & Tab 1 FastAPI Endpoints.
+    - Implemented [`backend/app/routers/testbench_system.py`](file:///c:/Users/Himan/OneDrive/Desktop/Himanshu/Scriptoria/backend/app/routers/testbench_system.py) (`/health`, `/contracts`, `/echo-validate`).
+    - Implemented [`backend/app/routers/parser_inspector.py`](file:///c:/Users/Himan/OneDrive/Desktop/Himanshu/Scriptoria/backend/app/routers/parser_inspector.py) (`/presets`, `/inspect`).
+    - Mounted both routers in [`backend/app/main.py`](file:///c:/Users/Himan/OneDrive/Desktop/Himanshu/Scriptoria/backend/app/main.py).
+    - Added [`backend/tests/test_testbench_endpoints.py`](file:///c:/Users/Himan/OneDrive/Desktop/Himanshu/Scriptoria/backend/tests/test_testbench_endpoints.py) (5/5 tests passing in 2.81s; full combined suite 11/11 passing in 2.09s).
+    - Generated & verified updated OpenAPI contract hash: `b9f84ad7eac059f176856cb7494625e513693aed0a26dbd224bc4e54ffb1881a` ([`contracts/openapi.json`](file:///c:/Users/Himan/OneDrive/Desktop/Himanshu/Scriptoria/contracts/openapi.json)).
+  - **Workstream C (COMPLETED & VERIFIED):** Next.js Typed Proxy Bridge & Codegen.
+    - Implemented [`frontend/src/types/testbench-contracts.ts`](file:///c:/Users/Himan/OneDrive/Desktop/Himanshu/Scriptoria/frontend/src/types/testbench-contracts.ts) with pinned `EXPECTED_CONTRACT_HASH = "b9f84ad7eac059f176856cb7494625e513693aed0a26dbd224bc4e54ffb1881a"`.
+    - Implemented [`frontend/src/lib/bridge/server-client.ts`](file:///c:/Users/Himan/OneDrive/Desktop/Himanshu/Scriptoria/frontend/src/lib/bridge/server-client.ts) with Node.js streaming body cap, `AbortSignal.any` timeout/cancellation, and deterministic `ApiErrorEnvelope` normalization.
+    - Implemented 5 route handlers in [`frontend/src/app/api/testbench/`](file:///c:/Users/Himan/OneDrive/Desktop/Himanshu/Scriptoria/frontend/src/app/api/testbench/) (`health`, `contracts`, `echo-validate`, `parser/presets`, `parser/inspect`).
+    - Verified full Next.js TypeScript compilation: `npx tsc --noEmit` exited with 0 errors.
+  - **Workstream D (COMPLETED & VERIFIED):** Testbench Shell & React UI via Gemini 4 Argon (`gemini-4-argon`).
+    - Implemented [`frontend/src/components/testbench/ContractHashBadge.tsx`](file:///c:/Users/Himan/OneDrive/Desktop/Himanshu/Scriptoria/frontend/src/components/testbench/ContractHashBadge.tsx) with live contract parity checking against `EXPECTED_CONTRACT_HASH`, hover tooltip with model counts, and click-to-copy `X-Trace-ID`.
+    - Mounted `<ContractHashBadge />` in [`frontend/src/components/testbench/TestbenchTopBar.tsx`](file:///c:/Users/Himan/OneDrive/Desktop/Himanshu/Scriptoria/frontend/src/components/testbench/TestbenchTopBar.tsx).
+    - Implemented [`frontend/src/components/testbench/FastApiBridgeCard.tsx`](file:///c:/Users/Himan/OneDrive/Desktop/Himanshu/Scriptoria/frontend/src/components/testbench/FastApiBridgeCard.tsx) with live SQLite FTS5 index status, VRAM Coordinator status, and interactive Unicode & UTF-16 span parity tester (comparing client metrics against FastAPI `/api/testbench/echo-validate`).
+    - Mounted `<FastApiBridgeCard />` and resolved the wrapped payload bug in [`frontend/src/components/testbench/tabs/Tab0Plumbing.tsx`](file:///c:/Users/Himan/OneDrive/Desktop/Himanshu/Scriptoria/frontend/src/components/testbench/tabs/Tab0Plumbing.tsx).
+    - Verified full Next.js TypeScript compilation: `npx tsc --noEmit` passed with 0 errors.
+  - **Workstream E (NEXT):** Final Sprint 1 E2E Verification & Exit Gate (`pytest`, `tsc --noEmit`, contract hash sync).
+

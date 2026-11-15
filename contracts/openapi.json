@@ -1,0 +1,1270 @@
+{
+  "components": {
+    "schemas": {
+      "ContractLimits": {
+        "additionalProperties": false,
+        "description": "Enforced operational limits advertised by the FastAPI bridge.",
+        "properties": {
+          "max_chapters_per_document": {
+            "exclusiveMinimum": 0.0,
+            "title": "Max Chapters Per Document",
+            "type": "integer"
+          },
+          "max_payload_bytes": {
+            "exclusiveMinimum": 0.0,
+            "title": "Max Payload Bytes",
+            "type": "integer"
+          },
+          "max_text_chars": {
+            "exclusiveMinimum": 0.0,
+            "title": "Max Text Chars",
+            "type": "integer"
+          },
+          "request_timeout_ms": {
+            "exclusiveMinimum": 0.0,
+            "title": "Request Timeout Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "max_payload_bytes",
+          "max_text_chars",
+          "max_chapters_per_document",
+          "request_timeout_ms"
+        ],
+        "title": "ContractLimits",
+        "type": "object"
+      },
+      "ContractManifestResponse": {
+        "additionalProperties": false,
+        "description": "Bridge handshake payload allowing Next.js to detect OpenAPI contract drift.",
+        "properties": {
+          "contract_hash": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Contract Hash",
+            "type": "string"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/ContractLimits"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "openapi_version": {
+            "minLength": 1,
+            "title": "Openapi Version",
+            "type": "string"
+          },
+          "schema_version": {
+            "minLength": 1,
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "trace_id": {
+            "minLength": 1,
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "contract_hash",
+          "schema_version",
+          "openapi_version",
+          "trace_id",
+          "limits"
+        ],
+        "title": "ContractManifestResponse",
+        "type": "object"
+      },
+      "DependencyHealth": {
+        "additionalProperties": false,
+        "description": "Health report for a single backend dependency.",
+        "properties": {
+          "checked_at": {
+            "format": "date-time",
+            "title": "Checked At",
+            "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "latency_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency Ms"
+          },
+          "name": {
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DependencyStatus"
+          }
+        },
+        "required": [
+          "name",
+          "status",
+          "checked_at"
+        ],
+        "title": "DependencyHealth",
+        "type": "object"
+      },
+      "DependencyStatus": {
+        "description": "Operational status for subsystem health probes.",
+        "enum": [
+          "healthy",
+          "degraded",
+          "unavailable"
+        ],
+        "title": "DependencyStatus",
+        "type": "string"
+      },
+      "DiagnosticSeverity": {
+        "description": "Severity classification for deterministic parser diagnostics.",
+        "enum": [
+          "info",
+          "warning",
+          "error"
+        ],
+        "title": "DiagnosticSeverity",
+        "type": "string"
+      },
+      "DocumentNode": {
+        "additionalProperties": false,
+        "description": "Hierarchical document AST node anchored with dual codepoint/UTF-16 spans.",
+        "properties": {
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/DocumentNode"
+            },
+            "title": "Children",
+            "type": "array"
+          },
+          "node_id": {
+            "minLength": 1,
+            "title": "Node Id",
+            "type": "string"
+          },
+          "node_type": {
+            "$ref": "#/components/schemas/DocumentNodeType"
+          },
+          "order_index": {
+            "minimum": 0.0,
+            "title": "Order Index",
+            "type": "integer"
+          },
+          "span": {
+            "$ref": "#/components/schemas/SpanRange"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "required": [
+          "node_id",
+          "node_type",
+          "order_index",
+          "span"
+        ],
+        "title": "DocumentNode",
+        "type": "object"
+      },
+      "DocumentNodeType": {
+        "description": "Structural AST node kinds emitted by the deterministic parser.",
+        "enum": [
+          "document",
+          "chapter",
+          "scene",
+          "paragraph",
+          "scene_break"
+        ],
+        "title": "DocumentNodeType",
+        "type": "string"
+      },
+      "EchoValidateRequest": {
+        "additionalProperties": false,
+        "description": "Round-trip contract and Unicode span parity verification request.",
+        "properties": {
+          "metadata": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "title": "Metadata",
+            "type": "object"
+          },
+          "probe_cp_end": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probe Cp End"
+          },
+          "probe_cp_start": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probe Cp Start"
+          },
+          "text": {
+            "maxLength": 1000000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "EchoValidateRequest",
+        "type": "object"
+      },
+      "EchoValidateResponse": {
+        "additionalProperties": false,
+        "description": "Round-trip validation response exposing exact UTF-8, code point, and UTF-16 lengths.",
+        "properties": {
+          "codepoint_length": {
+            "minimum": 0.0,
+            "title": "Codepoint Length",
+            "type": "integer"
+          },
+          "echoed_text": {
+            "title": "Echoed Text",
+            "type": "string"
+          },
+          "full_span": {
+            "$ref": "#/components/schemas/SpanRange"
+          },
+          "metadata": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "title": "Metadata",
+            "type": "object"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "probe_span": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SpanRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trace_id": {
+            "minLength": 1,
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "utf16_length": {
+            "minimum": 0.0,
+            "title": "Utf16 Length",
+            "type": "integer"
+          },
+          "utf8_byte_length": {
+            "minimum": 0.0,
+            "title": "Utf8 Byte Length",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "trace_id",
+          "echoed_text",
+          "codepoint_length",
+          "utf16_length",
+          "utf8_byte_length",
+          "full_span"
+        ],
+        "title": "EchoValidateResponse",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "ParseDiagnostic": {
+        "additionalProperties": false,
+        "description": "Non-fatal or structural diagnostic emitted during deterministic parsing.",
+        "properties": {
+          "code": {
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          },
+          "column": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Column"
+          },
+          "line": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Line"
+          },
+          "message": {
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/DiagnosticSeverity"
+          },
+          "span": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SpanRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "severity",
+          "message"
+        ],
+        "title": "ParseDiagnostic",
+        "type": "object"
+      },
+      "ParseInspectRequest": {
+        "additionalProperties": false,
+        "description": "Request payload for inspecting deterministic parser normalization and AST spans.",
+        "properties": {
+          "include_ast": {
+            "default": true,
+            "title": "Include Ast",
+            "type": "boolean"
+          },
+          "include_chunks": {
+            "default": true,
+            "title": "Include Chunks",
+            "type": "boolean"
+          },
+          "normalize_ligatures": {
+            "default": true,
+            "title": "Normalize Ligatures",
+            "type": "boolean"
+          },
+          "raw_text": {
+            "maxLength": 2000000,
+            "minLength": 1,
+            "title": "Raw Text",
+            "type": "string"
+          },
+          "source_name": {
+            "default": "untitled.md",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Source Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "raw_text"
+        ],
+        "title": "ParseInspectRequest",
+        "type": "object"
+      },
+      "ParseInspectResponse": {
+        "additionalProperties": false,
+        "description": "Full deterministic parser inspection payload for the Testbench UI.",
+        "properties": {
+          "chapter_count": {
+            "minimum": 0.0,
+            "title": "Chapter Count",
+            "type": "integer"
+          },
+          "chunks": {
+            "items": {
+              "$ref": "#/components/schemas/ParsedChunk"
+            },
+            "title": "Chunks",
+            "type": "array"
+          },
+          "diagnostics": {
+            "items": {
+              "$ref": "#/components/schemas/ParseDiagnostic"
+            },
+            "title": "Diagnostics",
+            "type": "array"
+          },
+          "document_tree": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DocumentNode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "normalized_codepoint_length": {
+            "minimum": 0.0,
+            "title": "Normalized Codepoint Length",
+            "type": "integer"
+          },
+          "normalized_markdown": {
+            "title": "Normalized Markdown",
+            "type": "string"
+          },
+          "normalized_utf16_length": {
+            "minimum": 0.0,
+            "title": "Normalized Utf16 Length",
+            "type": "integer"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "raw_codepoint_length": {
+            "minimum": 0.0,
+            "title": "Raw Codepoint Length",
+            "type": "integer"
+          },
+          "raw_utf16_length": {
+            "minimum": 0.0,
+            "title": "Raw Utf16 Length",
+            "type": "integer"
+          },
+          "scene_count": {
+            "minimum": 0.0,
+            "title": "Scene Count",
+            "type": "integer"
+          },
+          "source_name": {
+            "minLength": 1,
+            "title": "Source Name",
+            "type": "string"
+          },
+          "trace_id": {
+            "minLength": 1,
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trace_id",
+          "source_name",
+          "normalized_markdown",
+          "raw_codepoint_length",
+          "raw_utf16_length",
+          "normalized_codepoint_length",
+          "normalized_utf16_length",
+          "chapter_count",
+          "scene_count"
+        ],
+        "title": "ParseInspectResponse",
+        "type": "object"
+      },
+      "ParsedChunk": {
+        "additionalProperties": false,
+        "description": "Deterministic parser output unit ready for downstream indexing or extraction.",
+        "properties": {
+          "chapter_index": {
+            "minimum": 0.0,
+            "title": "Chapter Index",
+            "type": "integer"
+          },
+          "chunk_id": {
+            "minLength": 1,
+            "title": "Chunk Id",
+            "type": "string"
+          },
+          "chunk_index": {
+            "minimum": 0.0,
+            "title": "Chunk Index",
+            "type": "integer"
+          },
+          "codepoint_length": {
+            "minimum": 0.0,
+            "title": "Codepoint Length",
+            "type": "integer"
+          },
+          "normalized_text": {
+            "title": "Normalized Text",
+            "type": "string"
+          },
+          "raw_text": {
+            "title": "Raw Text",
+            "type": "string"
+          },
+          "scene_index": {
+            "minimum": 0.0,
+            "title": "Scene Index",
+            "type": "integer"
+          },
+          "sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Sha256",
+            "type": "string"
+          },
+          "span": {
+            "$ref": "#/components/schemas/SpanRange"
+          },
+          "utf16_length": {
+            "minimum": 0.0,
+            "title": "Utf16 Length",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "chunk_id",
+          "chapter_index",
+          "scene_index",
+          "chunk_index",
+          "raw_text",
+          "normalized_text",
+          "span",
+          "codepoint_length",
+          "utf16_length",
+          "sha256"
+        ],
+        "title": "ParsedChunk",
+        "type": "object"
+      },
+      "ParserPresetsResponse": {
+        "additionalProperties": false,
+        "description": "Preset profiles, caps, and supported ingestion extensions.",
+        "properties": {
+          "default_profile_id": {
+            "title": "Default Profile Id",
+            "type": "string"
+          },
+          "default_token_cap": {
+            "exclusiveMinimum": 0.0,
+            "title": "Default Token Cap",
+            "type": "integer"
+          },
+          "default_word_cap": {
+            "exclusiveMinimum": 0.0,
+            "title": "Default Word Cap",
+            "type": "integer"
+          },
+          "ligature_map": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Ligature Map",
+            "type": "object"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "profiles": {
+            "items": {
+              "$ref": "#/components/schemas/ParserProfile"
+            },
+            "title": "Profiles",
+            "type": "array"
+          },
+          "supported_extensions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Supported Extensions",
+            "type": "array"
+          },
+          "trace_id": {
+            "minLength": 1,
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trace_id",
+          "default_profile_id",
+          "default_word_cap",
+          "default_token_cap",
+          "supported_extensions",
+          "ligature_map",
+          "profiles"
+        ],
+        "title": "ParserPresetsResponse",
+        "type": "object"
+      },
+      "ParserProfile": {
+        "additionalProperties": false,
+        "description": "Named preset configuration exposed to the Tab 1 Parser Inspector.",
+        "properties": {
+          "description": {
+            "minLength": 1,
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "max_chunk_tokens": {
+            "exclusiveMinimum": 0.0,
+            "title": "Max Chunk Tokens",
+            "type": "integer"
+          },
+          "max_chunk_words": {
+            "exclusiveMinimum": 0.0,
+            "title": "Max Chunk Words",
+            "type": "integer"
+          },
+          "normalize_ligatures": {
+            "title": "Normalize Ligatures",
+            "type": "boolean"
+          },
+          "scene_break_min_blank_lines": {
+            "minimum": 1.0,
+            "title": "Scene Break Min Blank Lines",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "description",
+          "max_chunk_words",
+          "max_chunk_tokens",
+          "normalize_ligatures",
+          "scene_break_min_blank_lines"
+        ],
+        "title": "ParserProfile",
+        "type": "object"
+      },
+      "RenderRequest": {
+        "properties": {
+          "chapter_number": {
+            "default": 2,
+            "title": "Chapter Number",
+            "type": "integer"
+          },
+          "count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": 10,
+            "title": "Count"
+          },
+          "start_shot": {
+            "default": 1,
+            "title": "Start Shot",
+            "type": "integer"
+          }
+        },
+        "title": "RenderRequest",
+        "type": "object"
+      },
+      "SpanRange": {
+        "additionalProperties": false,
+        "description": "Dual-index character span guaranteeing Python code point <-> JS UTF-16 parity.",
+        "properties": {
+          "codepoint_end": {
+            "minimum": 0.0,
+            "title": "Codepoint End",
+            "type": "integer"
+          },
+          "codepoint_start": {
+            "minimum": 0.0,
+            "title": "Codepoint Start",
+            "type": "integer"
+          },
+          "utf16_end": {
+            "minimum": 0.0,
+            "title": "Utf16 End",
+            "type": "integer"
+          },
+          "utf16_start": {
+            "minimum": 0.0,
+            "title": "Utf16 Start",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "codepoint_start",
+          "codepoint_end",
+          "utf16_start",
+          "utf16_end"
+        ],
+        "title": "SpanRange",
+        "type": "object"
+      },
+      "SystemHealthResponse": {
+        "additionalProperties": false,
+        "description": "Aggregated backend readiness and subsystem status response.",
+        "properties": {
+          "dependencies": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/DependencyHealth"
+            },
+            "title": "Dependencies",
+            "type": "object"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "service": {
+            "default": "scriptoria-backend",
+            "title": "Service",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DependencyStatus"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "title": "Timestamp",
+            "type": "string"
+          },
+          "trace_id": {
+            "minLength": 1,
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "uptime_seconds": {
+            "minimum": 0.0,
+            "title": "Uptime Seconds",
+            "type": "number"
+          },
+          "version": {
+            "minLength": 1,
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "version",
+          "trace_id",
+          "uptime_seconds",
+          "timestamp"
+        ],
+        "title": "SystemHealthResponse",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Neuro-Symbolic Agentic AI Platform for Fiction Novel Storyboarding and Continuous Cluster Rendering",
+    "title": "Novel Visualiser & Storyboard Studio",
+    "version": "1.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/": {
+      "get": {
+        "operationId": "serve_index__get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Serve Index"
+      }
+    },
+    "/api/v1/foundry/assets": {
+      "get": {
+        "description": "Retrieve complete catalog of Pre-Production Foundry assets with preview paths.",
+        "operationId": "get_foundry_assets_api_v1_foundry_assets_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Get Foundry Assets Api V1 Foundry Assets Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Foundry Assets",
+        "tags": [
+          "Foundry"
+        ]
+      }
+    },
+    "/api/v1/parser/inspect": {
+      "post": {
+        "description": "Deterministically normalize, parse, chunk, and diagnose fiction text with dual spans.",
+        "operationId": "inspect_parsed_document_api_v1_parser_inspect_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParseInspectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParseInspectResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Inspect Parsed Document",
+        "tags": [
+          "parser-inspector"
+        ]
+      }
+    },
+    "/api/v1/parser/presets": {
+      "get": {
+        "description": "Return parser profiles, word/token caps, and supported document extensions.",
+        "operationId": "get_parser_presets_api_v1_parser_presets_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParserPresetsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Parser Presets",
+        "tags": [
+          "parser-inspector"
+        ]
+      }
+    },
+    "/api/v1/storyboard/chapters": {
+      "get": {
+        "description": "List all ingested chapters with progress metrics via single aggregated query.",
+        "operationId": "list_chapters_api_v1_storyboard_chapters_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response List Chapters Api V1 Storyboard Chapters Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Chapters",
+        "tags": [
+          "Storyboard"
+        ]
+      }
+    },
+    "/api/v1/storyboard/chapters/{chapter_number}": {
+      "get": {
+        "description": "Retrieve full storyboard with all scenes and shots for a chapter.",
+        "operationId": "get_chapter_storyboard_api_v1_storyboard_chapters__chapter_number__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chapter_number",
+            "required": true,
+            "schema": {
+              "title": "Chapter Number",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Chapter Storyboard Api V1 Storyboard Chapters  Chapter Number  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Chapter Storyboard",
+        "tags": [
+          "Storyboard"
+        ]
+      }
+    },
+    "/api/v1/storyboard/render": {
+      "post": {
+        "description": "Trigger background batch rendering on Kaggle GPU 0 & GPU 1.",
+        "operationId": "trigger_render_batch_api_v1_storyboard_render_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Trigger Render Batch Api V1 Storyboard Render Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Trigger Render Batch",
+        "tags": [
+          "Storyboard"
+        ]
+      }
+    },
+    "/api/v1/storyboard/stream/{chapter_number}": {
+      "get": {
+        "description": "Server-Sent Events (SSE) stream broadcasting storyboard generation updates.",
+        "operationId": "stream_chapter_progress_api_v1_storyboard_stream__chapter_number__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chapter_number",
+            "required": true,
+            "schema": {
+              "title": "Chapter Number",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Chapter Progress",
+        "tags": [
+          "Storyboard"
+        ]
+      }
+    },
+    "/api/v1/testbench/contracts": {
+      "get": {
+        "description": "Expose live OpenAPI SHA-256 contract hash and operational bridge limits.",
+        "operationId": "get_contract_manifest_api_v1_testbench_contracts_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContractManifestResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Contract Manifest",
+        "tags": [
+          "testbench-system"
+        ]
+      }
+    },
+    "/api/v1/testbench/echo-validate": {
+      "post": {
+        "description": "Verify round-trip schema validation and Python codepoint <-> JS UTF-16 span parity.",
+        "operationId": "echo_validate_api_v1_testbench_echo_validate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EchoValidateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EchoValidateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Echo Validate",
+        "tags": [
+          "testbench-system"
+        ]
+      }
+    },
+    "/api/v1/testbench/health": {
+      "get": {
+        "description": "Return backend readiness, SQLite/FTS5 probe, and VRAM coordinator status.",
+        "operationId": "get_system_health_api_v1_testbench_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SystemHealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get System Health",
+        "tags": [
+          "testbench-system"
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health_check_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health Check"
+      }
+    }
+  }
+}
