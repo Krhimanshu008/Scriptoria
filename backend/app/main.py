@@ -8,7 +8,12 @@ from fastapi.responses import FileResponse
 from app.api.v1.api import api_router
 from app.core.config import settings
 from app.middleware.bridge_guard import install_bridge_guard
-from app.routers import parser_inspector, testbench_system
+from app.routers import (
+    extraction_lab,
+    parser_inspector,
+    testbench_system,
+    vm_swarm_control,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("novel_visualiser")
@@ -38,6 +43,8 @@ install_bridge_guard(
 app.include_router(api_router, prefix="/api/v1")
 app.include_router(testbench_system.router, prefix="/api/v1")
 app.include_router(parser_inspector.router, prefix="/api/v1")
+app.include_router(vm_swarm_control.router, prefix="/api/v1")
+app.include_router(extraction_lab.router, prefix="/api/v1")
 
 # Static media mounts
 shots_dir = Path("output/shots")

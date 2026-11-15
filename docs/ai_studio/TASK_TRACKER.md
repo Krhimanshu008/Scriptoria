@@ -78,7 +78,55 @@
 
 ---
 
-## Upcoming: Sprint 2 (Tab 2: VM Swarm & Extraction Lab)
-- **Workstream 2.1:** Cloud VM Swarm & Worker Control Plane (Sidecar SSE log streaming on ports `:9999` and `:8190/:8191/:8192`).
-- **Workstream 2.2:** Single/Range Chapter Extraction Runner with VRAM Mutual Eviction enforcement.
-- **Workstream 2.3:** 3-Column Source Offset Highlighter & Quote Verification Inspector (`EC-2.2`).
+## Sprint 2: Tab 2 (VM Swarm & Rolling Extraction Lab)
+
+**Active Sprint:** Sprint 2 — Cloud VM Swarm Control & Rolling Extraction Lab (Tab 2)  
+**Primary Architect:** Gemini 4 Argon (`gemini-4-argon`) via Google AI Studio  
+**Orchestrator:** Antigravity Local Agent  
+**Last Updated:** `2026-11-15T23:50:00+05:30`  
+**Current Status:** **SPRINT 2 COMPLETED & VERIFIED**
+
+### Sprint 2 Overview & Status Matrix
+
+| Workstream | Scope / Components | Status | Test Coverage |
+| :--- | :--- | :--- | :--- |
+| **Workstream 2A** | Extraction Contracts & Pydantic Schemas (`extraction_contracts.py`) | ✅ **COMPLETED** | Pydantic v2 `StrictModel`, EC-2.4 120-char bloat cap verified |
+| **Workstream 2B** | FastAPI Endpoints (`vm_swarm_control.py`, `extraction_lab.py`) | ✅ **COMPLETED** | 6/6 tests passing (3.20s), 17/17 combined tests |
+| **Workstream 2C** | Next.js Typed Proxy Bridge (`/api/testbench/vm/*`, `/api/testbench/extraction/*`) | ✅ **COMPLETED** | `tsc --noEmit` passed (0 errors) |
+| **Workstream 2D** | Tab 2 UI Polish (`Tab2Extraction.tsx` VRAM Eviction + Live Extraction + Crash Sim) | ✅ **COMPLETED** | Mounted & `tsc` clean (0 errors) |
+| **Workstream 2E** | Sprint 2 Contract Hash & Drift Verification | ✅ **COMPLETED** | Pinned `sha256=08e0a0b8a38adab857ec8d2c933dfd88fbbed1e0036ff675f0a18b165f036292` |
+
+### Detailed Sprint 2 Task Breakdown
+- [x] **Subtask 2A.1:** Implement `backend/app/schemas/extraction_contracts.py` with `QuoteAnchorMatch`, `VisualBeat`, `ExtractedScene`, `ExtractedEntityItem` (EC-2.4 120 char bloat cap), `RollingGlossarySnapshot`, `ChapterExtractionRequest`, `ChapterExtractionResponse`, `VramEvictionState`, `CrashSimulationResponse`.
+- [x] **Subtask 2B.1:** Implement `backend/app/routers/vm_swarm_control.py`:
+  - `GET /api/v1/vm/swarm/status` (probes ports 8190, 8191, 8192, 9999 and targets gpu0, gpu1, tpu0).
+  - `POST /api/v1/vm/vram/lock` (mutual eviction state machine with 409 ApiErrorEnvelope on conflict).
+- [x] **Subtask 2B.2:** Implement `backend/app/routers/extraction_lab.py`:
+  - `POST /api/v1/extraction/chapter` (sentence-level beat extraction, exact & fuzzy quote anchoring with `SpanRange` offsets, EC-2.4 bloat clamping).
+  - `GET /api/v1/extraction/checkpoints/{book_id}` (checkpoint listing for resume state).
+  - `POST /api/v1/extraction/crash-simulate` (mid-run crash simulation at chapter $N$, preserving $1..N-1$).
+- [x] **Subtask 2B.3:** Mount both routers in `backend/app/main.py`.
+- [x] **Subtask 2B.4:** Create unit & integration test suite `backend/tests/test_extraction_contracts_and_endpoints.py` (6/6 passing).
+- [x] **Subtask 2B.5:** Re-export contracts via `export_contracts.py` (`sha256=08e0a0b8...`).
+- [x] **Subtask 2C.1:** Update `frontend/src/types/testbench-contracts.ts` with new contract hash and TypeScript interfaces.
+- [x] **Subtask 2C.2:** Create Next.js route handlers:
+  - `/api/testbench/vm/swarm/status/route.ts`
+  - `/api/testbench/vm/vram/lock/route.ts`
+  - `/api/testbench/extraction/chapter/route.ts`
+  - `/api/testbench/extraction/checkpoints/[bookId]/route.ts`
+  - `/api/testbench/extraction/crash-simulate/route.ts`
+- [x] **Subtask 2D.1:** Upgrade `Tab2Extraction.tsx`:
+  - Add interactive VRAM Mutual Eviction Status pill in header with lock/release buttons.
+  - Wire extraction button to `/api/testbench/extraction/chapter` fallback.
+  - Wire sudden-death crash test to live `/api/testbench/extraction/crash-simulate` endpoint.
+- [x] **Subtask 2E.1:** Verify full Next.js compilation (`npx tsc --noEmit` - 0 errors).
+- [x] **Subtask 2E.2:** Verify full backend pytest suite (17/17 tests passing in 2.80s).
+- [x] **Subtask 2E.3:** Verify zero contract drift (`export_contracts.py --check`).
+
+---
+
+## Upcoming: Sprint 3 (Tab 3: Graph & Timeline Studio)
+- **Workstream 3.1:** Stage-2 Book Compiler Contracts & Endpoints (`book_compiler.py`, cycle detection, alias resolution).
+- **Workstream 3.2:** Dual Timeline Scrubber (`narrative_seq` vs `story_time_tick`) & Flashback Isolation (`EC-3.1`).
+- **Workstream 3.3:** Character Registry & Tier Matrix (`EC-3.2`).
+- **Workstream 3.4:** Interactive Location Tree & Node-Link Graph Studio (`EC-3.3`).

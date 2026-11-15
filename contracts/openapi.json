@@ -1,6 +1,252 @@
 {
   "components": {
     "schemas": {
+      "ApiErrorBody": {
+        "additionalProperties": false,
+        "description": "Canonical error payload nested inside ApiErrorEnvelope.",
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "details": {
+            "items": {
+              "$ref": "#/components/schemas/ErrorDetail"
+            },
+            "title": "Details",
+            "type": "array"
+          },
+          "message": {
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          },
+          "retry_after_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retry After Ms"
+          },
+          "retryable": {
+            "default": false,
+            "title": "Retryable",
+            "type": "boolean"
+          },
+          "stage": {
+            "$ref": "#/components/schemas/ErrorStage"
+          },
+          "trace_id": {
+            "minLength": 1,
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "stage",
+          "message",
+          "trace_id"
+        ],
+        "title": "ApiErrorBody",
+        "type": "object"
+      },
+      "ApiErrorEnvelope": {
+        "additionalProperties": false,
+        "description": "Unified wire error envelope guaranteed on 100% of bridge error responses.",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ApiErrorBody"
+          },
+          "ok": {
+            "const": false,
+            "default": false,
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "ApiErrorEnvelope",
+        "type": "object"
+      },
+      "ChapterExtractionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "book_id": {
+            "minLength": 1,
+            "title": "Book Id",
+            "type": "string"
+          },
+          "chapter_index": {
+            "minimum": 0.0,
+            "title": "Chapter Index",
+            "type": "integer"
+          },
+          "chapter_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chapter Title"
+          },
+          "glossary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RollingGlossarySnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "raw_text": {
+            "minLength": 1,
+            "title": "Raw Text",
+            "type": "string"
+          },
+          "simulate_delay_s": {
+            "anyOf": [
+              {
+                "maximum": 10.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Simulate Delay S"
+          },
+          "worker_target": {
+            "default": "gpu0",
+            "title": "Worker Target",
+            "type": "string"
+          }
+        },
+        "required": [
+          "book_id",
+          "chapter_index",
+          "raw_text"
+        ],
+        "title": "ChapterExtractionRequest",
+        "type": "object"
+      },
+      "ChapterExtractionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "book_id": {
+            "minLength": 1,
+            "title": "Book Id",
+            "type": "string"
+          },
+          "chapter_index": {
+            "minimum": 0.0,
+            "title": "Chapter Index",
+            "type": "integer"
+          },
+          "diagnostics": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Diagnostics",
+            "type": "array"
+          },
+          "discovered_entities": {
+            "items": {
+              "$ref": "#/components/schemas/ExtractedEntityItem"
+            },
+            "title": "Discovered Entities",
+            "type": "array"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "quote_stats": {
+            "$ref": "#/components/schemas/QuoteMatchStats"
+          },
+          "scenes": {
+            "items": {
+              "$ref": "#/components/schemas/ExtractedScene"
+            },
+            "minItems": 1,
+            "title": "Scenes",
+            "type": "array"
+          },
+          "trace_id": {
+            "minLength": 1,
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "updated_glossary": {
+            "$ref": "#/components/schemas/RollingGlossarySnapshot"
+          }
+        },
+        "required": [
+          "trace_id",
+          "book_id",
+          "chapter_index",
+          "scenes",
+          "updated_glossary",
+          "quote_stats"
+        ],
+        "title": "ChapterExtractionResponse",
+        "type": "object"
+      },
+      "CharacterPresence": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "clothing_mention": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clothing Mention"
+          },
+          "emotional_state": {
+            "title": "Emotional State",
+            "type": "string"
+          },
+          "entity_id": {
+            "minLength": 1,
+            "title": "Entity Id",
+            "type": "string"
+          },
+          "name_in_scene": {
+            "minLength": 1,
+            "title": "Name In Scene",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity_id",
+          "name_in_scene",
+          "action",
+          "emotional_state"
+        ],
+        "title": "CharacterPresence",
+        "type": "object"
+      },
       "ContractLimits": {
         "additionalProperties": false,
         "description": "Enforced operational limits advertised by the FastAPI bridge.",
@@ -77,6 +323,79 @@
           "limits"
         ],
         "title": "ContractManifestResponse",
+        "type": "object"
+      },
+      "CrashSimulationRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "book_id": {
+            "minLength": 1,
+            "title": "Book Id",
+            "type": "string"
+          },
+          "fail_at_chapter": {
+            "minimum": 1.0,
+            "title": "Fail At Chapter",
+            "type": "integer"
+          },
+          "total_chapters": {
+            "default": 5,
+            "minimum": 1.0,
+            "title": "Total Chapters",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "book_id",
+          "fail_at_chapter"
+        ],
+        "title": "CrashSimulationRequest",
+        "type": "object"
+      },
+      "CrashSimulationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "completed_before_crash": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Completed Before Crash",
+            "type": "array"
+          },
+          "crashed_at_chapter": {
+            "minimum": 1.0,
+            "title": "Crashed At Chapter",
+            "type": "integer"
+          },
+          "idempotent_verified": {
+            "title": "Idempotent Verified",
+            "type": "boolean"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "resumable_chapter": {
+            "minimum": 0.0,
+            "title": "Resumable Chapter",
+            "type": "integer"
+          },
+          "trace_id": {
+            "minLength": 1,
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trace_id",
+          "crashed_at_chapter",
+          "completed_before_crash",
+          "resumable_chapter",
+          "idempotent_verified"
+        ],
+        "title": "CrashSimulationResponse",
         "type": "object"
       },
       "DependencyHealth": {
@@ -346,6 +665,278 @@
           "full_span"
         ],
         "title": "EchoValidateResponse",
+        "type": "object"
+      },
+      "ErrorCode": {
+        "description": "Canonical machine-readable error codes shared across Next.js and FastAPI.",
+        "enum": [
+          "VALIDATION_ERROR",
+          "CONTRACT_MISMATCH",
+          "VRAM_BUSY",
+          "UPSTREAM_UNAVAILABLE",
+          "UPSTREAM_TIMEOUT",
+          "PAYLOAD_TOO_LARGE",
+          "INTERNAL_ERROR"
+        ],
+        "title": "ErrorCode",
+        "type": "string"
+      },
+      "ErrorDetail": {
+        "additionalProperties": false,
+        "description": "Structured field-level diagnostic without leaking sensitive raw payloads.",
+        "properties": {
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Underlying validator or parser code.",
+            "title": "Code"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Dot-separated field path.",
+            "title": "Field"
+          },
+          "input_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Sanitized Python/JSON type name of the rejected value.",
+            "title": "Input Type"
+          },
+          "message": {
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "ErrorDetail",
+        "type": "object"
+      },
+      "ErrorStage": {
+        "description": "Pipeline stage where a fault originated.",
+        "enum": [
+          "nextjs_proxy",
+          "fastapi_validation",
+          "parser",
+          "vram_coordinator",
+          "sqlite_fts"
+        ],
+        "title": "ErrorStage",
+        "type": "string"
+      },
+      "ExtractedEntityItem": {
+        "additionalProperties": false,
+        "properties": {
+          "aliases": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Aliases",
+            "type": "array"
+          },
+          "canonical_name": {
+            "minLength": 1,
+            "title": "Canonical Name",
+            "type": "string"
+          },
+          "entity_id": {
+            "minLength": 1,
+            "title": "Entity Id",
+            "type": "string"
+          },
+          "entity_type": {
+            "enum": [
+              "CHARACTER",
+              "LOCATION",
+              "ITEM",
+              "FACTION"
+            ],
+            "title": "Entity Type",
+            "type": "string"
+          },
+          "short_visual_tag": {
+            "description": "EC-2.4 Bloat Cap: maximum 120 characters for concise visual conditioning.",
+            "maxLength": 120,
+            "title": "Short Visual Tag",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity_id",
+          "canonical_name",
+          "short_visual_tag",
+          "entity_type"
+        ],
+        "title": "ExtractedEntityItem",
+        "type": "object"
+      },
+      "ExtractedScene": {
+        "additionalProperties": false,
+        "properties": {
+          "beats": {
+            "items": {
+              "$ref": "#/components/schemas/VisualBeat"
+            },
+            "minItems": 1,
+            "title": "Beats",
+            "type": "array"
+          },
+          "characters_present": {
+            "items": {
+              "$ref": "#/components/schemas/CharacterPresence"
+            },
+            "title": "Characters Present",
+            "type": "array"
+          },
+          "end_char_offset": {
+            "minimum": 0.0,
+            "title": "End Char Offset",
+            "type": "integer"
+          },
+          "location_name": {
+            "minLength": 1,
+            "title": "Location Name",
+            "type": "string"
+          },
+          "scene_id": {
+            "minLength": 1,
+            "title": "Scene Id",
+            "type": "string"
+          },
+          "scene_order": {
+            "minimum": 1.0,
+            "title": "Scene Order",
+            "type": "integer"
+          },
+          "start_char_offset": {
+            "minimum": 0.0,
+            "title": "Start Char Offset",
+            "type": "integer"
+          },
+          "time_of_day": {
+            "default": "DAY",
+            "title": "Time Of Day",
+            "type": "string"
+          },
+          "verbatim_summary": {
+            "minLength": 1,
+            "title": "Verbatim Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scene_id",
+          "scene_order",
+          "start_char_offset",
+          "end_char_offset",
+          "verbatim_summary",
+          "location_name",
+          "beats"
+        ],
+        "title": "ExtractedScene",
+        "type": "object"
+      },
+      "ExtractionCheckpointItem": {
+        "additionalProperties": false,
+        "properties": {
+          "book_id": {
+            "title": "Book Id",
+            "type": "string"
+          },
+          "chapter_index": {
+            "minimum": 0.0,
+            "title": "Chapter Index",
+            "type": "integer"
+          },
+          "completed_at": {
+            "title": "Completed At",
+            "type": "string"
+          },
+          "entity_count": {
+            "minimum": 0.0,
+            "title": "Entity Count",
+            "type": "integer"
+          },
+          "scene_count": {
+            "minimum": 0.0,
+            "title": "Scene Count",
+            "type": "integer"
+          },
+          "sha256_hash": {
+            "title": "Sha256 Hash",
+            "type": "string"
+          }
+        },
+        "required": [
+          "book_id",
+          "chapter_index",
+          "completed_at",
+          "scene_count",
+          "entity_count",
+          "sha256_hash"
+        ],
+        "title": "ExtractionCheckpointItem",
+        "type": "object"
+      },
+      "ExtractionCheckpointsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "book_id": {
+            "title": "Book Id",
+            "type": "string"
+          },
+          "can_resume_at_chapter": {
+            "minimum": 0.0,
+            "title": "Can Resume At Chapter",
+            "type": "integer"
+          },
+          "checkpoints": {
+            "items": {
+              "$ref": "#/components/schemas/ExtractionCheckpointItem"
+            },
+            "title": "Checkpoints",
+            "type": "array"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "trace_id": {
+            "minLength": 1,
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trace_id",
+          "book_id",
+          "checkpoints",
+          "can_resume_at_chapter"
+        ],
+        "title": "ExtractionCheckpointsResponse",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -733,6 +1324,88 @@
         "title": "ParserProfile",
         "type": "object"
       },
+      "QuoteAnchorMatch": {
+        "additionalProperties": false,
+        "properties": {
+          "exact_quote": {
+            "minLength": 1,
+            "title": "Exact Quote",
+            "type": "string"
+          },
+          "match_quality": {
+            "enum": [
+              "EXACT",
+              "FUZZY",
+              "UNMATCHED"
+            ],
+            "title": "Match Quality",
+            "type": "string"
+          },
+          "similarity_score": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Similarity Score",
+            "type": "number"
+          },
+          "span": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SpanRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "exact_quote",
+          "match_quality",
+          "similarity_score"
+        ],
+        "title": "QuoteAnchorMatch",
+        "type": "object"
+      },
+      "QuoteMatchStats": {
+        "additionalProperties": false,
+        "properties": {
+          "exact_matches": {
+            "minimum": 0.0,
+            "title": "Exact Matches",
+            "type": "integer"
+          },
+          "fuzzy_matches": {
+            "minimum": 0.0,
+            "title": "Fuzzy Matches",
+            "type": "integer"
+          },
+          "match_rate_percent": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Match Rate Percent",
+            "type": "number"
+          },
+          "total_beats": {
+            "minimum": 0.0,
+            "title": "Total Beats",
+            "type": "integer"
+          },
+          "unmatched": {
+            "minimum": 0.0,
+            "title": "Unmatched",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total_beats",
+          "exact_matches",
+          "fuzzy_matches",
+          "unmatched",
+          "match_rate_percent"
+        ],
+        "title": "QuoteMatchStats",
+        "type": "object"
+      },
       "RenderRequest": {
         "properties": {
           "chapter_number": {
@@ -759,6 +1432,26 @@
           }
         },
         "title": "RenderRequest",
+        "type": "object"
+      },
+      "RollingGlossarySnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "entities": {
+            "items": {
+              "$ref": "#/components/schemas/ExtractedEntityItem"
+            },
+            "title": "Entities",
+            "type": "array"
+          },
+          "last_completed_chapter": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Last Completed Chapter",
+            "type": "integer"
+          }
+        },
+        "title": "RollingGlossarySnapshot",
         "type": "object"
       },
       "SpanRange": {
@@ -793,6 +1486,146 @@
           "utf16_end"
         ],
         "title": "SpanRange",
+        "type": "object"
+      },
+      "SwarmPortStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "listening": {
+            "title": "Listening",
+            "type": "boolean"
+          },
+          "mode": {
+            "default": "LIVE_SOCKET",
+            "enum": [
+              "LIVE_SOCKET",
+              "SIMULATED_READY"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "port": {
+            "maximum": 65535.0,
+            "minimum": 1.0,
+            "title": "Port",
+            "type": "integer"
+          },
+          "service": {
+            "title": "Service",
+            "type": "string"
+          }
+        },
+        "required": [
+          "port",
+          "service",
+          "listening"
+        ],
+        "title": "SwarmPortStatus",
+        "type": "object"
+      },
+      "SwarmStatusResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "active_ports": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Active Ports",
+            "type": "array"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "ports": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SwarmPortStatus"
+            },
+            "title": "Ports",
+            "type": "object"
+          },
+          "targets": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SwarmTargetNodeStatus"
+            },
+            "title": "Targets",
+            "type": "object"
+          },
+          "trace_id": {
+            "minLength": 1,
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "vram_state": {
+            "$ref": "#/components/schemas/VramEvictionState"
+          }
+        },
+        "required": [
+          "trace_id",
+          "targets",
+          "ports",
+          "active_ports",
+          "vram_state"
+        ],
+        "title": "SwarmStatusResponse",
+        "type": "object"
+      },
+      "SwarmTargetNodeStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "accelerator_type": {
+            "enum": [
+              "GPU",
+              "TPU",
+              "CPU"
+            ],
+            "title": "Accelerator Type",
+            "type": "string"
+          },
+          "device_name": {
+            "title": "Device Name",
+            "type": "string"
+          },
+          "latency_ms": {
+            "minimum": 0.0,
+            "title": "Latency Ms",
+            "type": "number"
+          },
+          "port": {
+            "title": "Port",
+            "type": "integer"
+          },
+          "reachable": {
+            "title": "Reachable",
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "ONLINE",
+              "BUSY",
+              "STANDBY",
+              "OFFLINE"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "target_id": {
+            "title": "Target Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target_id",
+          "accelerator_type",
+          "device_name",
+          "port",
+          "reachable",
+          "status",
+          "latency_ms"
+        ],
+        "title": "SwarmTargetNodeStatus",
         "type": "object"
       },
       "SystemHealthResponse": {
@@ -890,6 +1723,138 @@
         ],
         "title": "ValidationError",
         "type": "object"
+      },
+      "VisualBeat": {
+        "additionalProperties": false,
+        "properties": {
+          "beat_order": {
+            "minimum": 1.0,
+            "title": "Beat Order",
+            "type": "integer"
+          },
+          "focal_elements": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Focal Elements",
+            "type": "array"
+          },
+          "quote_anchor": {
+            "$ref": "#/components/schemas/QuoteAnchorMatch"
+          },
+          "shot_suggestion": {
+            "minLength": 1,
+            "title": "Shot Suggestion",
+            "type": "string"
+          }
+        },
+        "required": [
+          "beat_order",
+          "shot_suggestion",
+          "quote_anchor"
+        ],
+        "title": "VisualBeat",
+        "type": "object"
+      },
+      "VramEvictionState": {
+        "additionalProperties": false,
+        "properties": {
+          "active_mode": {
+            "enum": [
+              "IDLE",
+              "EXTRACTION_SWARM",
+              "IMAGE_GEN_COMFYUI"
+            ],
+            "title": "Active Mode",
+            "type": "string"
+          },
+          "gpu_device_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gpu Device Name"
+          },
+          "lock_acquired_timestamp": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lock Acquired Timestamp"
+          },
+          "lock_holder": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lock Holder"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "trace_id": {
+            "minLength": 1,
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "vram_allocated_mb": {
+            "default": 0.0,
+            "minimum": 0.0,
+            "title": "Vram Allocated Mb",
+            "type": "number"
+          }
+        },
+        "required": [
+          "trace_id",
+          "active_mode"
+        ],
+        "title": "VramEvictionState",
+        "type": "object"
+      },
+      "VramLockRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "client_id": {
+            "minLength": 1,
+            "title": "Client Id",
+            "type": "string"
+          },
+          "force": {
+            "default": false,
+            "title": "Force",
+            "type": "boolean"
+          },
+          "requested_mode": {
+            "enum": [
+              "IDLE",
+              "EXTRACTION_SWARM",
+              "IMAGE_GEN_COMFYUI"
+            ],
+            "title": "Requested Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "requested_mode",
+          "client_id"
+        ],
+        "title": "VramLockRequest",
+        "type": "object"
       }
     }
   },
@@ -914,6 +1879,131 @@
           }
         },
         "summary": "Serve Index"
+      }
+    },
+    "/api/v1/extraction/chapter": {
+      "post": {
+        "operationId": "extract_chapter_api_v1_extraction_chapter_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChapterExtractionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChapterExtractionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Extract Chapter",
+        "tags": [
+          "extraction-lab"
+        ]
+      }
+    },
+    "/api/v1/extraction/checkpoints/{book_id}": {
+      "get": {
+        "operationId": "get_extraction_checkpoints_api_v1_extraction_checkpoints__book_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "book_id",
+            "required": true,
+            "schema": {
+              "title": "Book Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExtractionCheckpointsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Extraction Checkpoints",
+        "tags": [
+          "extraction-lab"
+        ]
+      }
+    },
+    "/api/v1/extraction/crash-simulate": {
+      "post": {
+        "description": "Simulates a mid-extraction sudden-death worker crash at chapter N (EC-2.3),\npersisting idempotent checkpoints for chapters [1 .. fail_at_chapter - 1]\nand verifying deterministic resume state at fail_at_chapter.",
+        "operationId": "simulate_extraction_crash_api_v1_extraction_crash_simulate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CrashSimulationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrashSimulationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Simulate Extraction Crash",
+        "tags": [
+          "extraction-lab"
+        ]
       }
     },
     "/api/v1/foundry/assets": {
@@ -1247,6 +2337,78 @@
         "summary": "Get System Health",
         "tags": [
           "testbench-system"
+        ]
+      }
+    },
+    "/api/v1/vm/swarm/status": {
+      "get": {
+        "operationId": "get_swarm_status_api_v1_vm_swarm_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SwarmStatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Swarm Status",
+        "tags": [
+          "vm-swarm"
+        ]
+      }
+    },
+    "/api/v1/vm/vram/lock": {
+      "post": {
+        "operationId": "manage_vram_lock_api_v1_vm_vram_lock_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VramLockRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VramEvictionState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Manage Vram Lock",
+        "tags": [
+          "vm-swarm"
         ]
       }
     },

@@ -1,5 +1,5 @@
 export const EXPECTED_CONTRACT_HASH =
-  "b9f84ad7eac059f176856cb7494625e513693aed0a26dbd224bc4e54ffb1881a" as const;
+  "08e0a0b8a38adab857ec8d2c933dfd88fbbed1e0036ff675f0a18b165f036292" as const;
 
 export type ErrorCode =
   | "VALIDATION_ERROR"
@@ -51,20 +51,16 @@ export type DependencyStatus = "healthy" | "degraded" | "unavailable";
 export interface DependencyHealth {
   name: string;
   status: DependencyStatus;
-  latency_ms?: number | null;
-  detail?: string | null;
-  checked_at: string;
+  latency_ms: number;
+  message?: string | null;
 }
 
 export interface SystemHealthResponse {
   ok: true;
   status: DependencyStatus;
-  service: string;
-  version: string;
+  timestamp_utc: string;
   trace_id: string;
-  uptime_seconds: number;
-  timestamp: string;
-  dependencies: Record<string, DependencyHealth>;
+  dependencies: DependencyHealth[];
 }
 
 export interface ContractLimits {
@@ -187,6 +183,167 @@ export interface ParseInspectResponse {
   document_tree?: DocumentNode | null;
   chunks: ParsedChunk[];
   diagnostics: ParseDiagnostic[];
+}
+
+// ============================================================================
+// Sprint 2: Cloud VM Swarm & Extraction Contracts
+// ============================================================================
+
+export type MatchQuality = "EXACT" | "FUZZY" | "UNMATCHED";
+
+export interface QuoteAnchorMatch {
+  exact_quote: string;
+  span?: SpanRange | null;
+  match_quality: MatchQuality;
+  similarity_score: number;
+}
+
+export interface VisualBeat {
+  beat_order: number;
+  shot_suggestion: string;
+  focal_elements: string[];
+  quote_anchor: QuoteAnchorMatch;
+}
+
+export interface CharacterPresence {
+  entity_id: string;
+  name_in_scene: string;
+  action: string;
+  emotional_state: string;
+  clothing_mention?: string | null;
+}
+
+export interface ExtractedScene {
+  scene_id: string;
+  scene_order: number;
+  start_char_offset: number;
+  end_char_offset: number;
+  verbatim_summary: string;
+  location_name: string;
+  time_of_day: string;
+  characters_present: CharacterPresence[];
+  beats: VisualBeat[];
+}
+
+export type EntityType = "CHARACTER" | "LOCATION" | "ITEM" | "FACTION";
+
+export interface ExtractedEntityItem {
+  entity_id: string;
+  canonical_name: string;
+  aliases: string[];
+  short_visual_tag: string;
+  entity_type: EntityType;
+}
+
+export interface RollingGlossarySnapshot {
+  entities: ExtractedEntityItem[];
+  last_completed_chapter: number;
+}
+
+export interface ChapterExtractionRequest {
+  book_id: string;
+  chapter_index: number;
+  chapter_title?: string | null;
+  raw_text: string;
+  glossary?: RollingGlossarySnapshot | null;
+  worker_target?: string;
+  simulate_delay_s?: number | null;
+}
+
+export interface QuoteMatchStats {
+  total_beats: number;
+  exact_matches: number;
+  fuzzy_matches: number;
+  unmatched: number;
+  match_rate_percent: number;
+}
+
+export interface ChapterExtractionResponse {
+  ok: true;
+  trace_id: string;
+  book_id: string;
+  chapter_index: number;
+  scenes: ExtractedScene[];
+  discovered_entities: ExtractedEntityItem[];
+  updated_glossary: RollingGlossarySnapshot;
+  quote_stats: QuoteMatchStats;
+  diagnostics: string[];
+}
+
+export type VramLockMode = "IDLE" | "EXTRACTION_SWARM" | "IMAGE_GEN_COMFYUI";
+
+export interface VramEvictionState {
+  ok: true;
+  trace_id: string;
+  active_mode: VramLockMode;
+  lock_holder?: string | null;
+  vram_allocated_mb: number;
+  gpu_device_name?: string | null;
+  lock_acquired_timestamp?: string | null;
+}
+
+export interface VramLockRequest {
+  requested_mode: VramLockMode;
+  client_id: string;
+  force?: boolean;
+}
+
+export interface SwarmPortStatus {
+  port: number;
+  service: string;
+  listening: boolean;
+  mode: "LIVE_SOCKET" | "SIMULATED_READY";
+}
+
+export interface SwarmTargetNodeStatus {
+  target_id: string;
+  accelerator_type: "GPU" | "TPU" | "CPU";
+  device_name: string;
+  port: number;
+  reachable: boolean;
+  status: "ONLINE" | "BUSY" | "STANDBY" | "OFFLINE";
+  latency_ms: number;
+}
+
+export interface SwarmStatusResponse {
+  ok: true;
+  trace_id: string;
+  targets: Record<string, SwarmTargetNodeStatus>;
+  ports: Record<string, SwarmPortStatus>;
+  active_ports: number[];
+  vram_state: VramEvictionState;
+}
+
+export interface ExtractionCheckpointItem {
+  book_id: string;
+  chapter_index: number;
+  completed_at: string;
+  scene_count: number;
+  entity_count: number;
+  sha256_hash: string;
+}
+
+export interface ExtractionCheckpointsResponse {
+  ok: true;
+  trace_id: string;
+  book_id: string;
+  checkpoints: ExtractionCheckpointItem[];
+  can_resume_at_chapter: number;
+}
+
+export interface CrashSimulationRequest {
+  book_id: string;
+  fail_at_chapter: number;
+  total_chapters?: number;
+}
+
+export interface CrashSimulationResponse {
+  ok: true;
+  trace_id: string;
+  crashed_at_chapter: number;
+  completed_before_crash: number[];
+  resumable_chapter: number;
+  idempotent_verified: boolean;
 }
 
 export type ApiResult<T extends { ok: true }> = T | ApiErrorEnvelope;

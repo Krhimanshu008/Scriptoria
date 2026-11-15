@@ -1,9 +1,9 @@
 {
-  "active_session_id": "sprint_1_signed_off",
-  "topic": "Sprint 1: Contract-Verified Testbench Bridge, Tab 0 & Tab 1 (Full Exit Gate Passed)",
-  "started_at": "2026-11-15T23:20:00+05:30",
-  "last_updated": "2026-11-15T23:36:00+05:30",
-  "status": "SPRINT_1_COMPLETED_AND_SIGNED_OFF",
+  "active_session_id": "session_007_sprint_2_extraction_lab",
+  "topic": "Sprint 2: Cloud VM Swarm Control & Rolling Extraction Lab (Tab 2 Completed)",
+  "started_at": "2026-11-15T23:38:00+05:30",
+  "last_updated": "2026-11-15T23:51:00+05:30",
+  "status": "SPRINT_2_COMPLETED_AND_VERIFIED",
   "models_used": [
     "gemini-4-hydrogen",
     "gemini-4-argon"
@@ -11,18 +11,20 @@
   "thinking_level": "High",
   "grounding_google_search": true,
   "url_context": "https://github.com/Krhimanshu008/Scriptoria.git",
-  "verified_contract_hash": "b9f84ad7eac059f176856cb7494625e513693aed0a26dbd224bc4e54ffb1881a",
+  "verified_contract_hash": "08e0a0b8a38adab857ec8d2c933dfd88fbbed1e0036ff675f0a18b165f036292",
   "completed_workstreams": [
-    "Workstream A: Canonical Contracts & FastAPI Bridge Foundation (COMPLETED & 100% TESTED)",
-    "Workstream B: Tab 0 & Tab 1 FastAPI Endpoints (COMPLETED & 100% TESTED)",
-    "Workstream C: Next.js Typed Proxy Bridge & Codegen (COMPLETED & 0 TYPE ERRORS)",
-    "Workstream D: Testbench Shell & React UI (COMPLETED, Tab 0 & Tab 1 MOUNTED & 0 TYPE ERRORS)",
-    "Workstream E: Sprint 1 E2E Verification & Exit Gate (COMPLETED: 11/11 tests, 0 drift, 0 type errors)"
+    "Sprint 1: Workstreams A-E (Plumbing, Canonical Contracts, Deterministic Parser AST, 11/11 tests)",
+    "Workstream 2A: Extraction Contracts & Wire Models (QuoteAnchorMatch, EC-2.4 120-char Bloat Cap, VramLockMode)",
+    "Workstream 2B: FastAPI Endpoints (vm_swarm_control.py, extraction_lab.py, 6/6 tests passing)",
+    "Workstream 2C: Next.js Typed Proxy Bridge & Route Handlers (0 type errors)",
+    "Workstream 2D: Tab 2 UI Polish (VRAM Eviction Controller, Live Extraction, Sudden Death Crash Sim)",
+    "Workstream 2E: Sprint 2 E2E Verification & Exit Gate (17/17 pytest passing, 0 contract drift, tsc clean)"
   ],
-  "next_target_epic": "Sprint 2: Tab 2 (VM Swarm & Extraction Lab)",
+  "next_target_epic": "Sprint 3: Tab 3 (Graph & Timeline Studio)",
   "pending_tasks": [
-    "Cloud VM Swarm & Worker Control Plane (Sidecar SSE log streaming :9999 / :8190)",
-    "Single/Range Chapter Extraction Runner with VRAM Mutual Eviction",
-    "3-Column Source Offset Highlighter & Quote Verification Inspector (EC-2.2)"
+    "Stage-2 Book Compiler Contracts & Endpoints (cycle detection, alias resolution)",
+    "Dual Timeline Scrubber (narrative_seq vs story_time_tick) & Flashback Isolation (EC-3.1)",
+    "Character Registry & Tier Matrix (EC-3.2)",
+    "Interactive Location Tree & Node-Link Graph Studio (EC-3.3)"
   ]
 }

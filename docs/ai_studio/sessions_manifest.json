@@ -4,8 +4,8 @@
   "default_thinking_level": "High",
   "created_at": "2026-11-15T22:25:00+05:30",
   "last_updated": "2026-11-15T23:30:00+05:30",
-  "active_session_id": "session_006_workstream_d_ui_argon",
-  "contract_hash": "b9f84ad7eac059f176856cb7494625e513693aed0a26dbd224bc4e54ffb1881a",
+  "active_session_id": "session_007_sprint_2_extraction_lab",
+  "contract_hash": "08e0a0b8a38adab857ec8d2c933dfd88fbbed1e0036ff675f0a18b165f036292",
   "sessions": [
     {
       "session_id": "session_001_kickoff_and_task_alignment",
@@ -65,6 +65,15 @@
       "status": "COMPLETED_AND_VERIFIED",
       "json_path": "docs/ai_studio/sessions/session_006_workstream_d_ui_argon.json",
       "md_path": "docs/ai_studio/sessions/session_006_workstream_d_ui_argon.md"
+    },
+    {
+      "session_id": "session_007_sprint_2_extraction_lab",
+      "topic": "Session 007: Sprint 2 (Tab 2: VM Swarm & Extraction Lab)",
+      "last_timestamp": "2026-11-15T23:50:00+05:30",
+      "model": "gemini-4-argon",
+      "tokens": 48737,
+      "status": "COMPLETED_AND_VERIFIED",
+      "json_path": "docs/ai_studio/sessions/session_007_sprint_2_extraction_lab.json"
     }
   ]
 }
