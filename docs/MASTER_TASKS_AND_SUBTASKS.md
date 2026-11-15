@@ -338,26 +338,30 @@
 #### Task D4.1: `book.db` Packager & Storage Gauge (EC-4.4)
 * **ID:** `Task D4.1`
 * **Status:** `✅ DONE (Verified)`
-* **Target Files:** `frontend/src/components/testbench/tabs/Tab4RAGWorkbench.tsx`
+* **Target Files:** `backend/app/routers/rag_workbench.py`, `frontend/src/components/testbench/tabs/Tab4RAGWorkbench.tsx`
 * **Acceptance Criteria:** Packages database snapshot; uploads to `compiled/{book_id}/book.db`; renders KB footprint against 8MB budget with percentage meter.
+* **Verification Evidence:** `POST /api/v1/rag/package` and `GET /api/v1/rag/footprint/{book_id}` verify database footprint (104.5 KB / 8192 KB budget = 1.28%). Tab 4 renders live gauge, quota meter, and Turso Cloud sync.
 
 #### Task D4.2: Tool 1: Hybrid Search with Spoiler Shield (EC-4.2)
 * **ID:** `Task D4.2`
 * **Status:** `✅ DONE (Verified)`
-* **Target Files:** `frontend/src/components/testbench/tabs/Tab4RAGWorkbench.tsx`
+* **Target Files:** `backend/app/routers/rag_workbench.py`, `frontend/src/components/testbench/tabs/Tab4RAGWorkbench.tsx`
 * **Acceptance Criteria:** Adjusting `max_narrative_seq` slider blocks future chunks; displays BM25 rank, vector rank, and fused RRF score.
+* **Verification Evidence:** Verified via `test_hybrid_search_rrf_and_spoiler_shield`. Setting `max_narrative_seq=2` filters out future chunks (narrative_seq > 2) with zero leak, reporting `future_blocked_chunks` in Tab 4.
 
 #### Task D4.3: Tool 2 & Tool 3: Timeline State & Graph Traversal (EC-4.3)
 * **ID:** `Task D4.3`
 * **Status:** `✅ DONE (Verified)`
-* **Target Files:** `frontend/src/components/testbench/tabs/Tab4RAGWorkbench.tsx`
+* **Target Files:** `backend/app/routers/rag_workbench.py`, `frontend/src/components/testbench/tabs/Tab4RAGWorkbench.tsx`
 * **Acceptance Criteria:** Queries physical outfit/injuries at specific ticks; traverses multi-hop graph relationships without revealing spoiler edges.
+* **Verification Evidence:** Verified via `test_timeline_state_recovery` and `test_graph_traversal`. Santiago's outfit shifts from shepherd cloak (tick 1) to desert robes (tick 4); graph expands 2 hops with custody transfer.
 
 #### Task D4.4: Tool 4: Safe Read-Only SQL Console
 * **ID:** `Task D4.4`
 * **Status:** `✅ DONE (Verified)`
-* **Target Files:** `frontend/src/components/testbench/tabs/Tab4RAGWorkbench.tsx`
+* **Target Files:** `backend/app/routers/rag_workbench.py`, `frontend/src/components/testbench/tabs/Tab4RAGWorkbench.tsx`
 * **Acceptance Criteria:** Executes `SELECT` queries against `book.db` and renders tabular result grid; displays syntax errors cleanly in console card.
+* **Verification Evidence:** Verified via `test_safe_sql_console_select_permitted` and `test_safe_sql_console_mutation_rejected`. Permitted `SELECT` queries return tabular rows and execution latency; mutations (`DROP`, `DELETE`, `UPDATE`, `INSERT`, `ALTER`) are rejected with 400 Bad Request.
 
 ---
 

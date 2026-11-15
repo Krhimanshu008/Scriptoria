@@ -671,6 +671,56 @@
         "title": "CrashSimulationResponse",
         "type": "object"
       },
+      "DatabaseFootprintResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "book_id": {
+            "title": "Book Id",
+            "type": "string"
+          },
+          "budget_kb": {
+            "default": 8192.0,
+            "title": "Budget Kb",
+            "type": "number"
+          },
+          "db_size_kb": {
+            "title": "Db Size Kb",
+            "type": "number"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "percent_used": {
+            "title": "Percent Used",
+            "type": "number"
+          },
+          "total_chunks": {
+            "title": "Total Chunks",
+            "type": "integer"
+          },
+          "trace_id": {
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "within_budget": {
+            "title": "Within Budget",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "trace_id",
+          "book_id",
+          "db_size_kb",
+          "percent_used",
+          "total_chunks",
+          "within_budget"
+        ],
+        "title": "DatabaseFootprintResponse",
+        "type": "object"
+      },
       "DependencyHealth": {
         "additionalProperties": false,
         "description": "Health report for a single backend dependency.",
@@ -1260,6 +1310,150 @@
         "title": "GraphEdgeSummary",
         "type": "object"
       },
+      "GraphTraversalEdge": {
+        "additionalProperties": false,
+        "properties": {
+          "edge_type": {
+            "title": "Edge Type",
+            "type": "string"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          },
+          "target_id": {
+            "title": "Target Id",
+            "type": "string"
+          },
+          "weight": {
+            "title": "Weight",
+            "type": "number"
+          }
+        },
+        "required": [
+          "source_id",
+          "target_id",
+          "edge_type",
+          "weight"
+        ],
+        "title": "GraphTraversalEdge",
+        "type": "object"
+      },
+      "GraphTraversalNode": {
+        "additionalProperties": false,
+        "properties": {
+          "canonical_name": {
+            "title": "Canonical Name",
+            "type": "string"
+          },
+          "distance_hops": {
+            "title": "Distance Hops",
+            "type": "integer"
+          },
+          "entity_id": {
+            "title": "Entity Id",
+            "type": "string"
+          },
+          "entity_type": {
+            "title": "Entity Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity_id",
+          "canonical_name",
+          "entity_type",
+          "distance_hops"
+        ],
+        "title": "GraphTraversalNode",
+        "type": "object"
+      },
+      "GraphTraversalRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "book_id": {
+            "default": "book-demo",
+            "minLength": 1,
+            "title": "Book Id",
+            "type": "string"
+          },
+          "max_hops": {
+            "default": 2,
+            "maximum": 5.0,
+            "minimum": 1.0,
+            "title": "Max Hops",
+            "type": "integer"
+          },
+          "max_narrative_seq": {
+            "default": 9999,
+            "minimum": 0.0,
+            "title": "Max Narrative Seq",
+            "type": "integer"
+          },
+          "seed_entity": {
+            "minLength": 1,
+            "title": "Seed Entity",
+            "type": "string"
+          },
+          "tick": {
+            "default": 1,
+            "minimum": 0.0,
+            "title": "Tick",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "seed_entity"
+        ],
+        "title": "GraphTraversalRequest",
+        "type": "object"
+      },
+      "GraphTraversalResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/GraphTraversalEdge"
+            },
+            "title": "Edges",
+            "type": "array"
+          },
+          "max_hops": {
+            "title": "Max Hops",
+            "type": "integer"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/GraphTraversalNode"
+            },
+            "title": "Nodes",
+            "type": "array"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "seed_entity": {
+            "title": "Seed Entity",
+            "type": "string"
+          },
+          "trace_id": {
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trace_id",
+          "seed_entity",
+          "max_hops",
+          "nodes",
+          "edges"
+        ],
+        "title": "GraphTraversalResponse",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1271,6 +1465,79 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HybridSearchResultItem": {
+        "additionalProperties": false,
+        "properties": {
+          "bm25_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bm25 Rank"
+          },
+          "chunk_id": {
+            "title": "Chunk Id",
+            "type": "string"
+          },
+          "focal_elements": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Focal Elements",
+            "type": "array"
+          },
+          "is_future_spoiler": {
+            "default": false,
+            "title": "Is Future Spoiler",
+            "type": "boolean"
+          },
+          "narrative_seq": {
+            "title": "Narrative Seq",
+            "type": "integer"
+          },
+          "quote_anchor": {
+            "title": "Quote Anchor",
+            "type": "string"
+          },
+          "rrf_score": {
+            "title": "Rrf Score",
+            "type": "number"
+          },
+          "shot_suggestion": {
+            "title": "Shot Suggestion",
+            "type": "string"
+          },
+          "story_time_tick": {
+            "title": "Story Time Tick",
+            "type": "integer"
+          },
+          "vector_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vector Rank"
+          }
+        },
+        "required": [
+          "chunk_id",
+          "narrative_seq",
+          "story_time_tick",
+          "quote_anchor",
+          "shot_suggestion",
+          "rrf_score"
+        ],
+        "title": "HybridSearchResultItem",
         "type": "object"
       },
       "LocationTreeResponse": {
@@ -1317,6 +1584,84 @@
           "root_locations"
         ],
         "title": "LocationTreeResponse",
+        "type": "object"
+      },
+      "PackageRAGRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "book_id": {
+            "default": "book-demo",
+            "minLength": 1,
+            "title": "Book Id",
+            "type": "string"
+          },
+          "force_rebuild": {
+            "default": true,
+            "title": "Force Rebuild",
+            "type": "boolean"
+          }
+        },
+        "title": "PackageRAGRequest",
+        "type": "object"
+      },
+      "PackageRAGResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "book_id": {
+            "title": "Book Id",
+            "type": "string"
+          },
+          "budget_kb": {
+            "default": 8192.0,
+            "title": "Budget Kb",
+            "type": "number"
+          },
+          "db_size_kb": {
+            "title": "Db Size Kb",
+            "type": "number"
+          },
+          "duration_sec": {
+            "title": "Duration Sec",
+            "type": "number"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "percent_used": {
+            "title": "Percent Used",
+            "type": "number"
+          },
+          "r2_key": {
+            "title": "R2 Key",
+            "type": "string"
+          },
+          "total_chunks": {
+            "title": "Total Chunks",
+            "type": "integer"
+          },
+          "trace_id": {
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "within_budget": {
+            "default": true,
+            "title": "Within Budget",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "trace_id",
+          "book_id",
+          "db_size_kb",
+          "percent_used",
+          "total_chunks",
+          "r2_key",
+          "duration_sec"
+        ],
+        "title": "PackageRAGResponse",
         "type": "object"
       },
       "ParseDiagnostic": {
@@ -1773,6 +2118,88 @@
         "title": "QuoteMatchStats",
         "type": "object"
       },
+      "RagHybridSearchRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "book_id": {
+            "default": "book-demo",
+            "minLength": 1,
+            "title": "Book Id",
+            "type": "string"
+          },
+          "max_narrative_seq": {
+            "default": 9999,
+            "minimum": 0.0,
+            "title": "Max Narrative Seq",
+            "type": "integer"
+          },
+          "query": {
+            "minLength": 1,
+            "title": "Query",
+            "type": "string"
+          },
+          "top_k": {
+            "default": 5,
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Top K",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "RagHybridSearchRequest",
+        "type": "object"
+      },
+      "RagHybridSearchResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "future_blocked_chunks": {
+            "title": "Future Blocked Chunks",
+            "type": "integer"
+          },
+          "max_narrative_seq": {
+            "title": "Max Narrative Seq",
+            "type": "integer"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "query": {
+            "title": "Query",
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/HybridSearchResultItem"
+            },
+            "title": "Results",
+            "type": "array"
+          },
+          "total_hits": {
+            "title": "Total Hits",
+            "type": "integer"
+          },
+          "trace_id": {
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trace_id",
+          "query",
+          "max_narrative_seq",
+          "total_hits",
+          "future_blocked_chunks",
+          "results"
+        ],
+        "title": "RagHybridSearchResponse",
+        "type": "object"
+      },
       "RenderRequest": {
         "properties": {
           "chapter_number": {
@@ -1853,6 +2280,91 @@
           "utf16_end"
         ],
         "title": "SpanRange",
+        "type": "object"
+      },
+      "SqlConsoleRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "book_id": {
+            "default": "book-demo",
+            "minLength": 1,
+            "title": "Book Id",
+            "type": "string"
+          },
+          "sql": {
+            "minLength": 1,
+            "title": "Sql",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sql"
+        ],
+        "title": "SqlConsoleRequest",
+        "type": "object"
+      },
+      "SqlConsoleResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "execution_time_ms": {
+            "title": "Execution Time Ms",
+            "type": "number"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "read_only_enforced": {
+            "const": true,
+            "default": true,
+            "title": "Read Only Enforced",
+            "type": "boolean"
+          },
+          "row_count": {
+            "title": "Row Count",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "items": {},
+              "type": "array"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "trace_id": {
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trace_id",
+          "columns",
+          "rows",
+          "row_count",
+          "execution_time_ms"
+        ],
+        "title": "SqlConsoleResponse",
         "type": "object"
       },
       "SwarmPortStatus": {
@@ -2051,6 +2563,54 @@
         "title": "SystemHealthResponse",
         "type": "object"
       },
+      "TimelineEntityStateItem": {
+        "additionalProperties": false,
+        "properties": {
+          "character_id": {
+            "title": "Character Id",
+            "type": "string"
+          },
+          "injuries": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Injuries",
+            "type": "array"
+          },
+          "items_held": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Items Held",
+            "type": "array"
+          },
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "outfit": {
+            "title": "Outfit",
+            "type": "string"
+          },
+          "tick": {
+            "title": "Tick",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "character_id",
+          "name",
+          "tick",
+          "outfit",
+          "location_id"
+        ],
+        "title": "TimelineEntityStateItem",
+        "type": "object"
+      },
       "TimelineResponse": {
         "additionalProperties": false,
         "properties": {
@@ -2092,6 +2652,69 @@
           "ticks"
         ],
         "title": "TimelineResponse",
+        "type": "object"
+      },
+      "TimelineStateQueryRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "book_id": {
+            "default": "book-demo",
+            "minLength": 1,
+            "title": "Book Id",
+            "type": "string"
+          },
+          "character_ids": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Character Ids",
+            "type": "array"
+          },
+          "tick": {
+            "default": 1,
+            "minimum": 0.0,
+            "title": "Tick",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "character_ids"
+        ],
+        "title": "TimelineStateQueryRequest",
+        "type": "object"
+      },
+      "TimelineStateQueryResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "states": {
+            "items": {
+              "$ref": "#/components/schemas/TimelineEntityStateItem"
+            },
+            "title": "States",
+            "type": "array"
+          },
+          "tick": {
+            "title": "Tick",
+            "type": "integer"
+          },
+          "trace_id": {
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trace_id",
+          "tick",
+          "states"
+        ],
+        "title": "TimelineStateQueryResponse",
         "type": "object"
       },
       "TimelineTickSummary": {
@@ -2169,6 +2792,70 @@
           "summary"
         ],
         "title": "TimelineTickSummary",
+        "type": "object"
+      },
+      "TursoSyncRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "book_id": {
+            "default": "book-demo",
+            "minLength": 1,
+            "title": "Book Id",
+            "type": "string"
+          },
+          "target_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Url"
+          }
+        },
+        "title": "TursoSyncRequest",
+        "type": "object"
+      },
+      "TursoSyncResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "book_id": {
+            "title": "Book Id",
+            "type": "string"
+          },
+          "cloud_url": {
+            "title": "Cloud Url",
+            "type": "string"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "sync_latency_ms": {
+            "title": "Sync Latency Ms",
+            "type": "number"
+          },
+          "synced": {
+            "title": "Synced",
+            "type": "boolean"
+          },
+          "trace_id": {
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trace_id",
+          "book_id",
+          "synced",
+          "cloud_url",
+          "sync_latency_ms"
+        ],
+        "title": "TursoSyncResponse",
         "type": "object"
       },
       "ValidationError": {
@@ -2790,6 +3477,301 @@
         "summary": "Get Parser Presets",
         "tags": [
           "parser-inspector"
+        ]
+      }
+    },
+    "/api/v1/rag/footprint/{book_id}": {
+      "get": {
+        "description": "Checks database footprint against the 8 MB budget (EC-4.4).",
+        "operationId": "get_database_footprint_api_v1_rag_footprint__book_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "book_id",
+            "required": true,
+            "schema": {
+              "title": "Book Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatabaseFootprintResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Database Footprint",
+        "tags": [
+          "Hybrid RAG Workbench"
+        ]
+      }
+    },
+    "/api/v1/rag/graph-traverse": {
+      "post": {
+        "description": "Tool 3: Multi-hop graph expansion & item custody transitions (EC-4.3).",
+        "operationId": "traverse_knowledge_graph_api_v1_rag_graph_traverse_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GraphTraversalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphTraversalResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Traverse Knowledge Graph",
+        "tags": [
+          "Hybrid RAG Workbench"
+        ]
+      }
+    },
+    "/api/v1/rag/hybrid-search": {
+      "post": {
+        "description": "Executes Reciprocal Rank Fusion (RRF) search across BM25 & dense vector ranks.\nStrictly applies Global Spoiler Shield (EC-4.2): Hides all chunks with narrative_seq > max_narrative_seq.",
+        "operationId": "execute_hybrid_search_api_v1_rag_hybrid_search_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RagHybridSearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RagHybridSearchResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Execute Hybrid Search",
+        "tags": [
+          "Hybrid RAG Workbench"
+        ]
+      }
+    },
+    "/api/v1/rag/package": {
+      "post": {
+        "description": "Builds the standalone book.db and verifies storage quota against 8MB limit (EC-4.4).",
+        "operationId": "package_rag_database_api_v1_rag_package_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PackageRAGRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PackageRAGResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Package Rag Database",
+        "tags": [
+          "Hybrid RAG Workbench"
+        ]
+      }
+    },
+    "/api/v1/rag/sql": {
+      "post": {
+        "description": "Tool 4: Safe Read-Only SQL Console enforcing SELECT / EXPLAIN only (EC-4.4).",
+        "operationId": "execute_safe_sql_query_api_v1_rag_sql_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SqlConsoleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SqlConsoleResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Execute Safe Sql Query",
+        "tags": [
+          "Hybrid RAG Workbench"
+        ]
+      }
+    },
+    "/api/v1/rag/timeline-state": {
+      "post": {
+        "description": "Tool 2: Queries physical outfit/injuries and point-in-time state at specific ticks.",
+        "operationId": "query_timeline_state_api_v1_rag_timeline_state_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TimelineStateQueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimelineStateQueryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Query Timeline State",
+        "tags": [
+          "Hybrid RAG Workbench"
+        ]
+      }
+    },
+    "/api/v1/rag/turso-sync": {
+      "post": {
+        "description": "One-click sync to Cloudflare R2 / Turso Cloud (libSQL).",
+        "operationId": "sync_to_turso_cloud_api_v1_rag_turso_sync_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TursoSyncRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TursoSyncResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sync To Turso Cloud",
+        "tags": [
+          "Hybrid RAG Workbench"
         ]
       }
     },

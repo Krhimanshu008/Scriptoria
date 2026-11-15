@@ -1,5 +1,5 @@
 export const EXPECTED_CONTRACT_HASH =
-  "067e55d57c8e86b56f624f7293f771365784f2ca217b9214922da510905c55da" as const;
+  "d800226662b3a1d5de9fa8f5bdc8855d27b2061cb863daeb8dd347568daba562" as const;
 
 export type ErrorCode =
   | "VALIDATION_ERROR"
@@ -456,6 +456,153 @@ export interface LocationTreeResponse {
   locations: CompiledLocationSummary[];
   root_locations: string[];
   cycle_free_verified: boolean;
+}
+
+// ============================================================================
+// Sprint 4: Hybrid RAG, Graph RAG & Turso SQL Contracts
+// ============================================================================
+
+export interface RagHybridSearchRequest {
+  book_id?: string;
+  query: string;
+  max_narrative_seq?: number;
+  top_k?: number;
+}
+
+export interface HybridSearchResultItem {
+  chunk_id: string;
+  narrative_seq: number;
+  story_time_tick: number;
+  quote_anchor: string;
+  shot_suggestion: string;
+  focal_elements: string[];
+  bm25_rank: number | null;
+  vector_rank: number | null;
+  rrf_score: number;
+  is_future_spoiler: boolean;
+}
+
+export interface RagHybridSearchResponse {
+  ok: true;
+  trace_id: string;
+  query: string;
+  max_narrative_seq: number;
+  total_hits: number;
+  future_blocked_chunks: number;
+  results: HybridSearchResultItem[];
+}
+
+export interface TimelineStateQueryRequest {
+  book_id?: string;
+  character_ids: string[];
+  tick?: number;
+}
+
+export interface TimelineEntityStateItem {
+  character_id: string;
+  name: string;
+  tick: number;
+  outfit: string;
+  injuries: string[];
+  location_id: string;
+  items_held: string[];
+}
+
+export interface TimelineStateQueryResponse {
+  ok: true;
+  trace_id: string;
+  tick: number;
+  states: TimelineEntityStateItem[];
+}
+
+export interface GraphTraversalRequest {
+  book_id?: string;
+  seed_entity: string;
+  max_hops?: number;
+  tick?: number;
+  max_narrative_seq?: number;
+}
+
+export interface GraphTraversalNode {
+  entity_id: string;
+  canonical_name: string;
+  entity_type: string;
+  distance_hops: number;
+}
+
+export interface GraphTraversalEdge {
+  source_id: string;
+  target_id: string;
+  edge_type: string;
+  weight: number;
+}
+
+export interface GraphTraversalResponse {
+  ok: true;
+  trace_id: string;
+  seed_entity: string;
+  max_hops: number;
+  nodes: GraphTraversalNode[];
+  edges: GraphTraversalEdge[];
+}
+
+export interface SqlConsoleRequest {
+  book_id?: string;
+  sql: string;
+}
+
+export interface SqlConsoleResponse {
+  ok: true;
+  trace_id: string;
+  columns: string[];
+  rows: any[][];
+  row_count: number;
+  execution_time_ms: number;
+  read_only_enforced: true;
+  error?: string | null;
+}
+
+export interface DatabaseFootprintResponse {
+  ok: true;
+  trace_id: string;
+  book_id: string;
+  db_size_kb: number;
+  budget_kb: number;
+  percent_used: number;
+  total_chunks: number;
+  within_budget: boolean;
+}
+
+export interface TursoSyncRequest {
+  book_id?: string;
+  target_url?: string | null;
+}
+
+export interface TursoSyncResponse {
+  ok: true;
+  trace_id: string;
+  book_id: string;
+  synced: boolean;
+  cloud_url: string;
+  sync_latency_ms: number;
+}
+
+export interface PackageRAGRequest {
+  book_id?: string;
+  force_rebuild?: boolean;
+}
+
+export interface PackageRAGResponse {
+  ok: true;
+  trace_id: string;
+  book_id: string;
+  db_size_kb: number;
+  budget_kb: number;
+  percent_used: number;
+  total_chunks: number;
+  within_budget: boolean;
+  r2_key: string;
+  duration_sec: number;
 }
 
 export type ApiResult<T extends { ok: true }> = T | ApiErrorEnvelope;
