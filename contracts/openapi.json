@@ -113,6 +113,45 @@
         "title": "AudioSynthesisRequest",
         "type": "object"
       },
+      "AudioUploadPayload": {
+        "properties": {
+          "audio_base64": {
+            "title": "Audio Base64",
+            "type": "string"
+          },
+          "book_id": {
+            "title": "Book Id",
+            "type": "string"
+          },
+          "chapter_index": {
+            "default": 1,
+            "title": "Chapter Index",
+            "type": "integer"
+          },
+          "duration_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Seconds"
+          },
+          "filename": {
+            "default": "chapter_audio.wav",
+            "title": "Filename",
+            "type": "string"
+          }
+        },
+        "required": [
+          "book_id",
+          "audio_base64"
+        ],
+        "title": "AudioUploadPayload",
+        "type": "object"
+      },
       "Body_upload_book_endpoint_api_v1_bridge_upload_book_post": {
         "properties": {
           "author": {
@@ -2987,6 +3026,49 @@
         ],
         "title": "FlowVideoMode",
         "type": "string"
+      },
+      "FormatScreenplayRequest": {
+        "properties": {
+          "book_id": {
+            "title": "Book Id",
+            "type": "string"
+          },
+          "chapter_index": {
+            "default": 1,
+            "title": "Chapter Index",
+            "type": "integer"
+          },
+          "chapter_title": {
+            "default": "Chapter",
+            "title": "Chapter Title",
+            "type": "string"
+          },
+          "enable_emotion_tags": {
+            "default": true,
+            "title": "Enable Emotion Tags",
+            "type": "boolean"
+          },
+          "narrator_voice": {
+            "default": "Enzo",
+            "title": "Narrator Voice",
+            "type": "string"
+          },
+          "raw_text": {
+            "title": "Raw Text",
+            "type": "string"
+          },
+          "voice_mode": {
+            "default": "SINGLE_NARRATOR",
+            "title": "Voice Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "book_id",
+          "raw_text"
+        ],
+        "title": "FormatScreenplayRequest",
+        "type": "object"
       },
       "GraphEdgeSummary": {
         "additionalProperties": false,
@@ -6459,6 +6541,48 @@
         ]
       }
     },
+    "/api/v1/storyboard/audio/upload": {
+      "post": {
+        "description": "Ingests generated/exported audio from Google AI Studio Playground and attaches it to the chapter.",
+        "operationId": "upload_chapter_audio_api_v1_storyboard_audio_upload_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AudioUploadPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Upload Chapter Audio Api V1 Storyboard Audio Upload Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Chapter Audio",
+        "tags": [
+          "High-Density Storyboard Studio"
+        ]
+      }
+    },
     "/api/v1/storyboard/chapters": {
       "get": {
         "description": "List all ingested chapters with progress metrics via single aggregated query.",
@@ -6697,6 +6821,90 @@
         "summary": "Stream Chapter Progress",
         "tags": [
           "Storyboard"
+        ]
+      }
+    },
+    "/api/v1/storyboard/tts/dispatch-playground": {
+      "post": {
+        "description": "Dispatches the formatted 3.8 TTS screenplay directly to the active Google AI Studio Playground Companion.",
+        "operationId": "dispatch_audio_to_playground_api_v1_storyboard_tts_dispatch_playground_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FormatScreenplayRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Dispatch Audio To Playground Api V1 Storyboard Tts Dispatch Playground Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Dispatch Audio To Playground",
+        "tags": [
+          "High-Density Storyboard Studio"
+        ]
+      }
+    },
+    "/api/v1/storyboard/tts/format-screenplay": {
+      "post": {
+        "description": "Formats chapter prose into Google AI Studio 3.8 Flash TTS screenplay format with speaker and emotion blocks.",
+        "operationId": "format_chapter_screenplay_api_v1_storyboard_tts_format_screenplay_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FormatScreenplayRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Format Chapter Screenplay Api V1 Storyboard Tts Format Screenplay Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Format Chapter Screenplay",
+        "tags": [
+          "High-Density Storyboard Studio"
         ]
       }
     },

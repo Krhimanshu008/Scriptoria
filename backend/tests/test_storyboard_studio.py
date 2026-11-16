@@ -133,3 +133,48 @@ def test_storyboard_multi_ai_brain_engine():
     for sc in data["scenes"]:
         assert len(sc["sub_scenes"]) >= 5
 
+
+def test_storyboard_tts_screenplay_and_upload():
+    """Verify screenplay formatting for AI Studio 3.8 TTS and base64 audio ingestion."""
+    import base64
+
+    # 1. Format screenplay for AI Studio 3.8 TTS
+    res = client.post(
+        "/api/v1/storyboard/tts/format-screenplay",
+        json={
+            "book_id": "book-test",
+            "chapter_index": 1,
+            "chapter_title": "The Quarter-Deck",
+            "raw_text": "Ahab paced the deck. 'Look sharp for the white whale!' he cried.",
+            "narrator_voice": "Enzo",
+            "voice_mode": "SINGLE_NARRATOR",
+            "enable_emotion_tags": True,
+        },
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["ok"] is True
+    assert "## Transcript:" in data["formatted_screenplay"]
+    assert "Narrator" in data["formatted_screenplay"]
+    assert data["model_recommended"] == "gemini-3.8-flash-tts"
+
+    # 2. Upload audio generated from AI Studio
+    fake_wav_bytes = b"RIFF____WAVEfmt " + b"\x00" * 32
+    audio_b64 = base64.b64encode(fake_wav_bytes).decode("utf-8")
+    up_res = client.post(
+        "/api/v1/storyboard/audio/upload",
+        json={
+            "book_id": "book-test",
+            "chapter_index": 1,
+            "filename": "aistudio_3.8tts_output.wav",
+            "audio_base64": audio_b64,
+            "duration_seconds": 12.5,
+        },
+    )
+    assert up_res.status_code == 200
+    up_data = up_res.json()
+    assert up_data["ok"] is True
+    assert up_data["duration_seconds"] == 12.5
+    assert "/api/outputs/" in up_data["audio_url"]
+
+

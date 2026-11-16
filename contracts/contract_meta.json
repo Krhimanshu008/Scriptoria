@@ -2,14 +2,15 @@
   "artifacts": {
     "openapi": "openapi.json"
   },
-  "contract_hash": "cb900f3695d43b3ce779774744d0616c6a74ae7a20921cc863df44a6f6974566",
+  "contract_hash": "742bce03ad843ad750a1680f2c841f76138a5b04f97f9c8ade4fc6c60d10db2c",
   "hash_algorithm": "sha256",
   "openapi_version": "3.1.0",
-  "paths_count": 47,
+  "paths_count": 50,
   "schema_names": [
     "ApiErrorBody",
     "ApiErrorEnvelope",
     "AudioSynthesisRequest",
+    "AudioUploadPayload",
     "Body_upload_book_endpoint_api_v1_bridge_upload_book_post",
     "BridgeExecRequest",
     "CameraLens",
@@ -71,6 +72,7 @@
     "FlowTaskStatus",
     "FlowThinkingLevel",
     "FlowVideoMode",
+    "FormatScreenplayRequest",
     "GraphEdgeSummary",
     "GraphTraversalEdge",
     "GraphTraversalNode",
@@ -120,6 +122,6 @@
     "VramLockRequest"
   ],
   "schema_version": "1.0.0",
-  "schemas_count": 111,
+  "schemas_count": 113,
   "title": "Novel Visualiser & Storyboard Studio"
 }

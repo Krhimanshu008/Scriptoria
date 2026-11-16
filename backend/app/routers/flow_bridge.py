@@ -520,6 +520,68 @@ class FlowBridgeOrchestrator:
             source_remote_url=candidate.remote_url,
         )
 
+    async def handle_audio_result(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Saves audio bytes sent by AI Studio Playground Companion and updates chapter track."""
+        project_id = _sanitize_path_segment(str(payload.get("project_id", "default_book")))
+        chapter_id = _sanitize_path_segment(str(payload.get("chapter_id", "ch_001")))
+        task_id = str(payload.get("task_id", str(uuid4())))
+        audio_base64 = payload.get("audio_base64")
+        mime_type = payload.get("mime_type", "audio/wav")
+        duration_seconds = float(payload.get("duration_seconds", 0.0))
+
+        dest_dir = self.output_root / project_id / "chapters" / chapter_id
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        ext = ".wav" if "wav" in mime_type else ".mp3"
+        filename = f"{chapter_id}_3.8tts_{task_id[:8]}{ext}"
+        dest_path = dest_dir / filename
+
+        if audio_base64:
+            audio_bytes = base64.b64decode(audio_base64)
+            dest_path.write_bytes(audio_bytes)
+            # Also copy to static output directory for /api/outputs serving
+            shared_audio_dir = Path("output") / "audio"
+            shared_audio_dir.mkdir(parents=True, exist_ok=True)
+            (shared_audio_dir / filename).write_bytes(audio_bytes)
+
+            if duration_seconds <= 0.0 and ext == ".wav":
+                try:
+                    import wave
+                    with wave.open(str(dest_path), "r") as w:
+                        duration_seconds = round(w.getnframes() / float(w.getframerate()), 2)
+                except Exception:
+                    pass
+
+        audio_url = f"/api/outputs/{filename}"
+        logger.info("Saved AI Studio 3.8 TTS Audio: %s (%s)", dest_path, audio_url)
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "project_id": project_id,
+            "chapter_id": chapter_id,
+            "audio_url": audio_url,
+            "file_path": str(dest_path.resolve()),
+            "duration_seconds": duration_seconds,
+            "source": "AI_STUDIO_PLAYGROUND_3.8_TTS",
+        }
+
+    async def dispatch_audio_task(self, audio_payload: dict[str, Any]) -> dict[str, Any]:
+        """Dispatches an audio screenplay task to the connected AI Studio Companion."""
+        async with self._lock:
+            ws = self._active_ws
+        if ws is None:
+            return {
+                "dispatched": False,
+                "reason": "AI Studio Companion is not currently connected.",
+                "payload": audio_payload,
+            }
+        envelope = FlowWsEnvelope(
+            event_type="DISPATCH_AUDIO_TASK",
+            correlation_id=str(uuid4()),
+            payload=audio_payload,
+        )
+        await ws.send_json(envelope.model_dump())
+        return {"dispatched": True, "payload": audio_payload}
+
 
 # Singleton orchestrator instance
 flow_orchestrator = FlowBridgeOrchestrator()
@@ -584,6 +646,15 @@ async def flow_companion_websocket(
                         event_type="BRIDGE_ACK",
                         correlation_id=envelope.correlation_id or envelope.envelope_id,
                         payload={"received": envelope.event_type},
+                    )
+                    await websocket.send_json(ack.model_dump())
+
+                elif envelope.event_type == "AUDIO_RESULT":
+                    saved_audio = await flow_orchestrator.handle_audio_result(envelope.payload)
+                    ack = FlowWsEnvelope(
+                        event_type="BRIDGE_ACK",
+                        correlation_id=saved_audio.get("task_id", envelope.envelope_id),
+                        payload=saved_audio,
                     )
                     await websocket.send_json(ack.model_dump())
 

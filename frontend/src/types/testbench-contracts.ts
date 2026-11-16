@@ -1,5 +1,5 @@
 export const EXPECTED_CONTRACT_HASH =
-  "cb900f3695d43b3ce779774744d0616c6a74ae7a20921cc863df44a6f6974566" as const;
+  "742bce03ad843ad750a1680f2c841f76138a5b04f97f9c8ade4fc6c60d10db2c" as const;
 
 export type ErrorCode =
   | "VALIDATION_ERROR"
@@ -783,4 +783,31 @@ export interface AudioSynthesisRequest {
   raw_text: string;
   narrator_voice?: string;
   voice_mode?: "SINGLE_NARRATOR" | "SMART_MULTI_SPEAKER";
+}
+
+export interface FormatScreenplayRequest {
+  book_id: string;
+  chapter_index?: number;
+  chapter_title?: string;
+  raw_text: string;
+  narrator_voice?: string;
+  voice_mode?: "SINGLE_NARRATOR" | "SMART_MULTI_SPEAKER";
+  enable_emotion_tags?: boolean;
+}
+
+export interface FormatScreenplayResponse {
+  ok: boolean;
+  formatted_screenplay: string;
+  word_count: number;
+  estimated_duration_seconds: number;
+  model_recommended: string;
+  notice: string;
+}
+
+export interface AudioUploadPayload {
+  book_id: string;
+  chapter_index?: number;
+  filename?: string;
+  audio_base64: string;
+  duration_seconds?: number;
 }
