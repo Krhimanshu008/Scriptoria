@@ -440,16 +440,17 @@ async def dispatch_storyboard_to_flow(req: FlowDispatchBatchRequest) -> Any:
 
     for f in req.frames:
         frame_idx = f.get("frame_index", 1)
-        prompt = f.get("compiled_image_prompt") or f.get("sentence_span", "")
+        prompt = f.get("compiled_image_prompt") or f.get("sentence_span") or f.get("prompt", "")
+        if len(prompt.strip()) < 3:
+            prompt = f"Cinematic scene for frame {frame_idx}"
         task = FlowGenerationTask(
             project_id=req.book_id,
-            chapter_id=f"ch_{req.chapter_index:03d}",
             scene_id=f.get("scene_id", "sc01"),
             beat_id=f"beat_{frame_idx:03d}",
-            prompt=prompt,
+            prompt=prompt.strip(),
             aspect_ratio=aspect,
             model_engine=engine,
-            priority=100 + frame_idx,
+            priority=min(10, max(1, frame_idx % 10 or 5)),
         )
         enqueued = await flow_orchestrator.enqueue_task(task)
         dispatched_ids.append(enqueued.task_id)
