@@ -20,6 +20,7 @@ export interface BridgeCallOptions {
   upstreamPath: string;
   timeoutMs?: number;
   maxPayloadBytes?: number;
+  extraHeaders?: Record<string, string>;
 }
 
 function resolveTraceId(req: NextRequest): string {
@@ -281,6 +282,14 @@ export async function forwardToFastAPI(opts: BridgeCallOptions): Promise<NextRes
       "Content-Type",
       incomingContentType ?? "application/json",
     );
+  }
+
+  if (opts.extraHeaders) {
+    for (const [key, value] of Object.entries(opts.extraHeaders)) {
+      if (value) {
+        upstreamHeaders.set(key, value);
+      }
+    }
   }
 
   const timeoutSignal = AbortSignal.timeout(timeoutMs);

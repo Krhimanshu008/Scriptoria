@@ -8,7 +8,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
@@ -306,17 +306,21 @@ async def _ai_director_decompose(
 async def _qwen_swarm_decompose(
     raw_text: str,
     target_frames: int,
+    tunnel_url: Optional[str] = None,
+    vm_secret: Optional[str] = None,
 ) -> Optional[List[Dict[str, Any]]]:
-    """Queries Kaggle VM 1 (Account 1: Director Brain on Dual-T4) via dynamic Caddy tunnel with Gemini fallback."""
-    tunnel_url = (
-        os.environ.get("VM_TUNNEL_URL")
+    """Queries Kaggle Director VM (Acc 2: Qwen 27B Turbo or Acc 1: 5M-Swarm) via dynamic Caddy tunnel with Gemini fallback."""
+    base_url = (
+        tunnel_url
+        or os.environ.get("VM_DIRECTOR_TUNNEL_URL")
+        or os.environ.get("VM_TUNNEL_URL")
         or os.environ.get("COMFYUI_GPU0_URL")
         or "https://gpu0.krhimanshu.in"
     ).rstrip("/")
-    vm_secret = os.environ.get("VM_SECRET", "")
+    secret = vm_secret or os.environ.get("VM_DIRECTOR_SECRET") or os.environ.get("VM_SECRET", "")
     target_port = os.environ.get("VM_TARGET_PORT", "8190")
 
-    url = f"{tunnel_url}/v1/chat/completions"
+    url = f"{base_url}/v1/chat/completions"
 
     prompt = (
         "You are the Chief Narrative Director of Scriptoria fiction studio running on Kaggle Qwen Swarm.\n"
@@ -344,11 +348,11 @@ async def _qwen_swarm_decompose(
         "Content-Type": "application/json",
         "X-Target-Port": target_port,
     }
-    if vm_secret:
-        headers["X-VM-Secret"] = vm_secret
+    if secret:
+        headers["X-VM-Secret"] = secret
 
     try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
+        async with httpx.AsyncClient(timeout=12.0) as client:
             resp = await client.post(
                 url,
                 json={
@@ -365,7 +369,7 @@ async def _qwen_swarm_decompose(
                 clean_json = re.sub(r"\s*```$", "", clean_json.strip())
                 parsed = json.loads(clean_json)
                 if "macro_scenes" in parsed and len(parsed["macro_scenes"]) >= 3:
-                    logger.info("Local Qwen Swarm (Kaggle VM via Caddy :%s) successfully decomposed chapter.", target_port)
+                    logger.info("Local Qwen Director (Kaggle VM via Caddy :%s) successfully decomposed chapter.", target_port)
                     return parsed["macro_scenes"]
     except Exception as exc:
         logger.info("Kaggle Qwen Swarm at %s (port %s) offline or booting (%s), falling back to Gemini.", url, target_port, exc)
@@ -378,7 +382,7 @@ async def _qwen_swarm_decompose(
 # ---------------------------------------------------------------------------
 
 @router.post("/decompose", response_model=HighDensityChapterStoryboard)
-async def decompose_chapter_to_storyboard(req: DecomposeChapterRequest) -> Any:
+async def decompose_chapter_to_storyboard(req: DecomposeChapterRequest, request: Request) -> Any:
     """Decomposes ~2,000-word chapter into 80-100 granular visual sub-scene frames with zero context loss."""
     raw_text = req.raw_text.strip()
     if not raw_text:
@@ -387,10 +391,23 @@ async def decompose_chapter_to_storyboard(req: DecomposeChapterRequest) -> Any:
     word_count = len(raw_text.split())
     target_frames = req.target_frames
 
+    # Dynamic Caddy Ingress resolution from Next.js proxy headers
+    director_tunnel = (
+        request.headers.get("x-director-tunnel-url")
+        or os.environ.get("VM_DIRECTOR_TUNNEL_URL")
+        or os.environ.get("VM_TUNNEL_URL")
+    )
+    director_secret = request.headers.get("x-director-vm-secret") or os.environ.get("VM_SECRET", "")
+
     # Check if Local Qwen Swarm or Multi-AI Cognitive Swarm ("Story Brain") was requested
     ai_scenes = None
     if req.engine == "qwen_swarm":
-        ai_scenes = await _qwen_swarm_decompose(raw_text, target_frames)
+        ai_scenes = await _qwen_swarm_decompose(
+            raw_text,
+            target_frames,
+            tunnel_url=director_tunnel,
+            vm_secret=director_secret,
+        )
     elif req.engine == "multi_ai_brain":
         ai_scenes = await _ai_director_decompose(raw_text, target_frames)
 
