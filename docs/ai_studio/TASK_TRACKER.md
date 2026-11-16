@@ -61,6 +61,16 @@
 - [x] Full UI Testbench Navigation & Layout Overhaul (Argon Architecture Spec):
   - [x] Zero-clipping `CloudClusterPopover.tsx` consolidating R2, Supabase, Turso, and VM Swarm telemetry into a single badge
   - [x] Horizontal 38px Checkpoints Stepper Ribbon (`TestbenchTabstrip.tsx`) replacing dual vertical rail
+
+---
+
+### Subproject: Google AI Flow Browser Companion & Asset Orchestration Engine
+- [x] Workstream F1: Canonical Contracts (`flow_contracts.py` with `StrictModel` validation, `FlowCompanionStatus`, `FlowIngredientSync`, `FlowGenerationTask`, `FlowMediaResultEvent`, `FlowQueueAction`)
+- [x] Workstream F2: Prisma Database Schema (`schema.prisma` with `FlowProjectBinding`, `FlowIngredient`, and `FlowAsset` relations)
+- [x] Workstream F3: Chrome Companion Extension MV3 (`extension/scriptoria-flow-bridge/`: `manifest.json`, `injected.js` `window.fetch` sniffer, `content.js` Lexical/React DOM injector & `@` ingredient resolver)
+- [x] Workstream F4: FastAPI Bridge Router (`flow_bridge.py`: WebSocket `/api/v1/flow-bridge/ws`, in-band async streaming asset downloader to `output/flow_assets/`, SHA-256 hash calculation)
+- [x] Workstream F5: Next.js Frontend Integration (`flow-contracts.ts`, route `/api/flow/dispatch`, `<FlowCompanionBadge />` live UI status pill)
+- [x] 62/62 tests passing, 0 TypeScript errors, Prisma schema 100% valid
   - [x] Auto-collapsing app sidebar to 56px (`w-14`) Icon Rail on `/testbench`
   - [x] 100% full-viewport locked workspace (`w-[calc(100vw-3.5rem)]`) for deep 3-column test tools
   - [x] Canonical contract parity verified (`sha256=f92dac5e...`), 0 TypeScript errors, commits `89f2aff` and `5f94a90` deployed

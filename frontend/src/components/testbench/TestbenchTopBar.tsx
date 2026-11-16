@@ -24,6 +24,7 @@ import type { KaggleAccountSummary, ColabAccountSummary } from "@/app/api/vm/acc
 import { TestbenchVmModal } from "./TestbenchVmModal";
 import { ContractHashBadge } from "./ContractHashBadge";
 import { CloudClusterPopover } from "./CloudClusterPopover";
+import { UnifiedVmController } from "./UnifiedVmController";
 import { toast } from "sonner";
 
 export interface BookSummary {
@@ -140,9 +141,9 @@ export function TestbenchTopBar({
   return (
     <>
       <header className="sticky top-0 z-40 flex h-13 w-full shrink-0 items-center justify-between border-b border-zinc-800 bg-[#09090b]/95 px-3 md:px-4 backdrop-blur-sm select-none gap-2">
-        {/* Left: Brand + Active Book Switcher & Status */}
+        {/* Left: Brand + Active Book Switcher & Status + Contract Hash */}
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-          <div className="hidden xl:flex items-center gap-2 border-r border-zinc-800/80 pr-3">
+          <div className="hidden 2xl:flex items-center gap-2 border-r border-zinc-800/80 pr-3">
             <span className="text-xs font-bold tracking-tight text-white">Pipeline Testbench</span>
             <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-400 border border-amber-500/30">
               v2.0
@@ -157,7 +158,7 @@ export function TestbenchTopBar({
             <select
               value={activeBookId}
               onChange={(e) => onSelectBook(e.target.value)}
-              className="h-8 max-w-[150px] sm:max-w-[200px] md:max-w-[240px] rounded-md border border-zinc-700 bg-zinc-900 px-2 text-xs font-medium text-zinc-100 hover:border-zinc-600 focus:border-amber-500 focus:outline-none truncate"
+              className="h-8 max-w-[130px] sm:max-w-[170px] md:max-w-[210px] rounded-md border border-zinc-700 bg-zinc-900 px-2 text-xs font-medium text-zinc-100 hover:border-zinc-600 focus:border-amber-500 focus:outline-none cursor-pointer truncate"
             >
               {books.map((b) => (
                 <option key={b.book_id} value={b.book_id}>
@@ -169,7 +170,7 @@ export function TestbenchTopBar({
 
             {activeBook && (
               <span
-                className={`hidden md:inline-flex h-8 items-center rounded-md border px-2 text-[11px] font-semibold uppercase tracking-wider shrink-0 ${getStatusBadge(
+                className={`hidden xl:inline-flex h-8 items-center rounded-md border px-2 text-[11px] font-semibold uppercase tracking-wider shrink-0 ${getStatusBadge(
                   activeBook.status
                 )}`}
               >
@@ -185,90 +186,40 @@ export function TestbenchTopBar({
               <Plus className="h-3.5 w-3.5 text-amber-400" />
               <span className="hidden sm:inline">Upload</span>
             </button>
+
+            {/* Contract Hash Parity Badge */}
+            <ContractHashBadge />
           </div>
         </div>
 
-        {/* Center: Live Cloud Health & Contract Parity Badges (Compact & Popover) */}
-        <div className="flex items-center gap-2 flex-nowrap shrink-0">
-          {/* Contract Hash Parity Badge */}
-          <ContractHashBadge />
+        {/* Right: Unified VM Compute Control + Cloud Lake Popover + Refresh */}
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          {/* UNIFIED VM CONTROLLER: Select VM, Select Model/Profile, Single Boot/Kill Button */}
+          <UnifiedVmController
+            vms={vms}
+            onRefreshVms={onRefreshVms}
+            onRefreshHealth={onRefreshHealth}
+          />
 
-          {/* Unified Cloud Lake Cluster Popover (R2, Supabase, Turso, VM Swarm) */}
+          {/* Cloud Lake Telemetry Popover (R2, Supabase, Turso) */}
           <CloudClusterPopover
             health={health}
             onRefreshHealth={onRefreshHealth}
             isSwarmOnline={isSwarmOnline}
-            onBootSwarm={() => handleBootPrimary("gpu0")}
-            onPanicKill={handlePanicKill}
           />
-        </div>
 
-        {/* Right: Primary Controls (Swarm Boot/Kill & Manage Modal) */}
-        <div className="flex items-center gap-2 shrink-0">
-          {/* Quick Targets Modal Trigger */}
           <button
-            onClick={() => setVmModalOpen(true)}
-            className="hidden sm:flex h-8 items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900/90 px-2.5 text-xs font-medium text-zinc-300 hover:border-zinc-700 hover:bg-zinc-800 transition shrink-0"
-            title="Configure VM Swarm Targets & LLM Profiles"
+            onClick={() => {
+              onRefreshHealth();
+              onRefreshVms?.();
+            }}
+            className="h-8 w-8 inline-flex items-center justify-center rounded-lg border border-zinc-800 bg-zinc-900/90 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700 transition shrink-0"
+            title="Refresh All Cloud Health & VM Swarm"
           >
-            <Settings2 className="h-3.5 w-3.5 text-zinc-400" />
-            <span className="hidden md:inline">Manage Swarm</span>
+            <RefreshCw className="h-3.5 w-3.5" />
           </button>
-
-          {/* DYNAMIC PRIMARY BUTTON */}
-          {isSwarmOnline ? (
-            /* ONLINE -> Switches dynamically to /vm-kill Panic button */
-            <button
-              onClick={handlePanicKill}
-              disabled={isKilling}
-              className="flex h-8 items-center gap-1.5 rounded-lg border border-red-700/80 bg-red-950/80 px-3 text-xs font-semibold text-red-300 shadow-sm transition-all hover:bg-red-900 hover:border-red-500 active:scale-95 disabled:opacity-50 shrink-0"
-              title="Swarm is ONLINE. Click to immediately terminate GPU sessions and save quota."
-            >
-              <Power className={`h-3.5 w-3.5 text-red-400 ${isKilling ? "animate-spin" : ""}`} />
-              <span>{isKilling ? "Stopping..." : "🛑 /vm-kill Panic"}</span>
-            </button>
-          ) : isStarting ? (
-            /* STARTING -> Progress indicator + Cancel option */
-            <button
-              onClick={handlePanicKill}
-              disabled={isKilling}
-              className="flex h-8 items-center gap-1.5 rounded-lg border border-amber-600/80 bg-amber-950/80 px-3 text-xs font-semibold text-amber-300 shadow-sm transition-all hover:bg-amber-900 active:scale-95 shrink-0"
-              title="VM Kernel is booting. Click to cancel."
-            >
-              <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-400" />
-              <span>Starting ({startingVm?.stepProgress || 1}/5)</span>
-            </button>
-          ) : (
-            /* OFFLINE -> Direct 1-Click BOOT SWARM Button */
-            <button
-              onClick={() => handleBootPrimary("gpu0")}
-              disabled={isBooting}
-              className="flex h-8 items-center gap-1.5 rounded-lg border border-amber-500 bg-amber-500 px-3 text-xs font-semibold text-zinc-950 shadow-sm transition-all hover:bg-amber-400 active:scale-95 disabled:opacity-50 shrink-0"
-              title="Swarm is OFFLINE. Click to boot Kaggle Dual-T4 Swarm (gpu0) with 1 click!"
-            >
-              {isBooting ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Zap className="h-3.5 w-3.5 fill-current" />
-              )}
-              <span>{isBooting ? "Booting..." : "⚡ Boot Swarm"}</span>
-            </button>
-          )}
         </div>
       </header>
-
-      {/* VM Swarm & Target Configuration Modal */}
-      <TestbenchVmModal
-        open={vmModalOpen}
-        onOpenChange={setVmModalOpen}
-        vms={vms}
-        kaggleAccounts={kaggleAccounts}
-        colabAccounts={colabAccounts}
-        onRefresh={() => {
-          onRefreshHealth();
-          onRefreshVms?.();
-        }}
-      />
     </>
   );
 }

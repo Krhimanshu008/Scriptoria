@@ -23,8 +23,6 @@ interface CloudClusterPopoverProps {
   onRefreshHealth: () => void;
   traceId?: string | null;
   isSwarmOnline?: boolean;
-  onBootSwarm?: () => void;
-  onPanicKill?: () => void;
 }
 
 export function CloudClusterPopover({
@@ -32,8 +30,6 @@ export function CloudClusterPopover({
   onRefreshHealth,
   traceId,
   isSwarmOnline = false,
-  onBootSwarm,
-  onPanicKill,
 }: CloudClusterPopoverProps) {
   const [open, setOpen] = useState(false);
   const [copiedTrace, setCopiedTrace] = useState(false);
@@ -253,25 +249,15 @@ export function CloudClusterPopover({
                   </div>
                 </div>
               </div>
-              {swarmOk ? (
-                <button
-                  type="button"
-                  onClick={onPanicKill}
-                  className="text-[10px] font-bold uppercase rounded px-2 py-1 bg-red-950/80 text-red-300 border border-red-700 hover:bg-red-900 transition flex items-center gap-1"
-                >
-                  <Power className="h-2.5 w-2.5" />
-                  <span>Kill</span>
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={onBootSwarm}
-                  className="text-[10px] font-bold uppercase rounded px-2 py-1 bg-amber-500 text-zinc-950 font-semibold hover:bg-amber-400 transition flex items-center gap-1"
-                >
-                  <Zap className="h-2.5 w-2.5 fill-current" />
-                  <span>Boot</span>
-                </button>
-              )}
+              <span
+                className={`text-[10px] font-bold uppercase rounded px-1.5 py-0.5 border ${
+                  swarmOk
+                    ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
+                    : "bg-zinc-800 text-zinc-400 border-zinc-700"
+                }`}
+              >
+                {swarmOk ? "Online" : "Idle"}
+              </span>
             </div>
           </div>
 

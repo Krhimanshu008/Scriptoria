@@ -19,50 +19,57 @@ interface TestbenchTabstripProps {
 const CHECKPOINTS: Array<{
   id: TestbenchTabId;
   step: string;
-  label: string;
+  shortLabel: string;
+  fullLabel: string;
   tag: string;
   icon: React.ComponentType<{ className?: string }>;
 }> = [
   {
     id: "tab0",
     step: "0",
-    label: "Plumbing & Contracts",
+    shortLabel: "Plumbing",
+    fullLabel: "Plumbing & Lake",
     tag: "R2 & Schemas",
     icon: Wrench,
   },
   {
     id: "tab1",
     step: "1",
-    label: "Parser Inspector",
+    shortLabel: "Parser",
+    fullLabel: "Parser Inspector",
     tag: "Dual-Span AST",
     icon: FileCode,
   },
   {
     id: "tab2",
     step: "2",
-    label: "VM Swarm & Extraction",
+    shortLabel: "VM Swarm",
+    fullLabel: "Swarm & Extraction",
     tag: "3-Col Stream",
     icon: Cpu,
   },
   {
     id: "tab3",
     step: "3",
-    label: "Graph & Timeline Studio",
-    tag: "Dual Clock & Graph",
+    shortLabel: "Graph",
+    fullLabel: "Graph & Timeline",
+    tag: "Dual Clock",
     icon: GitGraph,
   },
   {
     id: "tab4",
     step: "4",
-    label: "Hybrid RAG Workbench",
+    shortLabel: "Hybrid RAG",
+    fullLabel: "Hybrid RAG Workbench",
     tag: "Safe SQL & BM25",
     icon: Search,
   },
   {
     id: "tab5",
     step: "5",
-    label: "E2E Stepper & Scorecard",
-    tag: "15 Invariant Checks",
+    shortLabel: "Scorecard",
+    fullLabel: "E2E & Scorecard",
+    tag: "15 Invariants",
     icon: CheckCircle2,
   },
 ];
@@ -74,9 +81,9 @@ export function TestbenchTabstrip({
   return (
     <nav
       aria-label="Testbench Checkpoints"
-      className="flex h-11 w-full shrink-0 items-center gap-1.5 border-b border-zinc-800/90 bg-[#09090b] px-3 sm:px-4 overflow-x-auto no-scrollbar select-none"
+      className="flex h-10 w-full shrink-0 items-center border-b border-zinc-800 bg-[#09090b] px-2 sm:px-3 select-none"
     >
-      <div className="flex items-center gap-1.5 min-w-max">
+      <div className="grid grid-cols-6 w-full gap-1 sm:gap-1.5">
         {CHECKPOINTS.map((cp) => {
           const isActive = activeTab === cp.id;
           const Icon = cp.icon;
@@ -86,14 +93,15 @@ export function TestbenchTabstrip({
               key={cp.id}
               type="button"
               onClick={() => onSelectTab(cp.id)}
-              className={`group relative flex h-8 items-center gap-2 rounded-lg px-2.5 sm:px-3 text-xs font-semibold transition-all ${
+              className={`group relative flex h-7 sm:h-8 items-center justify-center gap-1 sm:gap-1.5 rounded-md px-1 sm:px-2 text-xs font-semibold transition-all w-full truncate ${
                 isActive
                   ? "bg-amber-500/10 text-amber-400 border border-amber-500/30 shadow-sm"
                   : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/80 border border-transparent"
               }`}
             >
+              {/* Step Number Badge */}
               <div
-                className={`flex h-4 w-4 items-center justify-center rounded text-[10px] font-bold ${
+                className={`flex h-4 w-4 shrink-0 items-center justify-center rounded text-[10px] font-bold ${
                   isActive
                     ? "bg-amber-500/20 text-amber-300"
                     : "bg-zinc-800 text-zinc-400 group-hover:text-zinc-200"
@@ -102,18 +110,25 @@ export function TestbenchTabstrip({
                 {cp.step}
               </div>
 
+              {/* Checkpoint Icon */}
               <Icon
-                className={`h-3.5 w-3.5 ${
+                className={`h-3.5 w-3.5 shrink-0 ${
                   isActive
                     ? "text-amber-400"
                     : "text-zinc-400 group-hover:text-zinc-200"
                 }`}
               />
 
-              <span className="tracking-tight">{cp.label}</span>
+              {/* Responsive Text Label */}
+              <span className="truncate sm:hidden">{cp.shortLabel}</span>
+              <span className="truncate hidden sm:inline xl:hidden">
+                {cp.shortLabel}
+              </span>
+              <span className="truncate hidden xl:inline">{cp.fullLabel}</span>
 
+              {/* Tag for Ultra-wide screens */}
               <span
-                className={`hidden xl:inline text-[10px] font-mono px-1 rounded ${
+                className={`hidden 2xl:inline text-[9px] font-mono px-1 rounded truncate shrink-0 ${
                   isActive
                     ? "text-amber-300/80 bg-amber-500/10"
                     : "text-zinc-500 group-hover:text-zinc-400"

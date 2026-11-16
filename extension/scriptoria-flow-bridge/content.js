@@ -1,0 +1,768 @@
+// extension/scriptoria-flow-bridge/content.js
+/**
+ * Scriptoria Google Flow Companion — ISOLATED World Content Script
+ * - Injects `injected.js` into MAIN world at document_start
+ * - Connects to local FastAPI WebSocket (ws://127.0.0.1:8000/api/v1/flow-bridge/ws)
+ * - Performs heartbeat telemetry and project UUID detection
+ * - Executes FlowGenerationTask:
+ *   1. Locates prompt editor (ProseMirror / Lexical / textarea)
+ *   2. Injects prompt text and resolves @ingredient mention dropdowns
+ *   3. Triggers Generate button
+ *   4. Captures result via MAIN world RPC event or DOM MutationObserver fallback
+ *   5. Emits FlowMediaResultEvent back to FastAPI
+ */
+(function () {
+  "use strict";
+
+  if (window.__SCRIPTORIA_FLOW_CONTENT_ACTIVE__) {
+    return;
+  }
+  window.__SCRIPTORIA_FLOW_CONTENT_ACTIVE__ = true;
+
+  const WS_ENDPOINT = "ws://127.0.0.1:8000/api/v1/flow-bridge/ws";
+  const DEFAULT_FLOW_PROJECT_ID = "ea1ed436-e578-4327-9c9b-4f6b2e7e551d";
+  const HEARTBEAT_INTERVAL_MS = 8_000;
+  const RECONNECT_BASE_DELAY_MS = 2_000;
+  const RECONNECT_MAX_DELAY_MS = 20_000;
+
+  const SESSION_ID = crypto.randomUUID
+    ? crypto.randomUUID()
+    : `sess-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+
+  let ws = null;
+  let reconnectAttempts = 0;
+  let heartbeatTimer = null;
+  let activeTask = null;
+  let activeTaskStartTime = 0;
+  let activeTaskTimeoutHandle = null;
+  let completedTasksCount = 0;
+  let failedTasksCount = 0;
+
+  // ==========================================================================
+  // 1. Inject `injected.js` into MAIN World
+  // ==========================================================================
+  function injectMainWorldInterceptor() {
+    try {
+      const script = document.createElement("script");
+      script.src = chrome.runtime.getURL("injected.js");
+      script.async = false;
+      (document.head || document.documentElement).appendChild(script);
+      script.onload = () => script.remove();
+    } catch (err) {
+      console.error("[Scriptoria Companion] Failed to inject MAIN world script:", err);
+    }
+  }
+
+  injectMainWorldInterceptor();
+
+  // ==========================================================================
+  // 2. Helper Utilities & Flow Project Detection
+  // ==========================================================================
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function detectFlowProjectId() {
+    const match = window.location.pathname.match(
+      /\/project\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/
+    );
+    return match ? match[1] : DEFAULT_FLOW_PROJECT_ID;
+  }
+
+  function scanAvailableIngredientsInDom() {
+    const handles = new Set();
+    const pills = document.querySelectorAll(
+      '[data-ingredient-name], [data-mention], [aria-label*="ingredient" i], .ingredient-chip, [role="option"]'
+    );
+    pills.forEach((el) => {
+      const attr =
+        el.getAttribute("data-ingredient-name") ||
+        el.getAttribute("data-mention") ||
+        (el.textContent || "").trim();
+      if (attr && attr.length > 1 && attr.length < 64) {
+        handles.add(attr.replace(/^@/, "").trim());
+      }
+    });
+    return Array.from(handles);
+  }
+
+  function buildStatusPayload(connectionState, lastError = null) {
+    return {
+      session_id: SESSION_ID,
+      connection_state: connectionState,
+      flow_project_id: detectFlowProjectId(),
+      active_tab_url: window.location.href,
+      extension_version: "1.0.0",
+      user_agent: navigator.userAgent,
+      active_task_id: activeTask ? activeTask.task_id : null,
+      queued_tasks_count: 0,
+      completed_tasks_count: completedTasksCount,
+      failed_tasks_count: failedTasksCount,
+      available_ingredients: scanAvailableIngredientsInDom(),
+      last_heartbeat_at: new Date().toISOString(),
+      last_error: lastError,
+    };
+  }
+
+  function sendEnvelope(eventType, payload, correlationId = null) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+    const envelope = {
+      envelope_id: crypto.randomUUID ? crypto.randomUUID() : `env-${Date.now()}`,
+      event_type: eventType,
+      correlation_id: correlationId,
+      timestamp: new Date().toISOString(),
+      payload,
+    };
+    ws.send(JSON.stringify(envelope));
+    return true;
+  }
+
+  // ==========================================================================
+  // 3. DOM Prompt Editor & @Ingredient Automation Engine
+  // ==========================================================================
+  function findPromptEditor() {
+    // 1. Exact Google Flow ProseMirror editor selectors
+    const exactMatch =
+      document.querySelector('div.ProseMirror[contenteditable="true"]') ||
+      document.querySelector('div[aria-label="What do you want to create?"][contenteditable="true"]') ||
+      document.querySelector('div.prosemirror-editor div[contenteditable="true"]');
+    if (exactMatch) return exactMatch;
+
+    const selectors = [
+      'div.ProseMirror[contenteditable="true"]',
+      '[contenteditable="true"][role="textbox"]',
+      'div[contenteditable="true"][data-placeholder]',
+      'div[data-lexical-editor="true"]',
+      'textarea[placeholder*="create" i]',
+      '[placeholder*="create" i]',
+      'textarea[placeholder*="prompt" i]',
+      'textarea[placeholder*="describe" i]',
+      'textarea[aria-label*="prompt" i]',
+      '[contenteditable="true"]',
+      "textarea",
+    ];
+    for (const sel of selectors) {
+      const candidates = Array.from(document.querySelectorAll(sel));
+      const visible = candidates.find((el) => {
+        const rect = el.getBoundingClientRect();
+        return rect.width > 80 && rect.height >= 16;
+      });
+      if (visible) return visible;
+    }
+    return null;
+  }
+
+  function findGenerateButton() {
+    const explicitSelectors = [
+      'flow-generate-icon-button button',
+      'button[aria-label*="Start generation" i]',
+      'button[aria-label*="generation" i]',
+      'button[aria-label*="Generate" i]',
+      'button[aria-label*="Create" i]',
+      'button[data-testid*="generate" i]',
+      'button[type="submit"]',
+    ];
+    for (const sel of explicitSelectors) {
+      const btn = document.querySelector(sel);
+      if (btn) return btn;
+    }
+
+    const allButtons = Array.from(document.querySelectorAll("button"));
+    return (
+      allButtons.find((btn) => {
+        const text = (btn.textContent || "").trim().toLowerCase();
+        const aria = (btn.getAttribute("aria-label") || "").toLowerCase();
+        return (
+          text === "generate" ||
+          text === "create" ||
+          text.includes("generate") ||
+          aria.includes("generate") ||
+          aria.includes("start generation") ||
+          aria.includes("send prompt")
+        );
+      }) || null
+    );
+  }
+
+  async function clearEditorContent(editor) {
+    editor.focus();
+    await sleep(60);
+
+    if (editor.tagName === "TEXTAREA" || editor.tagName === "INPUT") {
+      const proto =
+        editor.tagName === "TEXTAREA"
+          ? window.HTMLTextAreaElement.prototype
+          : window.HTMLInputElement.prototype;
+      const nativeSetter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+      if (nativeSetter) {
+        nativeSetter.call(editor, "");
+      } else {
+        editor.value = "";
+      }
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+      return;
+    }
+
+    // ContentEditable (ProseMirror / Lexical)
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.execCommand("delete", false, null);
+    editor.dispatchEvent(
+      new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" })
+    );
+    await sleep(50);
+  }
+
+  async function insertTextSegment(editor, text) {
+    if (!text) return;
+    editor.focus();
+
+    if (editor.tagName === "TEXTAREA" || editor.tagName === "INPUT") {
+      const proto =
+        editor.tagName === "TEXTAREA"
+          ? window.HTMLTextAreaElement.prototype
+          : window.HTMLInputElement.prototype;
+      const nativeSetter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+      const nextValue = (editor.value || "") + text;
+      if (nativeSetter) {
+        nativeSetter.call(editor, nextValue);
+      } else {
+        editor.value = nextValue;
+      }
+      editor.dispatchEvent(new InputEvent("input", { bubbles: true, data: text }));
+      editor.dispatchEvent(new Event("change", { bubbles: true }));
+      return;
+    }
+
+    // ContentEditable insertion
+    const inserted = document.execCommand("insertText", false, text);
+    if (!inserted) {
+      editor.textContent = (editor.textContent || "") + text;
+    }
+    editor.dispatchEvent(
+      new InputEvent("input", {
+        bubbles: true,
+        cancelable: true,
+        inputType: "insertText",
+        data: text,
+      })
+    );
+  }
+
+  /**
+   * Types `@<handle>`, waits for Google Flow's @ingredient autocomplete popover,
+   * selects the matching option if present, or leaves the @mention token intact.
+   */
+  async function injectMentionToken(editor, handle) {
+    editor.focus();
+    await insertTextSegment(editor, `@${handle}`);
+    await sleep(320);
+
+    // Search for open mention dropdown options
+    const menuOptions = Array.from(
+      document.querySelectorAll(
+        '[role="listbox"] [role="option"], [data-radix-popper-content-wrapper] [role="menuitem"], .mention-item, [data-ingredient-option]'
+      )
+    );
+
+    const normalizedTarget = handle.toLowerCase().replace(/_/g, " ");
+    const matchingOption = menuOptions.find((opt) => {
+      const label = (opt.textContent || "").trim().toLowerCase();
+      return (
+        label.includes(handle.toLowerCase()) ||
+        label.includes(normalizedTarget)
+      );
+    });
+
+    if (matchingOption) {
+      matchingOption.click();
+      await sleep(120);
+    } else if (menuOptions.length === 1) {
+      // If typing @handle filtered the popover down to a single exact match, click it
+      menuOptions[0].click();
+      await sleep(120);
+    } else {
+      // Press Space to close mention menu cleanly
+      await insertTextSegment(editor, " ");
+    }
+  }
+
+  /**
+   * Injects full prompt while resolving `@Ingredient` tokens dynamically.
+   */
+  async function injectPromptWithIngredients(editor, prompt, ingredientRefs = []) {
+    await clearEditorContent(editor);
+
+    const knownHandles = new Map();
+    for (const ref of ingredientRefs) {
+      if (ref && ref.mention_handle) {
+        knownHandles.set(ref.mention_handle.toLowerCase(), ref.mention_handle);
+      }
+    }
+
+    // Tokenize prompt by @Handle occurrences
+    const tokenRegex = /@([A-Za-z0-9_-]+)/g;
+    let lastIndex = 0;
+    let match;
+
+    while ((match = tokenRegex.exec(prompt)) !== null) {
+      const precedingText = prompt.slice(lastIndex, match.index);
+      if (precedingText) {
+        await insertTextSegment(editor, precedingText);
+        await sleep(40);
+      }
+
+      const rawHandle = match[1];
+      const canonicalHandle =
+        knownHandles.get(rawHandle.toLowerCase()) || rawHandle;
+      await injectMentionToken(editor, canonicalHandle);
+
+      lastIndex = tokenRegex.lastIndex;
+    }
+
+    const remainingText = prompt.slice(lastIndex);
+    if (remainingText) {
+      await insertTextSegment(editor, remainingText);
+    }
+
+    // If ingredient_refs were specified but not explicitly written in prompt text, prepend them
+    for (const ref of ingredientRefs) {
+      const handle = ref.mention_handle;
+      if (handle && !prompt.toLowerCase().includes(`@${handle.toLowerCase()}`)) {
+        await insertTextSegment(editor, " ");
+        await injectMentionToken(editor, handle);
+      }
+    }
+
+    await sleep(150);
+  }
+
+  // ==========================================================================
+  // 4. DOM Mutation Fallback (Captures rendered <img>/<video> if RPC was compressed)
+  // ==========================================================================
+  const seenDomMediaSrcs = new Set();
+
+  function snapshotExistingDomMedia() {
+    document.querySelectorAll("img[src], video[src], video source[src]").forEach((el) => {
+      if (el.src) seenDomMediaSrcs.add(el.src);
+    });
+  }
+
+  const domMediaObserver = new MutationObserver((mutations) => {
+    if (!activeTask) return;
+
+    const discovered = [];
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes) {
+        if (!(node instanceof HTMLElement)) continue;
+        const mediaElements =
+          node.tagName === "IMG" || node.tagName === "VIDEO"
+            ? [node]
+            : Array.from(node.querySelectorAll("img[src], video[src]"));
+
+        for (const el of mediaElements) {
+          const src = el.currentSrc || el.src;
+          if (!src || seenDomMediaSrcs.has(src)) continue;
+          if (
+            src.includes("googleusercontent.com") ||
+            src.includes("storage.googleapis.com")
+          ) {
+            // Skip tiny UI icons
+            const width = el.naturalWidth || el.videoWidth || el.clientWidth || 0;
+            if (width > 0 && width < 128) continue;
+
+            seenDomMediaSrcs.add(src);
+            const isVideo = el.tagName === "VIDEO" || src.includes(".mp4");
+            discovered.push({
+              candidate_index: discovered.length,
+              remote_url: src,
+              mime_type: isVideo ? "video/mp4" : "image/png",
+              media_type: isVideo ? "VIDEO" : "IMAGE",
+              width: el.naturalWidth || el.videoWidth || null,
+              height: el.naturalHeight || el.videoHeight || null,
+              base64_data: null,
+              flow_media_key: "dom-mutation-capture",
+            });
+          }
+        }
+      }
+    }
+
+    if (discovered.length > 0 && activeTask) {
+      finalizeActiveTaskSuccess(discovered, "dom://mutation-observer");
+    }
+  });
+
+  function startDomObserver() {
+    if (document.body) {
+      domMediaObserver.observe(document.body, {
+        childList: true,
+        subtree: true,
+      });
+    } else {
+      window.addEventListener("DOMContentLoaded", () => {
+        domMediaObserver.observe(document.body, {
+          childList: true,
+          subtree: true,
+        });
+      });
+    }
+  }
+
+  startDomObserver();
+
+  // ==========================================================================
+  // 5. Task Execution & Result Handling
+  // ==========================================================================
+  function clearActiveTaskTimers() {
+    if (activeTaskTimeoutHandle) {
+      clearTimeout(activeTaskTimeoutHandle);
+      activeTaskTimeoutHandle = null;
+    }
+  }
+
+  function finalizeActiveTaskSuccess(candidates, rpcEndpoint) {
+    if (!activeTask) return;
+    const finishedTask = activeTask;
+    const latencyMs = Math.max(0, Date.now() - activeTaskStartTime);
+    activeTask = null;
+    clearActiveTaskTimers();
+    completedTasksCount += 1;
+
+    const normalizedCandidates = candidates.map((c, idx) => ({
+      candidate_index: idx,
+      remote_url: c.remote_url,
+      mime_type: c.mime_type || (finishedTask.media_type === "VIDEO" ? "video/mp4" : "image/png"),
+      width: c.width || null,
+      height: c.height || null,
+      duration_seconds: c.duration_seconds || null,
+      base64_data: c.base64_data || null,
+      flow_media_key: c.flow_media_key || null,
+    }));
+
+    const resultPayload = {
+      task_id: finishedTask.task_id,
+      project_id: finishedTask.project_id,
+      flow_project_id: finishedTask.flow_project_id || detectFlowProjectId(),
+      scene_id: finishedTask.scene_id || null,
+      character_profile_id: finishedTask.character_profile_id || null,
+      beat_id: finishedTask.beat_id || null,
+      status: "COMPLETED",
+      media_type: finishedTask.media_type || "IMAGE",
+      model_engine: finishedTask.model_engine || "NANO_BANANA",
+      prompt_used: finishedTask.prompt,
+      candidates: normalizedCandidates,
+      saved_assets: [],
+      rpc_endpoint_captured: rpcEndpoint || null,
+      generation_latency_ms: latencyMs,
+      error_message: null,
+      captured_at: new Date().toISOString(),
+    };
+
+    sendEnvelope("MEDIA_RESULT", resultPayload, finishedTask.task_id);
+    sendEnvelope("COMPANION_STATUS", buildStatusPayload("IDLE"));
+  }
+
+  function finalizeActiveTaskFailure(errorMessage) {
+    if (!activeTask) return;
+    const failedTask = activeTask;
+    const latencyMs = Math.max(0, Date.now() - activeTaskStartTime);
+    activeTask = null;
+    clearActiveTaskTimers();
+    failedTasksCount += 1;
+
+    const resultPayload = {
+      task_id: failedTask.task_id,
+      project_id: failedTask.project_id,
+      flow_project_id: failedTask.flow_project_id || detectFlowProjectId(),
+      scene_id: failedTask.scene_id || null,
+      character_profile_id: failedTask.character_profile_id || null,
+      beat_id: failedTask.beat_id || null,
+      status: "FAILED",
+      media_type: failedTask.media_type || "IMAGE",
+      model_engine: failedTask.model_engine || "NANO_BANANA",
+      prompt_used: failedTask.prompt,
+      candidates: [],
+      saved_assets: [],
+      rpc_endpoint_captured: null,
+      generation_latency_ms: latencyMs,
+      error_message: errorMessage,
+      captured_at: new Date().toISOString(),
+    };
+
+    sendEnvelope("MEDIA_RESULT", resultPayload, failedTask.task_id);
+    sendEnvelope("COMPANION_STATUS", buildStatusPayload("IDLE", errorMessage));
+  }
+
+  async function executeFlowGenerationTask(task) {
+    if (activeTask) {
+      sendEnvelope(
+        "BRIDGE_ERROR",
+        {
+          task_id: task.task_id,
+          error: `Companion is already executing task ${activeTask.task_id}`,
+        },
+        task.task_id
+      );
+      return;
+    }
+
+    activeTask = task;
+    activeTaskStartTime = Date.now();
+    snapshotExistingDomMedia();
+
+    const timeoutMs = (task.timeout_seconds || 180) * 1000;
+    activeTaskTimeoutHandle = setTimeout(() => {
+      finalizeActiveTaskFailure(
+        `Timed out after ${task.timeout_seconds || 180}s waiting for Google Flow media output.`
+      );
+    }, timeoutMs);
+
+    try {
+      sendEnvelope(
+        "TASK_PROGRESS",
+        {
+          task_id: task.task_id,
+          status: "INJECTING_PROMPT",
+          flow_project_id: detectFlowProjectId(),
+        },
+        task.task_id
+      );
+      sendEnvelope("COMPANION_STATUS", buildStatusPayload("BUSY_GENERATING"));
+
+      const editor = findPromptEditor();
+      if (!editor) {
+        throw new Error(
+          "Could not locate Google Flow prompt editor in DOM. Ensure project canvas is open."
+        );
+      }
+
+      await injectPromptWithIngredients(
+        editor,
+        task.prompt,
+        task.ingredient_refs || []
+      );
+
+      await sleep(350);
+
+      const generateBtn = findGenerateButton();
+      if (generateBtn) {
+        if (generateBtn.disabled) {
+          generateBtn.removeAttribute("disabled");
+        }
+        generateBtn.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+        generateBtn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+        generateBtn.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true }));
+        generateBtn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+        generateBtn.click();
+      }
+
+      // Also trigger Enter keydown/keyup on prompt editor
+      editor.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          code: "Enter",
+          keyCode: 13,
+          which: 13,
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+      editor.dispatchEvent(
+        new KeyboardEvent("keyup", {
+          key: "Enter",
+          code: "Enter",
+          keyCode: 13,
+          which: 13,
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+
+      sendEnvelope(
+        "TASK_PROGRESS",
+        {
+          task_id: task.task_id,
+          status: "AWAITING_RENDER",
+          flow_project_id: detectFlowProjectId(),
+        },
+        task.task_id
+      );
+    } catch (err) {
+      finalizeActiveTaskFailure(
+        err instanceof Error ? err.message : String(err)
+      );
+    }
+  }
+
+  async function handleIngredientSync(syncPayload) {
+    sendEnvelope("COMPANION_STATUS", buildStatusPayload("SYNCING_INGREDIENTS"));
+    const detectedHandles = scanAvailableIngredientsInDom();
+
+    sendEnvelope(
+      "INGREDIENT_SYNC_ACK",
+      {
+        sync_id: syncPayload.sync_id,
+        project_id: syncPayload.project_id,
+        flow_project_id: detectFlowProjectId(),
+        detected_handles: detectedHandles,
+        synced_count: (syncPayload.ingredients || []).length,
+        synced_at: new Date().toISOString(),
+      },
+      syncPayload.sync_id
+    );
+
+    sendEnvelope("COMPANION_STATUS", buildStatusPayload("IDLE"));
+  }
+
+  // ==========================================================================
+  // 6. Listen to MAIN World `injected.js` CustomEvents
+  // ==========================================================================
+  window.addEventListener("SCRIPTORIA_FLOW_MEDIA_CAPTURED", (event) => {
+    const detail = event.detail;
+    if (!detail || !Array.isArray(detail.candidates) || detail.candidates.length === 0) {
+      return;
+    }
+
+    if (activeTask) {
+      finalizeActiveTaskSuccess(detail.candidates, detail.rpc_endpoint);
+    } else {
+      // Unsolicited capture (user manually clicked Generate in Flow UI): still forward to Scriptoria!
+      const manualTaskId = `manual-${Date.now()}`;
+      const flowProjId = detectFlowProjectId();
+      const editor = findPromptEditor();
+      const promptText =
+        (editor && (editor.value || editor.textContent || "").trim()) ||
+        "Manual generation in Google Flow";
+
+      const resultPayload = {
+        task_id: manualTaskId,
+        project_id: "default-project",
+        flow_project_id: flowProjId,
+        scene_id: null,
+        character_profile_id: null,
+        beat_id: null,
+        status: "COMPLETED",
+        media_type: detail.candidates[0].media_type || "IMAGE",
+        model_engine: "FLOW_AUTO",
+        prompt_used: promptText,
+        candidates: detail.candidates,
+        saved_assets: [],
+        rpc_endpoint_captured: detail.rpc_endpoint || null,
+        generation_latency_ms: 0,
+        error_message: null,
+        captured_at: detail.captured_at || new Date().toISOString(),
+      };
+
+      sendEnvelope("MEDIA_RESULT", resultPayload, manualTaskId);
+    }
+  });
+
+  // ==========================================================================
+  // 7. WebSocket Connection & Reconnection Loop
+  // ==========================================================================
+  function startHeartbeat() {
+    stopHeartbeat();
+    heartbeatTimer = setInterval(() => {
+      const state = activeTask ? "BUSY_GENERATING" : "IDLE";
+      sendEnvelope("COMPANION_HEARTBEAT", buildStatusPayload(state));
+    }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  function stopHeartbeat() {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+  }
+
+  function connectWebSocket() {
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+
+    const flowProjectId = detectFlowProjectId();
+    const wsUrl = `${WS_ENDPOINT}?session_id=${encodeURIComponent(
+      SESSION_ID
+    )}&flow_project_id=${encodeURIComponent(flowProjectId)}`;
+
+    try {
+      ws = new WebSocket(wsUrl);
+    } catch (_err) {
+      scheduleReconnect();
+      return;
+    }
+
+    ws.onopen = () => {
+      reconnectAttempts = 0;
+      const state = activeTask ? "BUSY_GENERATING" : "IDLE";
+      sendEnvelope("COMPANION_HELLO", buildStatusPayload(state));
+      startHeartbeat();
+      console.info(
+        `[Scriptoria Companion] Connected to FastAPI Bridge (${wsUrl})`
+      );
+    };
+
+    ws.onmessage = async (msgEvent) => {
+      try {
+        const envelope = JSON.parse(msgEvent.data);
+        const { event_type, payload, correlation_id } = envelope;
+
+        switch (event_type) {
+          case "DISPATCH_TASK":
+            await executeFlowGenerationTask(payload);
+            break;
+
+          case "INGREDIENT_SYNC":
+            await handleIngredientSync(payload);
+            break;
+
+          case "QUEUE_ACTION":
+            if (
+              payload.action === "CANCEL_TASK" &&
+              activeTask &&
+              activeTask.task_id === payload.target_task_id
+            ) {
+              finalizeActiveTaskFailure("Task cancelled via Scriptoria Queue Action.");
+            } else if (payload.action === "PING_COMPANION") {
+              const state = activeTask ? "BUSY_GENERATING" : "IDLE";
+              sendEnvelope("COMPANION_STATUS", buildStatusPayload(state), correlation_id);
+            }
+            break;
+
+          default:
+            break;
+        }
+      } catch (err) {
+        console.error("[Scriptoria Companion] Error handling WS message:", err);
+      }
+    };
+
+    ws.onclose = () => {
+      stopHeartbeat();
+      scheduleReconnect();
+    };
+
+    ws.onerror = () => {
+      try {
+        ws.close();
+      } catch (_e) {}
+    };
+  }
+
+  function scheduleReconnect() {
+    reconnectAttempts += 1;
+    const delay = Math.min(
+      RECONNECT_BASE_DELAY_MS * Math.pow(1.5, reconnectAttempts - 1),
+      RECONNECT_MAX_DELAY_MS
+    );
+    setTimeout(connectWebSocket, delay);
+  }
+
+  connectWebSocket();
+})();

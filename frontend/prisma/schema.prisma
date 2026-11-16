@@ -305,6 +305,9 @@ model Project {
   updatedAt   DateTime           @updatedAt
   characters  CharacterProfile[]
   scenes      Scene[]
+  flowBinding FlowProjectBinding?
+  flowIngredients FlowIngredient[]
+  flowAssets      FlowAsset[]
 
   @@index([userId, updatedAt])
 }
@@ -322,6 +325,9 @@ model CharacterProfile {
   notes        String   @default("")
   createdAt    DateTime @default(now())
 
+  flowIngredients FlowIngredient[]
+  flowAssets      FlowAsset[]
+
   @@index([projectId])
 }
 
@@ -336,6 +342,9 @@ model Scene {
   status     String   @default("DRAFT")
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
+
+  flowIngredients FlowIngredient[]
+  flowAssets      FlowAsset[]
 
   @@index([projectId, orderIndex])
 }
@@ -370,4 +379,105 @@ model LlmChatMessage {
   createdAt   DateTime       @default(now())
 
   @@index([sessionId, createdAt])
+}
+
+// ============================================================================
+// WORKSTREAM F2: GOOGLE AI FLOW ORCHESTRATION MODELS
+// ============================================================================
+
+model FlowProjectBinding {
+  id                  String    @id @default(cuid())
+  projectId           String    @unique
+  flowProjectId       String    @default("ea1ed436-e578-4327-9c9b-4f6b2e7e551d")
+  flowProjectUrl      String    @default("https://flow.google.com/project/ea1ed436-e578-4327-9c9b-4f6b2e7e551d")
+  defaultModelEngine  String    @default("NANO_BANANA")
+  defaultAspectRatio  String    @default("16:9")
+  autoSyncIngredients Boolean   @default(true)
+  companionState      String    @default("DISCONNECTED")
+  lastConnectedAt     DateTime?
+  lastSyncedAt        DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  project     Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  ingredients FlowIngredient[]
+  assets      FlowAsset[]
+
+  @@index([flowProjectId])
+  @@index([companionState])
+}
+
+model FlowIngredient {
+  id                 String    @id @default(cuid())
+  projectId          String
+  flowBindingId      String
+  characterProfileId String?
+  sceneId            String?
+  name               String
+  mentionHandle      String    // e.g. "Detective_Kael" (injected as @Detective_Kael)
+  category           String    @default("CHARACTER") // CHARACTER | LOCATION | PROP | STYLE
+  visualPrompt       String
+  flowInternalTagId  String?   // UUID assigned by Google Flow inside project state
+  referenceAssetId   String?
+  syncStatus         String    @default("PENDING")   // PENDING | SYNCED | DRIFTED | ERROR
+  lastSyncedAt       DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  project          Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  flowBinding      FlowProjectBinding @relation(fields: [flowBindingId], references: [id], onDelete: Cascade)
+  characterProfile CharacterProfile?  @relation(fields: [characterProfileId], references: [id], onDelete: SetNull)
+  scene            Scene?             @relation(fields: [sceneId], references: [id], onDelete: SetNull)
+  referenceAsset   FlowAsset?         @relation("IngredientPrimaryAsset", fields: [referenceAssetId], references: [id], onDelete: SetNull)
+  generatedAssets  FlowAsset[]        @relation("IngredientGeneratedAssets")
+
+  @@unique([projectId, mentionHandle])
+  @@index([projectId, category])
+  @@index([flowBindingId])
+  @@index([characterProfileId])
+  @@index([sceneId])
+}
+
+model FlowAsset {
+  id                  String   @id @default(cuid())
+  taskId              String
+  projectId           String
+  flowBindingId       String
+  sceneId             String?
+  characterProfileId  String?
+  beatId              String?
+  mediaType           String   @default("IMAGE")       // IMAGE | VIDEO
+  modelEngine         String   @default("NANO_BANANA") // IMAGEN_3 | NANO_BANANA | VEO_2 | VEO_3 | FLOW_AUTO
+  aspectRatio         String   @default("16:9")
+  promptUsed          String
+  negativePrompt      String?
+  candidateIndex      Int      @default(0)
+  sourceRemoteUrl     String
+  localRelativePath   String
+  localAbsolutePath   String
+  sha256Hash          String
+  fileSizeBytes       Int      @default(0)
+  mimeType            String   @default("image/png")
+  width               Int?
+  height              Int?
+  durationSeconds     Float?
+  generationLatencyMs Int?
+  status              String   @default("COMPLETED")   // QUEUED | COMPLETED | FAILED | ARCHIVED
+  isSelectedCanonical Boolean  @default(false)
+  errorMessage        String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  project             Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  flowBinding         FlowProjectBinding @relation(fields: [flowBindingId], references: [id], onDelete: Cascade)
+  scene               Scene?             @relation(fields: [sceneId], references: [id], onDelete: SetNull)
+  characterProfile    CharacterProfile?  @relation(fields: [characterProfileId], references: [id], onDelete: SetNull)
+  primaryFor          FlowIngredient[]   @relation("IngredientPrimaryAsset")
+  usedIngredients     FlowIngredient[]   @relation("IngredientGeneratedAssets")
+
+  @@index([projectId, status])
+  @@index([taskId])
+  @@index([sceneId])
+  @@index([characterProfileId])
+  @@index([sha256Hash])
 }

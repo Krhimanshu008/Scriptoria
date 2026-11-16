@@ -2,10 +2,10 @@
   "artifacts": {
     "openapi": "openapi.json"
   },
-  "contract_hash": "f92dac5e24d680f0d24b166de9c3a4955b3fdf476385884e2fd4a5717c98ab91",
+  "contract_hash": "4ccccce56fb9d1c9268333a7d8efced7f9587970b25367ee13c8620dba9e96be",
   "hash_algorithm": "sha256",
   "openapi_version": "3.1.0",
-  "paths_count": 31,
+  "paths_count": 36,
   "schema_names": [
     "ApiErrorBody",
     "ApiErrorEnvelope",
@@ -39,6 +39,22 @@
     "ExtractedScene",
     "ExtractionCheckpointItem",
     "ExtractionCheckpointsResponse",
+    "FlowAspectRatio",
+    "FlowCompanionStatus",
+    "FlowConnectionState",
+    "FlowGenerationTask",
+    "FlowIngredientCategory",
+    "FlowIngredientRef",
+    "FlowIngredientSync",
+    "FlowIngredientSyncItem",
+    "FlowMediaCandidate",
+    "FlowMediaResultEvent",
+    "FlowMediaType",
+    "FlowModelEngine",
+    "FlowQueueAction",
+    "FlowQueueActionType",
+    "FlowSavedAssetRecord",
+    "FlowTaskStatus",
     "GraphEdgeSummary",
     "GraphTraversalEdge",
     "GraphTraversalNode",
@@ -83,6 +99,6 @@
     "VramLockRequest"
   ],
   "schema_version": "1.0.0",
-  "schemas_count": 74,
+  "schemas_count": 90,
   "title": "Novel Visualiser & Storyboard Studio"
 }

@@ -1,0 +1,54 @@
+{
+  "manifest_version": 3,
+  "name": "Scriptoria — Google AI Flow Companion Bridge",
+  "short_name": "ScriptoriaFlow",
+  "version": "1.0.0",
+  "description": "Zero-ban browser companion connecting Google AI Flow (Nano Banana, Imagen 3, Veo) to Scriptoria via local WebSocket.",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://flow.google/*",
+    "https://*.flow.google/*",
+    "https://flow.google.com/*",
+    "https://*.flow.google.com/*",
+    "https://flow-content.google/*",
+    "https://*.flow-content.google/*",
+    "https://labs.google/*",
+    "https://*.googleusercontent.com/*",
+    "http://127.0.0.1:8000/*",
+    "ws://127.0.0.1:8000/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://flow.google/*",
+        "https://*.flow.google/*",
+        "https://flow.google.com/*",
+        "https://*.flow.google.com/*",
+        "https://labs.google/fx/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "injected.js"
+      ],
+      "matches": [
+        "https://flow.google/*",
+        "https://*.flow.google/*",
+        "https://flow.google.com/*",
+        "https://*.flow.google.com/*",
+        "https://labs.google/*"
+      ]
+    }
+  ]
+}

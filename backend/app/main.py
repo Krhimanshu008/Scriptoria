@@ -10,6 +10,7 @@ from app.core.config import settings
 from app.middleware.bridge_guard import install_bridge_guard
 from app.routers import (
     extraction_lab,
+    flow_bridge,
     graph_studio,
     parser_inspector,
     rag_workbench,
@@ -51,6 +52,7 @@ app.include_router(extraction_lab.router, prefix="/api/v1")
 app.include_router(graph_studio.router, prefix="/api/v1")
 app.include_router(rag_workbench.router, prefix="/api/v1")
 app.include_router(scorecard_stepper.router, prefix="/api/v1")
+app.include_router(flow_bridge.router)
 
 # Static media mounts
 shots_dir = Path("output/shots")
@@ -60,6 +62,10 @@ app.mount("/media/shots", StaticFiles(directory=str(shots_dir)), name="shots")
 foundry_dir = Path("output/foundry")
 foundry_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/media/foundry", StaticFiles(directory=str(foundry_dir)), name="foundry")
+
+flow_assets_dir = Path("output/flow_assets")
+flow_assets_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/media/flow_assets", StaticFiles(directory=str(flow_assets_dir)), name="flow_assets")
 
 # Static UI mount
 static_ui_dir = Path("app/static")
