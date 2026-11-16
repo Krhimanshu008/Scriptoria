@@ -28,7 +28,8 @@ import { FastApiBridgeCard } from "@/components/testbench/FastApiBridgeCard";
 
 interface Tab0PlumbingProps {
   activeBookId: string;
-  onRefreshBooks: () => void;
+  onRefreshBooks: (selectBookId?: string) => Promise<void> | void;
+  onSelectBook?: (bookId: string) => void;
 }
 
 const VALID_SAMPLE_OBSERVATION = {
@@ -105,7 +106,7 @@ const VALID_SAMPLE_OBSERVATION = {
   ],
 };
 
-export function Tab0Plumbing({ activeBookId, onRefreshBooks }: Tab0PlumbingProps) {
+export function Tab0Plumbing({ activeBookId, onRefreshBooks, onSelectBook }: Tab0PlumbingProps) {
   // Tree state
   const [treeData, setTreeData] = useState<any>(null);
   const [treeLoading, setTreeLoading] = useState(false);
@@ -380,8 +381,10 @@ export function Tab0Plumbing({ activeBookId, onRefreshBooks }: Tab0PlumbingProps
         setUploadFile(null);
         setUploadTitle("");
         setUploadAuthor("");
-        onRefreshBooks();
-        fetchR2Tree();
+        await onRefreshBooks(data.book_id);
+        if (onSelectBook && data.book_id) {
+          onSelectBook(data.book_id);
+        }
       } else {
         toast.error("Upload failed: " + (data.error || "Unknown error"));
       }

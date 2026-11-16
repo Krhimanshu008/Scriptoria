@@ -56,13 +56,15 @@ export function TestbenchShell() {
   const vms = vmData?.vms ?? [];
 
   // Fetch books list from Supabase
-  const fetchBooks = async () => {
+  const fetchBooks = async (selectBookId?: string) => {
     try {
       const res = await fetch("/api/pipeline/books");
       const data = await res.json();
       const list = data.books || [];
       setBooks(list);
-      if (list.length > 0 && !activeBookId) {
+      if (selectBookId) {
+        setActiveBookId(selectBookId);
+      } else if (list.length > 0 && (!activeBookId || !list.some((b: any) => b.book_id === activeBookId))) {
         setActiveBookId(list[0].book_id);
       }
     } catch (err: any) {
@@ -124,7 +126,11 @@ export function TestbenchShell() {
       {/* Main Body: Active Tab full width */}
       <main className="flex-1 min-h-0 w-full bg-zinc-950/50 overflow-y-auto">
         {activeTab === "tab0" && (
-          <Tab0Plumbing activeBookId={activeBookId} onRefreshBooks={fetchBooks} />
+          <Tab0Plumbing
+            activeBookId={activeBookId}
+            onRefreshBooks={fetchBooks}
+            onSelectBook={(id) => setActiveBookId(id)}
+          />
         )}
         {activeTab === "tab1" && <Tab1Parser activeBookId={activeBookId} />}
         {activeTab === "tab2" && (

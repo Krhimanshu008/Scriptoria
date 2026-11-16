@@ -200,7 +200,8 @@ def upload_book_r2(local_path: str, title: str, author: str) -> Dict[str, Any]:
         book_id = str(uuid.uuid4())
         original_filename = p.name
 
-    slug = re.sub(r"[^a-z0-9]+", "-", f"{title}-{author}".lower()).strip("-")[:60]
+    base_slug = re.sub(r"[^a-z0-9]+", "-", f"{title}-{author}".lower()).strip("-")[:50] or "book"
+    slug = base_slug
     fmt = "EPUB" if p.suffix.lower() == ".epub" else "PDF"
 
     r2 = R2StorageService()
@@ -211,6 +212,18 @@ def upload_book_r2(local_path: str, title: str, author: str) -> Dict[str, Any]:
     s_url, s_hdrs = _supabase_client()
     if s_url and s_hdrs.get("apikey"):
         import requests
+        # Check if slug already exists to prevent 409 unique constraint violation
+        try:
+            check_r = requests.get(
+                f"{s_url}/rest/v1/books_catalog?slug=eq.{base_slug}&select=book_id",
+                headers=s_hdrs,
+                timeout=5,
+            )
+            if check_r.status_code == 200 and len(check_r.json()) > 0:
+                slug = f"{base_slug}-{book_id[:8]}"
+        except Exception:
+            slug = f"{base_slug}-{book_id[:8]}"
+
         payload = {
             "book_id": book_id,
             "slug": slug,
@@ -222,8 +235,17 @@ def upload_book_r2(local_path: str, title: str, author: str) -> Dict[str, Any]:
             "r2_raw_key": r2_key,
             "total_chapters": 0,
         }
-        hdrs = {**s_hdrs, "Prefer": "resolution=merge-duplicates"}
-        requests.post(f"{s_url}/rest/v1/books_catalog", headers=hdrs, json=payload, timeout=5)
+        hdrs = {**s_hdrs, "Content-Type": "application/json"}
+        try:
+            r = requests.post(f"{s_url}/rest/v1/books_catalog", headers=hdrs, json=payload, timeout=5)
+            if r.status_code == 409:
+                slug = f"{base_slug}-{uuid.uuid4().hex[:8]}"
+                payload["slug"] = slug
+                r = requests.post(f"{s_url}/rest/v1/books_catalog", headers=hdrs, json=payload, timeout=5)
+            if r.status_code not in (200, 201):
+                print(f"Supabase catalog insert error ({r.status_code}): {r.text}", file=sys.stderr)
+        except Exception as e:
+            print(f"Supabase catalog insert error: {e}", file=sys.stderr)
 
     # Clean local file
     try:
@@ -249,7 +271,8 @@ def upload_book_bytes(file_bytes: bytes, filename: str, title: str, author: str)
     import uuid
 
     book_id = str(uuid.uuid4())
-    slug = re.sub(r"[^a-z0-9]+", "-", f"{title}-{author}".lower()).strip("-")[:60]
+    base_slug = re.sub(r"[^a-z0-9]+", "-", f"{title}-{author}".lower()).strip("-")[:50] or "book"
+    slug = base_slug
     fmt = "EPUB" if filename.lower().endswith(".epub") else "PDF"
 
     r2 = R2StorageService()
@@ -261,6 +284,18 @@ def upload_book_bytes(file_bytes: bytes, filename: str, title: str, author: str)
     s_url, s_hdrs = _supabase_client()
     if s_url and s_hdrs.get("apikey"):
         import requests
+        # Check if slug already exists to prevent 409 unique constraint violation
+        try:
+            check_r = requests.get(
+                f"{s_url}/rest/v1/books_catalog?slug=eq.{base_slug}&select=book_id",
+                headers=s_hdrs,
+                timeout=5,
+            )
+            if check_r.status_code == 200 and len(check_r.json()) > 0:
+                slug = f"{base_slug}-{book_id[:8]}"
+        except Exception:
+            slug = f"{base_slug}-{book_id[:8]}"
+
         payload = {
             "book_id": book_id,
             "slug": slug,
@@ -272,9 +307,15 @@ def upload_book_bytes(file_bytes: bytes, filename: str, title: str, author: str)
             "r2_raw_key": r2_key,
             "total_chapters": 0,
         }
-        hdrs = {**s_hdrs, "Prefer": "resolution=merge-duplicates"}
+        hdrs = {**s_hdrs, "Content-Type": "application/json"}
         try:
-            requests.post(f"{s_url}/rest/v1/books_catalog", headers=hdrs, json=payload, timeout=5)
+            r = requests.post(f"{s_url}/rest/v1/books_catalog", headers=hdrs, json=payload, timeout=5)
+            if r.status_code == 409:
+                slug = f"{base_slug}-{uuid.uuid4().hex[:8]}"
+                payload["slug"] = slug
+                r = requests.post(f"{s_url}/rest/v1/books_catalog", headers=hdrs, json=payload, timeout=5)
+            if r.status_code not in (200, 201):
+                print(f"Supabase catalog insert error ({r.status_code}): {r.text}", file=sys.stderr)
         except Exception as e:
             print(f"Supabase catalog insert error: {e}", file=sys.stderr)
 
