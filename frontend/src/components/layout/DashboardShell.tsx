@@ -16,6 +16,7 @@ import {
   Bot,
   Zap,
   Film,
+  Clapperboard,
   X,
   PanelLeftClose,
   PanelLeftOpen,
@@ -40,6 +41,7 @@ const NAV_GROUPS = [
   {
     section: "Intelligence & Studio",
     items: [
+      { href: "/flow-studio", label: "Flow & TTS Studio", icon: Clapperboard },
       { href: "/testbench", label: "Pipeline Testbench", icon: Wrench },
       { href: "/llm-studio", label: "LLM Studio", icon: Bot },
       { href: "/studio", label: "Studio", icon: Sparkles },
@@ -53,6 +55,7 @@ const NAV_GROUPS = [
 ];
 
 function pageTitleForPath(pathname: string): string {
+  if (pathname.startsWith("/flow-studio")) return "Flow & Google TTS Storyboard Studio";
   if (pathname.startsWith("/testbench")) return "Pipeline Testbench (Checkpoints 0–5)";
   if (pathname.startsWith("/visualiser-lab")) return "Novel Visualiser Test Lab";
   if (pathname.startsWith("/llm-studio")) return "LLM Studio";
