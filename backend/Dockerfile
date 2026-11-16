@@ -16,6 +16,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 COPY . .
 
+# Enable both `import app...` and legacy `import backend.app...`
+RUN ln -sf /app /app/backend
+
 # Persistent storage mount point for SQLite FTS5 indices and local state
 RUN mkdir -p /app/data
 

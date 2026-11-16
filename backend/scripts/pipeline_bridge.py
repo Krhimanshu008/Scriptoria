@@ -30,12 +30,20 @@ load_dotenv(PROJECT_ROOT / "backend" / ".env")
 load_dotenv(PROJECT_ROOT / "frontend" / ".env")
 load_dotenv(PROJECT_ROOT / "frontend" / ".env.local")
 
-from backend.app.services.r2_storage import R2StorageService
-from backend.app.models.canonical_protocol import ChapterObservation
-from backend.app.services.phase2_ingestion.deterministic_parser import DeterministicNovelParser
-from backend.app.services.phase3_compiler.book_compiler import Stage2BookCompiler
-from backend.app.services.phase4_rag.indexer import HybridRAGIndexer
-from backend.app.services.phase4_rag.retriever import ScriptoriaRAGRetriever
+try:
+    from app.services.r2_storage import R2StorageService
+    from app.models.canonical_protocol import ChapterObservation
+    from app.services.phase2_ingestion.deterministic_parser import DeterministicNovelParser
+    from app.services.phase3_compiler.book_compiler import Stage2BookCompiler
+    from app.services.phase4_rag.indexer import HybridRAGIndexer
+    from app.services.phase4_rag.retriever import ScriptoriaRAGRetriever
+except ImportError:
+    from backend.app.services.r2_storage import R2StorageService
+    from backend.app.models.canonical_protocol import ChapterObservation
+    from backend.app.services.phase2_ingestion.deterministic_parser import DeterministicNovelParser
+    from backend.app.services.phase3_compiler.book_compiler import Stage2BookCompiler
+    from backend.app.services.phase4_rag.indexer import HybridRAGIndexer
+    from backend.app.services.phase4_rag.retriever import ScriptoriaRAGRetriever
 
 
 def _supabase_client():
