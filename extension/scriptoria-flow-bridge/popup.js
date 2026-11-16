@@ -172,6 +172,119 @@
         }
       }
     }
+
+    const charsToRender = (pkg && pkg.characters && pkg.characters.length > 0)
+      ? pkg.characters
+      : [
+          {
+            name: "Ishmael",
+            mention_handle: "Ishmael",
+            archetype: "Narrator & 19th-century sailor",
+            visual_prompt: "A gaunt contemplative 28-year-old 19th-century American sailor, dark unruly curls under a navy knit fisherman watch cap, patched indigo wool pea coat with bone buttons, weather-beaten fair skin, hollowed melancholic eyes, cinematic chiaroscuro rim lighting, 50mm portrait prime photograph",
+          },
+          {
+            name: "Captain Ahab",
+            mention_handle: "Ahab",
+            archetype: "Monomaniacal captain of the Pequod",
+            visual_prompt: "A grim, weather-hardened sea captain in his late 50s, stark white lightning-streak scar running down one side of his face into his collar, standing on a carved whalebone ivory leg, fierce burning obsidian eyes, dark wool naval frock coat whipped by sea gale, 85mm prime telephoto, dramatic low-key rim lighting",
+          },
+        ];
+    renderIngredientsList(charsToRender);
+  }
+
+  function renderIngredientsList(characters) {
+    const listEl = document.getElementById("ingredients-list");
+    if (!listEl) return;
+    listEl.innerHTML = "";
+
+    characters.forEach((char) => {
+      const card = document.createElement("div");
+      card.style.cssText = "display: flex; align-items: center; justify-content: space-between; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 6px 10px;";
+
+      const left = document.createElement("div");
+      left.style.cssText = "display: flex; flex-direction: column; gap: 2px;";
+
+      const chip = document.createElement("button");
+      chip.className = "chip";
+      chip.setAttribute("data-handle", char.mention_handle);
+      chip.textContent = `👤 @${char.mention_handle}`;
+      chip.title = "Click to insert into prompt box";
+      chip.addEventListener("click", async () => {
+        if (elInputPrompt) {
+          const current = elInputPrompt.value;
+          elInputPrompt.value = current ? `${current} @${char.mention_handle} ` : `@${char.mention_handle} `;
+        }
+        try {
+          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+          if (tab && tab.id) {
+            chrome.tabs.sendMessage(tab.id, {
+              type: "SCRIPTORIA_INSERT_HANDLE",
+              handle: char.mention_handle,
+            });
+          }
+        } catch (_) {}
+      });
+
+      const desc = document.createElement("span");
+      desc.style.cssText = "font-size: 10px; color: #9ca3af; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+      desc.textContent = char.archetype || char.name;
+
+      left.appendChild(chip);
+      left.appendChild(desc);
+
+      const syncBtn = document.createElement("button");
+      syncBtn.className = "btn btn-secondary btn-xs";
+      syncBtn.textContent = "➕ Register in Flow";
+      syncBtn.title = "Create character identity in Google Flow Character Studio";
+      syncBtn.addEventListener("click", async () => {
+        syncBtn.disabled = true;
+        syncBtn.textContent = "⏳ Syncing...";
+        try {
+          const res = await fetch(`${getBaseUrl()}/api/v1/flow-bridge/character/sync`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              flow_project_id: activeProjectId,
+              mention_handle: char.mention_handle,
+              visual_prompt: char.visual_prompt,
+              generate_portrait: true,
+            }),
+          });
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData.detail || `HTTP ${res.status}`);
+          }
+          syncBtn.textContent = "✅ Synced";
+          alert(`Character @${char.mention_handle} dispatched to Flow! The Flow tab will open Character Studio and register the portrait.`);
+        } catch (err) {
+          alert(`Flow Character Sync error: ${err.message}. Ensure Google Flow tab is open!`);
+          syncBtn.textContent = "➕ Register in Flow";
+          syncBtn.disabled = false;
+        }
+      });
+
+      card.appendChild(left);
+      card.appendChild(syncBtn);
+      listEl.appendChild(card);
+    });
+  }
+
+  const btnSyncIngredients = document.getElementById("btn-sync-ingredients");
+  if (btnSyncIngredients) {
+    btnSyncIngredients.addEventListener("click", () => {
+      initChapterContext();
+    });
+  }
+
+  const btnOpenAiStudio = document.getElementById("btn-open-aistudio");
+  if (btnOpenAiStudio) {
+    btnOpenAiStudio.addEventListener("click", () => {
+      if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
+        chrome.runtime.sendMessage({ action: "OPEN_AISTUDIO_TAB" });
+      } else {
+        window.open("https://aistudio.google.com/", "_blank");
+      }
+    });
   }
 
   if (elBtnLaunchFlow) {
@@ -512,7 +625,19 @@
         });
 
         if (!res.ok) {
-          throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+          const errText = await res.text();
+          let cleanMsg = `HTTP ${res.status}`;
+          if (res.status === 504) {
+            cleanMsg = "Cloud synthesis timed out (HTTP 504). Tip: Click '🎙️ Open Google AI Studio' below for instant, free 24kHz audio synthesis directly in the Google AI Studio tab!";
+          } else {
+            try {
+              const parsed = JSON.parse(errText);
+              cleanMsg = parsed.detail || (parsed.error && parsed.error.message) || cleanMsg;
+            } catch (_) {
+              cleanMsg = errText.slice(0, 160);
+            }
+          }
+          throw new Error(cleanMsg);
         }
 
         const data = await res.json();
@@ -533,7 +658,7 @@
         }
       } catch (err) {
         console.error("Audio generation error:", err);
-        alert(`Failed to synthesize audio: ${err.message}`);
+        alert(`Audio Synthesis Notice:\n\n${err.message}`);
       } finally {
         elBtnGenerateAudio.disabled = false;
         elBtnGenerateAudio.textContent = "⚡ Generate 24kHz Chapter Audio";

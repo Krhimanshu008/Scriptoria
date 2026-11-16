@@ -443,6 +443,24 @@ export function FlowTtsWorkstation() {
           shot_type: f.shot_type,
           lens: f.lens,
         })),
+        characters: [
+          {
+            name: "Ishmael",
+            mention_handle: "Ishmael",
+            archetype: "Narrator & 19th-century sailor",
+            visual_prompt:
+              "A gaunt contemplative 28-year-old 19th-century American sailor, dark unruly curls under a navy knit fisherman watch cap, patched indigo wool pea coat with bone buttons, weather-beaten fair skin, hollowed melancholic eyes, cinematic chiaroscuro rim lighting, 50mm portrait prime photograph",
+            category: "CHARACTER",
+          },
+          {
+            name: "Captain Ahab",
+            mention_handle: "Ahab",
+            archetype: "Monomaniacal captain of the Pequod",
+            visual_prompt:
+              "A grim, weather-hardened sea captain in his late 50s, stark white lightning-streak scar running down one side of his face into his collar, standing on a carved whalebone ivory leg, fierce burning obsidian eyes, dark wool naval frock coat whipped by sea gale, 85mm prime telephoto, dramatic low-key rim lighting",
+            category: "CHARACTER",
+          },
+        ],
         auto_open_tabs: true,
       };
 

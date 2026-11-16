@@ -99,19 +99,27 @@ def _generate_synthetic_narration_wav(dest_path: Path, text: str, sample_rate: i
 
     word_count = len(text.split())
     duration_sec = max(3.0, round(word_count / 2.33, 2))
-    num_samples = int(sample_rate * duration_sec)
+    
+    # Precompute a 1-second repeating audio buffer to avoid millions of Python loop iterations
+    one_sec_bytes = bytearray()
+    for i in range(sample_rate):
+        t = i / sample_rate
+        mod = 0.5 * (1.0 + math.sin(2 * math.pi * 3.5 * t))
+        sample = int(1200 * mod * math.sin(2 * math.pi * 180.0 * t))
+        one_sec_bytes.extend(struct.pack("<h", sample))
+
+    full_seconds = int(duration_sec)
+    remainder_samples = int((duration_sec - full_seconds) * sample_rate)
 
     with wave.open(str(dest_path), "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(sample_rate)
-        frames = bytearray()
-        for i in range(num_samples):
-            t = i / sample_rate
-            mod = 0.5 * (1.0 + math.sin(2 * math.pi * 3.5 * t))
-            sample = int(1200 * mod * math.sin(2 * math.pi * 180.0 * t))
-            frames.extend(struct.pack("<h", sample))
-        wf.writeframes(frames)
+        for _ in range(full_seconds):
+            wf.writeframes(one_sec_bytes)
+        if remainder_samples > 0:
+            wf.writeframes(one_sec_bytes[: remainder_samples * 2])
+            
     return duration_sec
 
 
@@ -166,8 +174,13 @@ def execute_gemini_tts_synthesis(
                 response_modalities=["AUDIO"],
                 speech_config=speech_config,
             )
+            # For Google GenAI public SDK, use gemini-2.0-flash which supports AUDIO response modality
+            model_to_use = request.config.model_name
+            if "3.8" in model_to_use:
+                model_to_use = "gemini-2.0-flash"
+
             response = client.models.generate_content(
-                model=request.config.model_name,
+                model=model_to_use,
                 contents=transcript,
                 config=gen_config,
             )

@@ -240,6 +240,11 @@
         <div class="actions-row">
           <button id="btn-generate-audio" class="btn btn-primary w-full">⚡ Generate 24kHz Chapter Audio</button>
         </div>
+        <div class="actions-row" style="margin-top: 6px;">
+          <button id="btn-open-aistudio" class="btn btn-secondary w-full" style="background: rgba(225, 29, 72, 0.15); border-color: rgba(225, 29, 72, 0.4); color: #f43f5e; font-weight: 600;">
+            🎙️ Open Google AI Studio (Free 24kHz Playground)
+          </button>
+        </div>
 
         <!-- Audio Output & Playback -->
         <div id="audio-output-container" class="audio-output-box hidden">
@@ -252,18 +257,16 @@
       </div>
     </section>
 
-    <!-- Tab 3: Synced @Ingredients -->
+    <!-- Tab 3: Synced @Ingredients & Character Identities -->
     <section id="tab-ingredients" class="tab-pane">
       <div class="card">
         <div class="card-header">
-          <span class="card-title">Project @Ingredients</span>
-          <button id="btn-sync-ingredients" class="btn btn-secondary btn-xs">🔄 Sync</button>
+          <span class="card-title">Project Characters & @Ingredients</span>
+          <button id="btn-sync-ingredients" class="btn btn-secondary btn-xs">🔄 Refresh</button>
         </div>
-        <p class="card-desc">Click any chip to insert into Google Flow's prompt box:</p>
-        <div id="ingredients-list" class="ingredients-chip-grid">
-          <button class="chip" data-handle="Detective_Kael">👤 @Detective_Kael</button>
-          <button class="chip" data-handle="Ancient_Castle">🏰 @Ancient_Castle</button>
-          <button class="chip" data-handle="Glowing_Grimoire">📖 @Glowing_Grimoire</button>
+        <p class="card-desc">Characters locked for this novel. Click any chip to insert into prompt, or click <strong>Register</strong> to create identity in Flow:</p>
+        <div id="ingredients-list" class="ingredients-chip-grid" style="display: flex; flex-direction: column; gap: 8px;">
+          <!-- Dynamically populated from active chapter characters -->
         </div>
       </div>
     </section>

@@ -1159,7 +1159,7 @@
     const flowProjectId = detectFlowProjectId();
     const wsUrl = `${baseWs}?session_id=${encodeURIComponent(
       SESSION_ID
-    )}&flow_project_id=${encodeURIComponent(flowProjectId)}`;
+    )}&flow_project_id=${encodeURIComponent(flowProjectId)}&source=FLOW_TAB`;
 
     try {
       ws = new WebSocket(wsUrl);

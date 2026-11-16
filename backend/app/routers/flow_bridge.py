@@ -84,7 +84,11 @@ class FlowBridgeOrchestrator:
         self.output_root.mkdir(parents=True, exist_ok=True)
 
         self._lock = asyncio.Lock()
-        self._active_ws: WebSocket | None = None
+        self._flow_ws: WebSocket | None = None
+        self._aistudio_ws: WebSocket | None = None
+        self._bg_ws: WebSocket | None = None
+        self._all_ws: set[WebSocket] = set()
+
         self._companion_status: FlowCompanionStatus = FlowCompanionStatus()
         self._queue_paused: bool = False
 
@@ -104,30 +108,50 @@ class FlowBridgeOrchestrator:
         websocket: WebSocket,
         session_id: str,
         flow_project_id: str,
+        source: str = "",
     ) -> None:
         await websocket.accept()
         async with self._lock:
-            self._active_ws = websocket
-            self._companion_status = self._companion_status.model_copy(
-                update={
-                    "session_id": session_id,
-                    "connection_state": (
-                        FlowConnectionState.PAUSED
-                        if self._queue_paused
-                        else FlowConnectionState.IDLE
-                    ),
-                    "flow_project_id": flow_project_id,
-                    "queued_tasks_count": len(self._pending_queue),
-                    "completed_tasks_count": len(self._completed_results),
-                    "failed_tasks_count": len(self._failed_tasks),
-                    "last_heartbeat_at": utc_now_iso(),
-                }
-            )
-            logger.info(
-                "Chrome Flow Companion connected: session=%s flow_project=%s",
-                session_id,
-                flow_project_id,
-            )
+            self._all_ws.add(websocket)
+
+            is_aistudio = source == "AISTUDIO_PLAYGROUND" or "aistudio" in session_id.lower()
+            is_bg = source == "BG_SERVICE_WORKER" or "bg-worker" in session_id.lower()
+            is_flow = source == "FLOW_TAB" or (not is_aistudio and not is_bg)
+
+            if is_flow:
+                self._flow_ws = websocket
+                self._companion_status = self._companion_status.model_copy(
+                    update={
+                        "session_id": session_id,
+                        "connection_state": (
+                            FlowConnectionState.PAUSED
+                            if self._queue_paused
+                            else FlowConnectionState.IDLE
+                        ),
+                        "flow_project_id": flow_project_id,
+                        "queued_tasks_count": len(self._pending_queue),
+                        "completed_tasks_count": len(self._completed_results),
+                        "failed_tasks_count": len(self._failed_tasks),
+                        "last_heartbeat_at": utc_now_iso(),
+                    }
+                )
+                logger.info(
+                    "Chrome Flow Tab Companion connected: session=%s flow_project=%s",
+                    session_id,
+                    flow_project_id,
+                )
+            elif is_aistudio:
+                self._aistudio_ws = websocket
+                logger.info("Chrome AI Studio Companion connected: session=%s", session_id)
+            elif is_bg:
+                self._bg_ws = websocket
+                logger.info("Chrome Background Daemon connected: session=%s", session_id)
+
+            # Re-verify flow connection state
+            if self._flow_ws is None:
+                self._companion_status = self._companion_status.model_copy(
+                    update={"connection_state": FlowConnectionState.DISCONNECTED}
+                )
 
         # If a task was interrupted when the browser tab refreshed, re-queue it at the front
         async with self._lock:
@@ -149,8 +173,9 @@ class FlowBridgeOrchestrator:
 
     async def disconnect_companion(self, websocket: WebSocket) -> None:
         async with self._lock:
-            if self._active_ws is websocket:
-                self._active_ws = None
+            self._all_ws.discard(websocket)
+            if self._flow_ws is websocket:
+                self._flow_ws = None
                 self._companion_status = self._companion_status.model_copy(
                     update={
                         "connection_state": FlowConnectionState.DISCONNECTED,
@@ -158,6 +183,12 @@ class FlowBridgeOrchestrator:
                     }
                 )
                 logger.warning("Chrome Flow Companion WebSocket disconnected.")
+            elif self._aistudio_ws is websocket:
+                self._aistudio_ws = None
+                logger.info("Chrome AI Studio Companion WebSocket disconnected.")
+            elif self._bg_ws is websocket:
+                self._bg_ws = None
+                logger.info("Chrome Background Daemon WebSocket disconnected.")
 
     async def update_companion_status(self, payload: dict[str, Any]) -> FlowCompanionStatus:
         async with self._lock:
@@ -171,14 +202,16 @@ class FlowBridgeOrchestrator:
             }
             if self._queue_paused:
                 merged["connection_state"] = FlowConnectionState.PAUSED
+            elif self._flow_ws is None:
+                merged["connection_state"] = FlowConnectionState.DISCONNECTED
             self._companion_status = FlowCompanionStatus.model_validate(merged)
             return self._companion_status
 
     async def get_status(self) -> FlowCompanionStatus:
         async with self._lock:
-            # Check for stale heartbeat if socket appears open
+            # Check for stale heartbeat if Flow socket appears open
             if (
-                self._active_ws is not None
+                self._flow_ws is not None
                 and self._companion_status.connection_state != FlowConnectionState.DISCONNECTED
             ):
                 try:
@@ -190,6 +223,10 @@ class FlowBridgeOrchestrator:
                         )
                 except ValueError:
                     pass
+            elif self._flow_ws is None:
+                self._companion_status = self._companion_status.model_copy(
+                    update={"connection_state": FlowConnectionState.DISCONNECTED}
+                )
 
             return self._companion_status.model_copy(
                 update={
@@ -220,7 +257,7 @@ class FlowBridgeOrchestrator:
         async with self._lock:
             if (
                 self._queue_paused
-                or self._active_ws is None
+                or self._flow_ws is None
                 or self._in_flight_task is not None
                 or not self._pending_queue
             ):
@@ -231,7 +268,7 @@ class FlowBridgeOrchestrator:
                 update={"status": FlowTaskStatus.DISPATCHED}
             )
             self._in_flight_task = dispatched_task
-            ws = self._active_ws
+            ws = self._flow_ws
 
         envelope = FlowWsEnvelope(
             event_type="DISPATCH_TASK",
@@ -240,7 +277,7 @@ class FlowBridgeOrchestrator:
         )
         try:
             await ws.send_json(envelope.model_dump())
-            logger.info("Dispatched FlowGenerationTask %s to Companion", dispatched_task.task_id)
+            logger.info("Dispatched FlowGenerationTask %s to Flow Companion", dispatched_task.task_id)
         except Exception as exc:
             logger.error("Failed to dispatch task %s over WS: %s", dispatched_task.task_id, exc)
             async with self._lock:
@@ -251,11 +288,11 @@ class FlowBridgeOrchestrator:
 
     async def sync_ingredients(self, sync_req: FlowIngredientSync) -> dict[str, Any]:
         async with self._lock:
-            ws = self._active_ws
+            ws = self._flow_ws
         if ws is None:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Google Flow Chrome Companion is not currently connected.",
+                detail="Google Flow Chrome Companion tab is not currently connected.",
             )
 
         envelope = FlowWsEnvelope(
@@ -272,11 +309,11 @@ class FlowBridgeOrchestrator:
 
     async def configure_deck(self, settings: dict[str, Any]) -> dict[str, Any]:
         async with self._lock:
-            ws = self._active_ws
+            ws = self._flow_ws
         if ws is None:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Google Flow Chrome Companion is not currently connected.",
+                detail="Google Flow Chrome Companion tab is not currently connected.",
             )
         envelope = FlowWsEnvelope(
             event_type="CONFIGURE_DECK",
@@ -288,11 +325,11 @@ class FlowBridgeOrchestrator:
 
     async def sync_character(self, character_payload: dict[str, Any]) -> dict[str, Any]:
         async with self._lock:
-            ws = self._active_ws
+            ws = self._flow_ws
         if ws is None:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Google Flow Chrome Companion is not currently connected.",
+                detail="Google Flow Chrome Companion tab is not currently connected.",
             )
         envelope = FlowWsEnvelope(
             event_type="SYNC_CHARACTER",
@@ -304,11 +341,11 @@ class FlowBridgeOrchestrator:
 
     async def orchestrate_scene(self, scene_payload: dict[str, Any]) -> dict[str, Any]:
         async with self._lock:
-            ws = self._active_ws
+            ws = self._flow_ws
         if ws is None:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Google Flow Chrome Companion is not currently connected.",
+                detail="Google Flow Chrome Companion tab is not currently connected.",
             )
         envelope = FlowWsEnvelope(
             event_type="ORCHESTRATE_SCENE",
@@ -569,11 +606,11 @@ class FlowBridgeOrchestrator:
     async def dispatch_audio_task(self, audio_payload: dict[str, Any]) -> dict[str, Any]:
         """Dispatches an audio screenplay task to the connected AI Studio Companion."""
         async with self._lock:
-            ws = self._active_ws
+            ws = self._aistudio_ws or self._flow_ws or (next(iter(self._all_ws)) if self._all_ws else None)
         if ws is None:
             return {
                 "dispatched": False,
-                "reason": "AI Studio Companion is not currently connected.",
+                "reason": "Neither Google AI Studio nor Companion is currently connected.",
                 "payload": audio_payload,
             }
         envelope = FlowWsEnvelope(
@@ -613,15 +650,15 @@ class FlowBridgeOrchestrator:
                     )
                     self._pending_queue.append(task)
 
-            ws_to_notify = self._active_ws
+            sockets_to_notify = list(self._all_ws)
 
-        if ws_to_notify is not None:
-            envelope = FlowWsEnvelope(
-                event_type="CHAPTER_PACKAGE_SYNC",
-                payload=self._cached_chapter_package,
-            )
+        envelope = FlowWsEnvelope(
+            event_type="CHAPTER_PACKAGE_SYNC",
+            payload=self._cached_chapter_package,
+        )
+        for sock in sockets_to_notify:
             try:
-                await ws_to_notify.send_json(envelope.model_dump())
+                await sock.send_json(envelope.model_dump())
             except Exception as exc:
                 logger.warning("Failed to emit CHAPTER_PACKAGE_SYNC: %s", exc)
 
@@ -653,11 +690,13 @@ async def flow_companion_websocket(
     websocket: WebSocket,
     session_id: str = Query(default_factory=lambda: str(uuid4())),
     flow_project_id: str = Query(default="ea1ed436-e578-4327-9c9b-4f6b2e7e551d"),
+    source: str = Query(default=""),
 ) -> None:
     await flow_orchestrator.connect_companion(
         websocket=websocket,
         session_id=session_id,
         flow_project_id=flow_project_id,
+        source=source,
     )
     try:
         while True:
@@ -805,7 +844,7 @@ async def generate_chapter_audio(request: FlowAudioGenerateRequest) -> FlowAudio
     from app.services.flow_tts_service import execute_gemini_tts_synthesis
 
     output_dir = Path("output") / "flow_assets" / request.project_id / "chapters" / request.chapter_id
-    result = execute_gemini_tts_synthesis(request=request, output_dir=output_dir)
+    result = await asyncio.to_thread(execute_gemini_tts_synthesis, request=request, output_dir=output_dir)
     return result
 
 
@@ -823,6 +862,7 @@ class ChapterPackagePayload(BaseModel):
     candidate_count: int = 4
     total_frames: int = 0
     frames: list[dict[str, Any]] = []
+    characters: list[dict[str, Any]] = []
     auto_open_tabs: bool = True
 
 
