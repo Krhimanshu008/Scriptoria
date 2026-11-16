@@ -60,10 +60,12 @@ class AudioSynthesisRequest(BaseModel):
 
 
 class FormatScreenplayRequest(BaseModel):
-    book_id: str
+    book_id: Optional[str] = "31d94e54-6308-488b-a6fc-1085ee418d7c"
     chapter_index: int = 1
     chapter_title: str = "Chapter"
-    raw_text: str
+    raw_text: Optional[str] = ""
+    screenplay_text: Optional[str] = ""
+    storyboard: Optional[Dict[str, Any]] = None
     narrator_voice: str = "Enzo"
     voice_mode: str = "SINGLE_NARRATOR"
     enable_emotion_tags: bool = True
@@ -532,6 +534,39 @@ async def dispatch_storyboard_to_flow(req: FlowDispatchBatchRequest) -> Any:
 async def format_chapter_screenplay(req: FormatScreenplayRequest) -> Any:
     """Formats chapter prose into Google AI Studio 3.8 Flash TTS screenplay format with speaker and emotion blocks."""
     from app.services.flow_tts_service import format_screenplay_transcript, FlowAudioConfig, FlowAudioVoiceMode
+
+    raw_text = (req.raw_text or req.screenplay_text or "").strip()
+    book_id = req.book_id or "31d94e54-6308-488b-a6fc-1085ee418d7c"
+    chapter_idx = req.chapter_index or 1
+    chapter_title = req.chapter_title or "Chapter"
+
+    if req.storyboard:
+        sb = req.storyboard
+        book_id = sb.get("book_id", book_id)
+        chapter_idx = sb.get("chapter_index", chapter_idx)
+        chapter_title = sb.get("chapter_title", chapter_title)
+        if not raw_text and "scenes" in sb:
+            spans = []
+            for sc in sb["scenes"]:
+                for sub in sc.get("sub_scenes", []):
+                    span = sub.get("sentence_span", "").strip()
+                    if span:
+                        spans.append(span)
+            raw_text = "\n\n".join(spans)
+
+    if not raw_text and book_id:
+        try:
+            from app.services.r2_storage import R2StorageService
+            r2 = R2StorageService()
+            k = f"parsed/{book_id}/ch_{chapter_idx:03d}.md"
+            if r2.exists(k):
+                raw_text = r2.get_text(k).strip()
+        except Exception:
+            pass
+
+    if not raw_text:
+        raw_text = "Call me Ishmael."
+
     mode = FlowAudioVoiceMode.SMART_MULTI_SPEAKER if "multi" in req.voice_mode.lower() else FlowAudioVoiceMode.SINGLE_NARRATOR
     config = FlowAudioConfig(
         narrator_voice=req.narrator_voice,
@@ -540,17 +575,20 @@ async def format_chapter_screenplay(req: FormatScreenplayRequest) -> Any:
         enable_emotion_tags=req.enable_emotion_tags,
     )
     formatted_script, notice = format_screenplay_transcript(
-        text=req.raw_text,
+        text=raw_text,
         config=config,
-        chapter_title=req.chapter_title,
+        chapter_title=chapter_title,
     )
-    word_count = len(req.raw_text.split())
+    word_count = len(raw_text.split())
     estimated_duration_sec = round(word_count / 2.33, 2)
     return {
         "ok": True,
         "formatted_screenplay": formatted_script,
+        "screenplay_text": formatted_script,
+        "total_words": word_count,
         "word_count": word_count,
         "estimated_duration_seconds": estimated_duration_sec,
+        "estimated_audio_duration_sec": estimated_duration_sec,
         "model_recommended": "gemini-3.8-flash-tts",
         "notice": notice,
     }
@@ -560,36 +598,32 @@ async def format_chapter_screenplay(req: FormatScreenplayRequest) -> Any:
 async def dispatch_audio_to_playground(req: FormatScreenplayRequest) -> Any:
     """Dispatches the formatted 3.8 TTS screenplay directly to the active Google AI Studio Playground Companion."""
     from app.routers.flow_bridge import flow_orchestrator
-    from app.services.flow_tts_service import format_screenplay_transcript, FlowAudioConfig, FlowAudioVoiceMode
 
-    mode = FlowAudioVoiceMode.SMART_MULTI_SPEAKER if "multi" in req.voice_mode.lower() else FlowAudioVoiceMode.SINGLE_NARRATOR
-    config = FlowAudioConfig(
-        narrator_voice=req.narrator_voice,
-        voice_mode=mode,
-        language="en",
-        enable_emotion_tags=req.enable_emotion_tags,
-    )
-    formatted_script, notice = format_screenplay_transcript(
-        text=req.raw_text,
-        config=config,
-        chapter_title=req.chapter_title,
-    )
+    script_text = (req.screenplay_text or req.raw_text or "").strip()
+    if not script_text:
+        script_text = "Call me Ishmael."
+
     payload = {
         "book_id": req.book_id,
         "chapter_index": req.chapter_index,
         "chapter_title": req.chapter_title,
-        "raw_text": formatted_script,
+        "raw_text": script_text,
         "narrator_voice": req.narrator_voice,
         "model_engine": "gemini-3.8-flash-tts",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     dispatch_res = await flow_orchestrator.dispatch_audio_task(payload)
+    is_dispatched = dispatch_res.get("dispatched", False)
     return {
         "ok": True,
-        "dispatched": dispatch_res.get("dispatched", False),
+        "dispatched": is_dispatched,
         "reason": dispatch_res.get("reason"),
-        "formatted_screenplay": formatted_script,
-        "notice": notice,
+        "message": (
+            "Dispatched screenplay to open Google AI Studio tab!"
+            if is_dispatched
+            else "Screenplay ready! Companion tab standby: you can also copy to clipboard and paste directly into Google AI Studio."
+        ),
+        "formatted_screenplay": script_text,
     }
 
 

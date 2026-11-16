@@ -262,13 +262,22 @@ export function FlowTtsWorkstation() {
       const res = await fetch("/api/pipeline/storyboard/tts/format-screenplay", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ storyboard }),
+        body: JSON.stringify({
+          book_id: storyboard.book_id || selectedBookId,
+          chapter_index: storyboard.chapter_index || selectedChapterIdx,
+          chapter_title: storyboard.chapter_title || chapterTitle,
+          raw_text: chapterText,
+          storyboard,
+        }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Screenplay formatting failed");
-      setScreenplayScript(data.screenplay_text);
+      if (!res.ok) throw new Error(data.detail || data.error?.message || "Screenplay formatting failed");
+      const script = data.screenplay_text || data.formatted_screenplay || "";
+      setScreenplayScript(script);
       setIsTtsModalOpen(true);
-      toast.success(`Screenplay formatted for 3.8 TTS (${data.total_words} words, ~${Math.round(data.estimated_audio_duration_sec / 60)} min audio)`);
+      const words = data.total_words || data.word_count || 0;
+      const dur = data.estimated_audio_duration_sec || data.estimated_duration_seconds || Math.round(words / 2.33);
+      toast.success(`Screenplay formatted for 3.8 TTS (${words} words, ~${Math.round(dur / 60)} min audio)`);
     } catch (err: any) {
       toast.error(`Screenplay generation error: ${err.message}`);
     } finally {
@@ -358,7 +367,7 @@ export function FlowTtsWorkstation() {
         verbatim_excerpt: f.sentence_span,
       }));
 
-      const res = await fetch("/api/pipeline/storyboard/flow/dispatch-batch", {
+      const res = await fetch("/api/pipeline/storyboard/flow/dispatch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
