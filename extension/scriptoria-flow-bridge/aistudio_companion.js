@@ -96,14 +96,28 @@
     document.body.appendChild(dock);
 
     // Bind dock button events
-    document.getElementById("btn-inject-screenplay")?.addEventListener("click", () => {
-      if (lastDispatchedTask && lastDispatchedTask.raw_text) {
-        injectScreenplay(lastDispatchedTask.raw_text);
+    document.getElementById("btn-inject-screenplay")?.addEventListener("click", async () => {
+      let script = lastDispatchedTask && (lastDispatchedTask.raw_text || lastDispatchedTask.screenplay_transcript);
+      if (!script && typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+        const res = await new Promise((resolve) => chrome.storage.local.get(["scriptoria_active_chapter"], resolve));
+        script = res?.scriptoria_active_chapter?.screenplay_transcript;
+      }
+      if (script) {
+        injectScreenplay(script);
         updateDockStatus("Screenplay Injected into Playground!", "#34a853");
       } else {
         updateDockStatus("No screenplay queued from Scriptoria yet", "#f59e0b");
       }
     });
+
+    if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.get(["scriptoria_active_chapter"], (res) => {
+        const pkg = res?.scriptoria_active_chapter;
+        if (pkg && pkg.chapter_title) {
+          updateDockStatus(`${pkg.chapter_title} (${pkg.total_words || 2206}w) ready`, "#fbbf24");
+        }
+      });
+    }
 
     document.getElementById("btn-run-tts")?.addEventListener("click", () => {
       const genBtn = findGenerateButton();

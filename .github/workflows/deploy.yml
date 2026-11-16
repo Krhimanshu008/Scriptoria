@@ -10,6 +10,7 @@ jobs:
   deploy:
     name: Deploy to Oracle Ampere VM
     runs-on: ubuntu-latest
+    environment: ORACLE_SSH_KEY
 
     steps:
       - name: Checkout Code

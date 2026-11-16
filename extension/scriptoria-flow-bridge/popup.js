@@ -41,6 +41,13 @@
   const elPingIndicator = document.getElementById("ping-indicator");
   const elInfoWsStatus = document.getElementById("info-ws-status");
 
+  const elInfoChapterTitle = document.getElementById("info-chapter-title");
+  const elInfoChapterMeta = document.getElementById("info-chapter-meta");
+  const elBadgeChapterWords = document.getElementById("badge-chapter-words");
+  const elBtnLaunchFlow = document.getElementById("btn-launch-flow");
+  const elBtnLaunchAiStudio = document.getElementById("btn-launch-aistudio");
+  const elBtnLaunchBoth = document.getElementById("btn-launch-both");
+
   const elProjectId = document.getElementById("info-project-id");
   const elHeartbeat = document.getElementById("info-heartbeat");
   const elQueueEmpty = document.getElementById("queue-empty-msg");
@@ -130,6 +137,56 @@
         if (elPingIndicator) elPingIndicator.textContent = "ERR (Offline)";
       }
       await fetchStatus();
+    });
+  }
+
+  // ==========================================================================
+  // 0.1 Chapter Context Sync & Auto-Population
+  // ==========================================================================
+  async function initChapterContext() {
+    let pkg = null;
+    if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+      const res = await new Promise((resolve) => chrome.storage.local.get(["scriptoria_active_chapter"], resolve));
+      pkg = res && res.scriptoria_active_chapter;
+    }
+
+    if (!pkg) {
+      try {
+        const res = await fetch(`${getBaseUrl()}/api/v1/flow-bridge/chapter/package`, { cache: "no-store" });
+        if (res.ok) {
+          pkg = await res.json();
+        }
+      } catch (_) {}
+    }
+
+    if (pkg && pkg.chapter_title) {
+      if (elInfoChapterTitle) elInfoChapterTitle.textContent = pkg.chapter_title;
+      if (elBadgeChapterWords) elBadgeChapterWords.textContent = `${pkg.total_words || 2206} words`;
+      if (elInfoChapterMeta) {
+        const estMin = Math.round((pkg.estimated_audio_duration_sec || 946) / 60);
+        elInfoChapterMeta.textContent = `${pkg.total_frames || 90} Frames • Est. Runtime ~${estMin} min • Voice: ${pkg.narrator_voice || "Enzo"}`;
+      }
+      if (elInputAudioText && (!elInputAudioText.value || elInputAudioText.value.trim().length === 0)) {
+        if (pkg.screenplay_transcript) {
+          elInputAudioText.value = pkg.screenplay_transcript;
+        }
+      }
+    }
+  }
+
+  if (elBtnLaunchFlow) {
+    elBtnLaunchFlow.addEventListener("click", () => {
+      chrome.runtime.sendMessage({ action: "OPEN_FLOW_TAB" });
+    });
+  }
+  if (elBtnLaunchAiStudio) {
+    elBtnLaunchAiStudio.addEventListener("click", () => {
+      chrome.runtime.sendMessage({ action: "OPEN_AISTUDIO_TAB" });
+    });
+  }
+  if (elBtnLaunchBoth) {
+    elBtnLaunchBoth.addEventListener("click", () => {
+      chrome.runtime.sendMessage({ action: "OPEN_BOTH_TABS" });
     });
   }
 
@@ -487,6 +544,7 @@
   // Lifecycle
   (async function init() {
     await initConfig();
+    await initChapterContext();
     await fetchStatus();
     await fetchRecentCaptures();
     pollInterval = setInterval(fetchStatus, 3000);

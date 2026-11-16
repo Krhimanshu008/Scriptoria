@@ -32,6 +32,7 @@ import {
   RefreshCw,
   Maximize2,
   Minimize2,
+  Rocket,
 } from "lucide-react";
 import { toast } from "sonner";
 import type {
@@ -69,6 +70,7 @@ export function FlowTtsWorkstation() {
   const [copiedFrameIdx, setCopiedFrameIdx] = useState<number | null>(null);
   const [allPromptsCopied, setAllPromptsCopied] = useState(false);
   const [isDispatchingFlow, setIsDispatchingFlow] = useState(false);
+  const [isDispatchingMaster, setIsDispatchingMaster] = useState(false);
 
   // AI Studio 3.8 TTS Playground States
   const [isTtsModalOpen, setIsTtsModalOpen] = useState(false);
@@ -392,6 +394,77 @@ export function FlowTtsWorkstation() {
     }
   };
 
+  // Master 1-Click Launch: Sync Chapter Context, TTS Screenplay, and 90 Frames to Extension
+  const handleMasterChapterDispatch = async () => {
+    if (!storyboard) {
+      toast.error("No storyboard frames to dispatch.");
+      return;
+    }
+    setIsDispatchingMaster(true);
+    try {
+      let script = screenplayScript;
+      if (!script) {
+        const fmtRes = await fetch("/api/pipeline/storyboard/tts/format-screenplay", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            book_id: storyboard.book_id || selectedBookId,
+            chapter_index: storyboard.chapter_index || selectedChapterIdx,
+            chapter_title: storyboard.chapter_title,
+            storyboard: storyboard,
+          }),
+        });
+        if (fmtRes.ok) {
+          const fmtData = await fmtRes.json();
+          script = fmtData.screenplay_text || "";
+          setScreenplayScript(script);
+        }
+      }
+
+      const activeBook = books.find((b) => (b.book_id || b.id) === (storyboard.book_id || selectedBookId));
+
+      const payload = {
+        book_id: storyboard.book_id || selectedBookId,
+        book_title: activeBook?.title || "Moby Dick",
+        chapter_index: storyboard.chapter_index || selectedChapterIdx,
+        chapter_title: storyboard.chapter_title || `Chapter ${selectedChapterIdx}`,
+        total_words: storyboard.total_words || 2206,
+        estimated_audio_duration_sec: Math.round(((storyboard.total_words || 2206) / 140) * 60),
+        screenplay_transcript: script,
+        narrator_voice: "Enzo",
+        model_engine: "NANO_BANANA",
+        aspect_ratio: "16:9",
+        candidate_count: 4,
+        total_frames: storyboard.total_frames || allFlatFrames.length,
+        frames: allFlatFrames.map((f) => ({
+          frame_index: f.frame_index,
+          scene_id: f.scene_id,
+          compiled_image_prompt: f.compiled_image_prompt,
+          shot_type: f.shot_type,
+          lens: f.lens,
+        })),
+        auto_open_tabs: true,
+      };
+
+      const res = await fetch("/api/v1/flow-bridge/chapter/package", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Chapter Package sync failed");
+
+      toast.success(
+        `🚀 Swarm Synced! Dispatched ${payload.total_frames} frames & ${payload.total_words} words to Extension.`
+      );
+    } catch (err: any) {
+      toast.error(`Master Dispatch Error: ${err.message}`);
+    } finally {
+      setIsDispatchingMaster(false);
+    }
+  };
+
   // Copy Single Frame Prompt
   const handleCopyPrompt = (idx: number, prompt: string) => {
     navigator.clipboard.writeText(prompt);
@@ -620,6 +693,17 @@ export function FlowTtsWorkstation() {
                   <Tv className="h-3 w-3" /> Theater Mode (AV Sync)
                 </button>
               </div>
+
+              {/* Master 1-Click Launch Button */}
+              <button
+                onClick={handleMasterChapterDispatch}
+                disabled={isDispatchingMaster}
+                className="h-7 px-3.5 rounded bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-400 hover:to-orange-400 text-zinc-950 text-xs font-bold flex items-center gap-1.5 shadow-md transition disabled:opacity-50"
+                title="Synchronize screenplay transcript, 90 frames, and auto-open Google Flow + AI Studio tabs in Chrome"
+              >
+                {isDispatchingMaster ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Rocket className="h-3.5 w-3.5 text-zinc-950" />}
+                🚀 Launch Companion Swarm (Tabs + Context)
+              </button>
 
               {/* Format 3.8 TTS Screenplay Button */}
               <button

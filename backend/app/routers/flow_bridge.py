@@ -93,6 +93,7 @@ class FlowBridgeOrchestrator:
         self._completed_results: dict[str, FlowMediaResultEvent] = {}
         self._failed_tasks: dict[str, FlowGenerationTask] = {}
         self._recent_events: deque[FlowMediaResultEvent] = deque(maxlen=100)
+        self._cached_chapter_package: dict[str, Any] = {}
 
     # ==========================================================================
     # WebSocket Connection Lifecycle & Reconnection Recovery
@@ -582,6 +583,62 @@ class FlowBridgeOrchestrator:
         await ws.send_json(envelope.model_dump())
         return {"dispatched": True, "payload": audio_payload}
 
+    async def sync_chapter_package(self, pkg: "ChapterPackagePayload") -> dict[str, Any]:
+        async with self._lock:
+            self._cached_chapter_package = pkg.model_dump()
+            if pkg.frames:
+                self._pending_queue.clear()
+                aspect = (
+                    FlowAspectRatio.LANDSCAPE_16_9
+                    if "16:9" in pkg.aspect_ratio
+                    else FlowAspectRatio.SQUARE_1_1
+                )
+                engine = (
+                    FlowModelEngine.NANO_BANANA
+                    if "banana" in pkg.model_engine.lower()
+                    else FlowModelEngine.IMAGEN_3
+                )
+                for f in pkg.frames:
+                    frame_idx = f.get("frame_index", 1)
+                    prompt = f.get("compiled_image_prompt") or f.get("prompt", "")
+                    task = FlowGenerationTask(
+                        project_id=pkg.book_id,
+                        scene_id=f.get("scene_id", "sc01"),
+                        beat_id=f"beat_{frame_idx:03d}",
+                        prompt=prompt.strip(),
+                        aspect_ratio=aspect,
+                        model_engine=engine,
+                        candidate_count=pkg.candidate_count,
+                    )
+                    self._pending_queue.append(task)
+
+            ws_to_notify = self._active_ws
+
+        if ws_to_notify is not None:
+            envelope = FlowWsEnvelope(
+                event_type="CHAPTER_PACKAGE_SYNC",
+                payload=self._cached_chapter_package,
+            )
+            try:
+                await ws_to_notify.send_json(envelope.model_dump())
+            except Exception as exc:
+                logger.warning("Failed to emit CHAPTER_PACKAGE_SYNC: %s", exc)
+
+        if not self._queue_paused:
+            await self._try_dispatch_next()
+
+        return {
+            "ok": True,
+            "queued_count": len(self._pending_queue),
+            "chapter_title": pkg.chapter_title,
+            "total_words": pkg.total_words,
+            "auto_open_tabs": pkg.auto_open_tabs,
+        }
+
+    async def get_chapter_package(self) -> dict[str, Any]:
+        async with self._lock:
+            return self._cached_chapter_package
+
 
 # Singleton orchestrator instance
 flow_orchestrator = FlowBridgeOrchestrator()
@@ -749,4 +806,33 @@ async def generate_chapter_audio(request: FlowAudioGenerateRequest) -> FlowAudio
     output_dir = Path("output") / "flow_assets" / request.project_id / "chapters" / request.chapter_id
     result = execute_gemini_tts_synthesis(request=request, output_dir=output_dir)
     return result
+
+
+class ChapterPackagePayload(BaseModel):
+    book_id: str
+    book_title: str = "Active Novel"
+    chapter_index: int = 1
+    chapter_title: str = "Chapter 1"
+    total_words: int = 0
+    estimated_audio_duration_sec: float = 0.0
+    screenplay_transcript: str = ""
+    narrator_voice: str = "Enzo"
+    model_engine: str = "NANO_BANANA"
+    aspect_ratio: str = "16:9"
+    candidate_count: int = 4
+    total_frames: int = 0
+    frames: list[dict[str, Any]] = []
+    auto_open_tabs: bool = True
+
+
+@router.post("/chapter/package")
+async def dispatch_chapter_package(payload: ChapterPackagePayload) -> dict[str, Any]:
+    """Sync an entire chapter's audio screenplay and visual storyboard package to the companion."""
+    return await flow_orchestrator.sync_chapter_package(payload)
+
+
+@router.get("/chapter/package")
+async def get_active_chapter_package() -> dict[str, Any]:
+    """Fetch the currently active chapter package and metadata."""
+    return await flow_orchestrator.get_chapter_package()
 
