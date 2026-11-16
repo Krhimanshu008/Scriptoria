@@ -58,6 +58,12 @@
 ### Sprint 5: Tab 5 Live 5-Stage Stepper & QA Scorecard
 - [x] Scorecard Contracts (`scorecard_contracts.py` with `EdgeCaseCheckResult`, `ScorecardResponse`, `PipelineStageStatus`, `E2EPipelineRunRequest`, `E2EPipelineRunResponse`)
 - [x] Scorecard & Pipeline Stepper Router (`scorecard_stepper.py` with true sequential 5-stage runner and 15-check edge case invariant evaluation)
+- [x] Full UI Testbench Navigation & Layout Overhaul (Argon Architecture Spec):
+  - [x] Zero-clipping `CloudClusterPopover.tsx` consolidating R2, Supabase, Turso, and VM Swarm telemetry into a single badge
+  - [x] Horizontal 38px Checkpoints Stepper Ribbon (`TestbenchTabstrip.tsx`) replacing dual vertical rail
+  - [x] Auto-collapsing app sidebar to 56px (`w-14`) Icon Rail on `/testbench`
+  - [x] 100% full-viewport locked workspace (`w-[calc(100vw-3.5rem)]`) for deep 3-column test tools
+  - [x] Canonical contract parity verified (`sha256=f92dac5e...`), 0 TypeScript errors, commits `89f2aff` and `5f94a90` deployed
 - [x] Next.js Proxy Bridge (`/api/testbench/scorecard/*`)
 - [x] Interactive UI (`Tab5Scorecard.tsx` with live 5-stage sequential stepper replacing setTimeout mocks, and automated QA regression matrix with stage filtering and verifiable evidence strings)
 - [x] Full test pass: 56 passed, 3 skipped, 0 failures; zero contract drift (`f92dac5e...`); commit `f54b2fb` pushed to `origin/main`
