@@ -139,6 +139,12 @@ function unwrapResponse<T>(
     let errorMsg: string | null = null;
     if (typeof obj.error === "string") {
       errorMsg = obj.error;
+    } else if (
+      obj.error &&
+      typeof obj.error === "object" &&
+      "message" in (obj.error as Record<string, unknown>)
+    ) {
+      errorMsg = String((obj.error as Record<string, unknown>).message);
     } else if (typeof obj.detail === "string") {
       errorMsg = obj.detail;
     } else if (Array.isArray(obj.detail)) {
@@ -488,11 +494,24 @@ export function FastApiBridgeCard() {
       {/* Section 1: Subsystem Health Indicators */}
       <div className="mt-4">
         {healthError && (
-          <div className="mb-4 flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-950/50 px-3.5 py-2.5 text-xs text-red-200">
-            <XCircle className="h-4 w-4 text-red-400 shrink-0" />
-            <span>
-              <strong>Health Probe Error:</strong> {healthError}
-            </span>
+          <div className="mb-4 flex flex-col gap-2 rounded-lg border border-amber-500/40 bg-amber-950/40 p-3.5 text-xs text-amber-200">
+            <div className="flex items-center gap-2 font-semibold text-amber-300">
+              <Activity className="h-4 w-4 shrink-0 text-amber-400" />
+              <span>FastAPI Backend Bridge Status</span>
+            </div>
+            <p className="text-zinc-300">
+              <strong>Health Notice:</strong> {healthError}
+            </p>
+            <div className="mt-1 flex flex-col gap-1 rounded bg-zinc-950/80 p-2 font-mono text-[11px] text-zinc-400 border border-zinc-800">
+              <div>
+                <span className="text-amber-400 font-semibold">Local Run:</span>{" "}
+                <code>python -m uvicorn app.main:app --app-dir backend --port 8000 --reload</code>
+              </div>
+              <div>
+                <span className="text-amber-400 font-semibold">Vercel/Remote:</span> Configure{" "}
+                <code>SCRIPTORIA_FASTAPI_URL</code> to point to your live Cloudflare / Kaggle VM tunnel.
+              </div>
+            </div>
           </div>
         )}
 

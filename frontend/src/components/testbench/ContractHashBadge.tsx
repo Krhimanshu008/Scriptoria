@@ -64,12 +64,26 @@ function unwrapBridgeResponse<T>(
 
     const traceId = headerTraceId || bodyTraceId || null;
 
-    const errorMsg =
-      typeof obj.error === "string"
-        ? obj.error
-        : typeof obj.detail === "string"
-          ? obj.detail
-          : null;
+    let errorMsg: string | null = null;
+    if (typeof obj.error === "string") {
+      errorMsg = obj.error;
+    } else if (
+      obj.error &&
+      typeof obj.error === "object" &&
+      "message" in (obj.error as Record<string, unknown>)
+    ) {
+      errorMsg = String((obj.error as Record<string, unknown>).message);
+    } else if (typeof obj.detail === "string") {
+      errorMsg = obj.detail;
+    } else if (Array.isArray(obj.detail)) {
+      errorMsg = obj.detail
+        .map((item) =>
+          item && typeof item === "object" && "msg" in item
+            ? String((item as Record<string, unknown>).msg)
+            : JSON.stringify(item)
+        )
+        .join("; ");
+    }
 
     if (nestedData) {
       return {
@@ -216,13 +230,13 @@ export function ContractHashBadge({
 
   return (
     <div
-      className={`inline-flex flex-wrap items-center gap-2 text-xs font-mono ${className}`}
+      className={`inline-flex flex-nowrap items-center gap-2 text-xs font-mono shrink-0 ${className}`}
     >
       {/* Contract Hash Status Pill with Hover Tooltip */}
-      <div className="relative group">
+      <div className="relative group shrink-0">
         {status === "loading" && (
           <div
-            className="inline-flex items-center gap-1.5 rounded-full border border-zinc-700 bg-zinc-900/90 px-3 py-1 text-zinc-300 shadow-sm"
+            className="inline-flex items-center gap-1.5 rounded-full border border-zinc-700 bg-zinc-900/90 px-3 py-1 text-zinc-300 shadow-sm shrink-0"
             title="Fetching /api/testbench/contracts..."
           >
             <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-400" />
@@ -235,7 +249,7 @@ export function ContractHashBadge({
             type="button"
             onClick={handleCopyFullHash}
             title={tooltipSummary}
-            className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-950/60 px-3 py-1 text-emerald-300 shadow-sm transition-colors hover:border-emerald-400/70 hover:bg-emerald-950/80"
+            className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-950/60 px-3 py-1 text-emerald-300 shadow-sm transition-colors hover:border-emerald-400/70 hover:bg-emerald-950/80 shrink-0"
           >
             <ShieldCheck className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
             <span>
@@ -250,7 +264,7 @@ export function ContractHashBadge({
             type="button"
             onClick={handleCopyFullHash}
             title={tooltipSummary}
-            className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/60 bg-amber-950/75 px-3 py-1 text-amber-200 shadow-sm transition-colors hover:border-red-400 hover:bg-red-950/80"
+            className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/60 bg-amber-950/75 px-3 py-1 text-amber-200 shadow-sm transition-colors hover:border-red-400 hover:bg-red-950/80 shrink-0"
           >
             <AlertTriangle className="h-3.5 w-3.5 text-amber-400 shrink-0" />
             <span>
@@ -264,10 +278,10 @@ export function ContractHashBadge({
             type="button"
             onClick={() => void verifyContracts()}
             title={tooltipSummary}
-            className="inline-flex items-center gap-1.5 rounded-full border border-red-500/50 bg-red-950/70 px-3 py-1 text-red-300 shadow-sm transition-colors hover:border-red-400"
+            className="inline-flex items-center gap-1.5 rounded-full border border-red-500/50 bg-red-950/70 px-3 py-1 text-red-300 shadow-sm transition-colors hover:border-red-400 shrink-0"
           >
             <ShieldAlert className="h-3.5 w-3.5 text-red-400 shrink-0" />
-            <span>Contract Unreachable (Retry)</span>
+            <span>FastAPI Offline (Retry)</span>
           </button>
         )}
 

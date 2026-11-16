@@ -41,7 +41,6 @@ const NAV_GROUPS = [
     section: "Intelligence & Studio",
     items: [
       { href: "/testbench", label: "Pipeline Testbench", icon: Wrench },
-      { href: "/visualiser-lab", label: "Pipeline Test Lab", icon: Film },
       { href: "/llm-studio", label: "LLM Studio", icon: Bot },
       { href: "/studio", label: "Studio", icon: Sparkles },
       { href: "/history", label: "Outputs", icon: Images },

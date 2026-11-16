@@ -181,7 +181,7 @@ export function TestbenchTopBar({
         </div>
 
         {/* Center: Live Cloud Health & VM Swarm State */}
-        <div className="hidden lg:flex items-center gap-2">
+        <div className="hidden lg:flex items-center gap-2 flex-nowrap shrink-0">
           {/* Contract Hash Parity Badge */}
           <ContractHashBadge />
 
