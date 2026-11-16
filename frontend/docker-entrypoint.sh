@@ -15,4 +15,10 @@ if [ ! -f /app/data/scriptoria.db ]; then
   fi
 fi
 
+# Preload WebSocket Reverse Proxy if ws-proxy.js exists
+if [ -f /app/ws-proxy.js ]; then
+  export NODE_OPTIONS="--require /app/ws-proxy.js ${NODE_OPTIONS:-}"
+  echo "[scriptoria-web] Preloaded /app/ws-proxy.js into Node runtime."
+fi
+
 exec "$@"

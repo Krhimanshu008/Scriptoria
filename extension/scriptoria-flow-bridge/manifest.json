@@ -34,8 +34,12 @@
     "https://*.aistudio.google.com/*",
     "https://labs.google/*",
     "https://*.googleusercontent.com/*",
+    "https://scriptoria.krhimanshu.in/*",
+    "wss://scriptoria.krhimanshu.in/*",
     "http://127.0.0.1:8000/*",
-    "ws://127.0.0.1:8000/*"
+    "ws://127.0.0.1:8000/*",
+    "http://localhost:8000/*",
+    "ws://localhost:8000/*"
   ],
   "content_scripts": [
     {
@@ -47,6 +51,7 @@
         "https://labs.google/fx/*"
       ],
       "js": [
+        "config.js",
         "flow_deck_controller.js",
         "flow_character_sync.js",
         "flow_scene_sync.js",
@@ -61,6 +66,7 @@
         "https://*.aistudio.google.com/*"
       ],
       "js": [
+        "config.js",
         "aistudio_companion.js"
       ],
       "run_at": "document_start",

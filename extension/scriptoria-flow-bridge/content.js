@@ -19,11 +19,18 @@
   }
   window.__SCRIPTORIA_FLOW_CONTENT_ACTIVE__ = true;
 
-  const WS_ENDPOINT = "ws://127.0.0.1:8000/api/v1/flow-bridge/ws";
   const DEFAULT_FLOW_PROJECT_ID = "ea1ed436-e578-4327-9c9b-4f6b2e7e551d";
   const HEARTBEAT_INTERVAL_MS = 8_000;
   const RECONNECT_BASE_DELAY_MS = 2_000;
   const RECONNECT_MAX_DELAY_MS = 20_000;
+
+  async function resolveWsEndpoint() {
+    if (window.ScriptoriaConfig) {
+      const cfg = await window.ScriptoriaConfig.get();
+      return window.ScriptoriaConfig.getWsUrl(cfg);
+    }
+    return "wss://scriptoria.krhimanshu.in/api/v1/flow-bridge/ws";
+  }
 
   const SESSION_ID = crypto.randomUUID
     ? crypto.randomUUID()
@@ -1143,13 +1150,14 @@
     }
   }
 
-  function connectWebSocket() {
+  async function connectWebSocket() {
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
       return;
     }
 
+    const baseWs = await resolveWsEndpoint();
     const flowProjectId = detectFlowProjectId();
-    const wsUrl = `${WS_ENDPOINT}?session_id=${encodeURIComponent(
+    const wsUrl = `${baseWs}?session_id=${encodeURIComponent(
       SESSION_ID
     )}&flow_project_id=${encodeURIComponent(flowProjectId)}`;
 
@@ -1421,6 +1429,21 @@
         if (editor) {
           await injectMentionToken(editor, msg.handle);
         }
+      }
+    });
+  }
+
+  // Listen for dynamic server switches in popup
+  if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.onChanged) {
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName === "local" && changes.scriptoria_bridge_config) {
+        console.info("[Scriptoria Companion] Server config updated. Reconnecting WebSocket...");
+        if (ws) {
+          try {
+            ws.close();
+          } catch (_) {}
+        }
+        connectWebSocket();
       }
     });
   }

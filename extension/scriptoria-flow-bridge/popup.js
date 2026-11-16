@@ -2,11 +2,30 @@
 (function () {
   "use strict";
 
-  const BASE_URL = "http://127.0.0.1:8000";
-  const STATUS_ENDPOINT = `${BASE_URL}/api/v1/flow-bridge/status`;
-  const TASKS_ENDPOINT = `${BASE_URL}/api/v1/flow-bridge/tasks`;
-  const ACTION_ENDPOINT = `${BASE_URL}/api/v1/flow-bridge/queue/action`;
-  const EVENTS_ENDPOINT = `${BASE_URL}/api/v1/flow-bridge/events/recent`;
+  let currentConfig = window.ScriptoriaConfig ? window.ScriptoriaConfig.DEFAULT : {
+    server_mode: "cloud",
+    cloud_url: "https://scriptoria.krhimanshu.in",
+    cloud_ws: "wss://scriptoria.krhimanshu.in/api/v1/flow-bridge/ws",
+    local_url: "http://127.0.0.1:8000",
+    local_ws: "ws://127.0.0.1:8000/api/v1/flow-bridge/ws",
+  };
+
+  function getBaseUrl() {
+    return window.ScriptoriaConfig
+      ? window.ScriptoriaConfig.getBaseUrl(currentConfig)
+      : "https://scriptoria.krhimanshu.in";
+  }
+
+  function getWsUrl() {
+    return window.ScriptoriaConfig
+      ? window.ScriptoriaConfig.getWsUrl(currentConfig)
+      : "wss://scriptoria.krhimanshu.in/api/v1/flow-bridge/ws";
+  }
+
+  function getStatusEndpoint() { return `${getBaseUrl()}/api/v1/flow-bridge/status`; }
+  function getTasksEndpoint() { return `${getBaseUrl()}/api/v1/flow-bridge/tasks`; }
+  function getActionEndpoint() { return `${getBaseUrl()}/api/v1/flow-bridge/queue/action`; }
+  function getEventsEndpoint() { return `${getBaseUrl()}/api/v1/flow-bridge/events/recent`; }
 
   let pollInterval = null;
   let activeProjectId = "ea1ed436-e578-4327-9c9b-4f6b2e7e551d";
@@ -14,6 +33,14 @@
   // Elements
   const elConnectionBadge = document.getElementById("connection-badge");
   const elConnectionText = document.getElementById("connection-text");
+  const elSelectServerMode = document.getElementById("select-server-mode");
+  const elCustomServerRow = document.getElementById("custom-server-row");
+  const elInputCustomUrl = document.getElementById("input-custom-url");
+  const elBtnTestConnection = document.getElementById("btn-test-connection");
+  const elBtnSwitchServer = document.getElementById("btn-switch-server");
+  const elPingIndicator = document.getElementById("ping-indicator");
+  const elInfoWsStatus = document.getElementById("info-ws-status");
+
   const elProjectId = document.getElementById("info-project-id");
   const elHeartbeat = document.getElementById("info-heartbeat");
   const elQueueEmpty = document.getElementById("queue-empty-msg");
@@ -31,6 +58,80 @@
   const elBtnPause = document.getElementById("btn-pause-queue");
   const elBtnClear = document.getElementById("btn-clear-queue");
   const elBtnRefresh = document.getElementById("btn-refresh-status");
+
+  // ==========================================================================
+  // 0. Configuration Management
+  // ==========================================================================
+  async function initConfig() {
+    if (window.ScriptoriaConfig) {
+      currentConfig = await window.ScriptoriaConfig.get();
+    }
+    if (elSelectServerMode) {
+      elSelectServerMode.value = currentConfig.server_mode || "cloud";
+    }
+    if (elInputCustomUrl && currentConfig.custom_url) {
+      elInputCustomUrl.value = currentConfig.custom_url;
+    }
+    if (elCustomServerRow) {
+      if (currentConfig.server_mode === "custom") {
+        elCustomServerRow.classList.remove("hidden");
+      } else {
+        elCustomServerRow.classList.add("hidden");
+      }
+    }
+    if (elInfoWsStatus) {
+      elInfoWsStatus.textContent = getWsUrl();
+      elInfoWsStatus.title = getWsUrl();
+    }
+  }
+
+  if (elSelectServerMode) {
+    elSelectServerMode.addEventListener("change", () => {
+      const mode = elSelectServerMode.value;
+      if (mode === "custom") {
+        elCustomServerRow?.classList.remove("hidden");
+      } else {
+        elCustomServerRow?.classList.add("hidden");
+      }
+    });
+  }
+
+  if (elBtnSwitchServer) {
+    elBtnSwitchServer.addEventListener("click", async () => {
+      const mode = elSelectServerMode?.value || "cloud";
+      const customUrl = (elInputCustomUrl?.value || "").trim();
+      if (window.ScriptoriaConfig) {
+        currentConfig = await window.ScriptoriaConfig.set({
+          server_mode: mode,
+          custom_url: customUrl,
+        });
+      }
+      if (elInfoWsStatus) {
+        elInfoWsStatus.textContent = getWsUrl();
+        elInfoWsStatus.title = getWsUrl();
+      }
+      await fetchStatus();
+    });
+  }
+
+  if (elBtnTestConnection) {
+    elBtnTestConnection.addEventListener("click", async () => {
+      if (elPingIndicator) elPingIndicator.textContent = "pinging...";
+      const t0 = performance.now();
+      try {
+        const res = await fetch(getStatusEndpoint(), { cache: "no-store" });
+        const latency = Math.round(performance.now() - t0);
+        if (res.ok) {
+          if (elPingIndicator) elPingIndicator.textContent = `${latency}ms OK`;
+        } else {
+          if (elPingIndicator) elPingIndicator.textContent = `HTTP ${res.status}`;
+        }
+      } catch (err) {
+        if (elPingIndicator) elPingIndicator.textContent = "ERR (Offline)";
+      }
+      await fetchStatus();
+    });
+  }
 
   // ==========================================================================
   // 1. Tab Switching
@@ -56,7 +157,7 @@
   // ==========================================================================
   async function fetchStatus() {
     try {
-      const res = await fetch(STATUS_ENDPOINT, { cache: "no-store" });
+      const res = await fetch(getStatusEndpoint(), { cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
 
@@ -66,17 +167,18 @@
         elProjectId.title = activeProjectId;
       }
 
-      if (elHeartbeat) {
+      if (elHeartbeat && data.last_heartbeat_at) {
         const d = new Date(data.last_heartbeat_at);
         elHeartbeat.textContent = d.toLocaleTimeString();
       }
 
       // Update Badge
-      const state = data.connection_state || "DISCONNECTED";
+      const state = data.connection_state || "IDLE";
       elConnectionBadge.className = "badge";
       if (state === "IDLE") {
         elConnectionBadge.classList.add("badge-connected");
-        elConnectionText.textContent = "CONNECTED (IDLE)";
+        const modeLabel = currentConfig.server_mode === "local" ? "LOCAL" : "CLOUD";
+        elConnectionText.textContent = `CONNECTED (${modeLabel})`;
       } else if (state === "BUSY_GENERATING") {
         elConnectionBadge.classList.add("badge-busy");
         elConnectionText.textContent = "GENERATING";
@@ -85,19 +187,24 @@
         elConnectionText.textContent = state;
       }
 
-      // Update Task
+      // Update Task / Queue Status
       if (data.active_task_id) {
         elQueueEmpty.classList.add("hidden");
         elActiveTaskCard.classList.remove("hidden");
-        elTaskPrompt.textContent = `Task: ${data.active_task_id.slice(0, 8)}...`;
+        elTaskPrompt.textContent = `Active Task: ${data.active_task_id.slice(0, 8)}...`;
       } else {
-        elQueueEmpty.classList.remove("hidden");
         elActiveTaskCard.classList.add("hidden");
+        elQueueEmpty.classList.remove("hidden");
+        if (data.queued_tasks_count > 0) {
+          elQueueEmpty.textContent = `📋 ${data.queued_tasks_count} tasks queued on server`;
+        } else {
+          elQueueEmpty.textContent = "No pending tasks in queue";
+        }
       }
     } catch (err) {
       elConnectionBadge.className = "badge badge-disconnected";
       elConnectionText.textContent = "BRIDGE OFFLINE";
-      if (elProjectId) elProjectId.textContent = "FastAPI Disconnected";
+      if (elProjectId) elProjectId.textContent = "Unreachable";
     }
   }
 
@@ -106,7 +213,7 @@
   // ==========================================================================
   async function fetchRecentCaptures() {
     try {
-      const res = await fetch(EVENTS_ENDPOINT, { cache: "no-store" });
+      const res = await fetch(getEventsEndpoint(), { cache: "no-store" });
       if (!res.ok) return;
       const events = await res.json();
 
@@ -177,7 +284,7 @@
           candidate_count: elSelectCandidates ? parseInt(elSelectCandidates.value, 10) : 4,
         };
 
-        const res = await fetch(TASKS_ENDPOINT, {
+        const res = await fetch(getTasksEndpoint(), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
@@ -233,7 +340,7 @@
   if (elBtnPause) {
     elBtnPause.addEventListener("click", async () => {
       try {
-        await fetch(ACTION_ENDPOINT, {
+        await fetch(getActionEndpoint(), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "PAUSE" }),
@@ -246,7 +353,7 @@
   if (elBtnClear) {
     elBtnClear.addEventListener("click", async () => {
       try {
-        await fetch(ACTION_ENDPOINT, {
+        await fetch(getActionEndpoint(), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "FLUSH_ALL" }),
@@ -338,7 +445,7 @@
           },
         };
 
-        const res = await fetch(`${BASE_URL}/api/v1/flow-bridge/audio/generate`, {
+        const res = await fetch(`${getBaseUrl()}/api/v1/flow-bridge/audio/generate`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
@@ -358,8 +465,8 @@
             elAudioBanner.innerHTML = `✅ <strong>Completed:</strong> ${data.user_notification}`;
           }
           if (elAudioPlayer) {
-            // Serve via local endpoint or file
-            elAudioPlayer.src = `http://127.0.0.1:8000/api/v1/flow-bridge/status`; // trigger load
+            // Serve via dynamic status endpoint
+            elAudioPlayer.src = `${getBaseUrl()}/api/v1/flow-bridge/status`;
           }
         } else {
           alert(`Audio generation error: ${data.error_message || "Unknown error"}`);
@@ -375,9 +482,12 @@
   }
 
   // Lifecycle
-  fetchStatus();
-  fetchRecentCaptures();
-  pollInterval = setInterval(fetchStatus, 3000);
+  (async function init() {
+    await initConfig();
+    await fetchStatus();
+    await fetchRecentCaptures();
+    pollInterval = setInterval(fetchStatus, 3000);
+  })();
 
   window.addEventListener("unload", () => {
     if (pollInterval) clearInterval(pollInterval);

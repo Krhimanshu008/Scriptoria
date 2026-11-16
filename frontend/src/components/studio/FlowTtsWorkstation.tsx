@@ -84,6 +84,7 @@ export function FlowTtsWorkstation() {
   const [audioDuration, setAudioDuration] = useState<number>(0);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [activeFrameIndex, setActiveFrameIndex] = useState<number>(1);
+  const [selectedCandidates, setSelectedCandidates] = useState<Record<number, number>>({});
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   // Load books on mount
@@ -712,9 +713,33 @@ export function FlowTtsWorkstation() {
 
                 {/* Top Overlay Badge */}
                 <div className="relative z-10 flex items-center justify-between p-3 bg-gradient-to-b from-black/80 to-transparent">
-                  <span className="rounded bg-black/60 border border-zinc-700 px-2 py-0.5 text-xs font-mono font-semibold text-amber-400">
-                    Frame #{String(activeTheaterFrame?.frame_index || 1).padStart(2, "0")}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="rounded bg-black/60 border border-zinc-700 px-2 py-0.5 text-xs font-mono font-semibold text-amber-400">
+                      Frame #{String(activeTheaterFrame?.frame_index || 1).padStart(2, "0")}
+                    </span>
+                    {/* 4-Candidate Switcher in Theater Mode */}
+                    <div className="flex items-center gap-1 bg-black/70 px-2 py-0.5 rounded border border-zinc-700">
+                      <span className="text-[10px] font-mono text-zinc-400 mr-0.5">Pick:</span>
+                      {[0, 1, 2, 3].map((candIdx) => {
+                        const frameIdx = activeTheaterFrame?.frame_index || 1;
+                        const isSel = (selectedCandidates[frameIdx] ?? 0) === candIdx;
+                        return (
+                          <button
+                            key={candIdx}
+                            onClick={() => setSelectedCandidates((prev) => ({ ...prev, [frameIdx]: candIdx }))}
+                            className={`px-1.5 py-0.2 rounded text-[10px] font-mono transition ${
+                              isSel
+                                ? "bg-amber-500 text-zinc-950 font-bold"
+                                : "bg-zinc-800 text-zinc-400 hover:text-zinc-200"
+                            }`}
+                            title={`Select Flow Candidate #${candIdx + 1}`}
+                          >
+                            #{candIdx + 1}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
                   <span className="text-xs text-zinc-300 bg-black/60 px-2 py-0.5 rounded border border-zinc-800">
                     {formatTime(activeTheaterFrame?.audio_start_sec || 0)} - {formatTime(activeTheaterFrame?.audio_end_sec || 0)}
                   </span>
@@ -865,6 +890,33 @@ export function FlowTtsWorkstation() {
                         {/* Modular Generation Prompt */}
                         <div className="mt-2 rounded bg-zinc-950/80 p-2 text-[11px] text-zinc-400 font-mono line-clamp-3">
                           {sub.compiled_image_prompt}
+                        </div>
+
+                        {/* 4-Candidate Switcher Bar */}
+                        <div className="mt-2 flex items-center justify-between rounded bg-zinc-950/70 px-2 py-1 border border-zinc-800/80">
+                          <div className="flex items-center gap-1">
+                            <span className="text-[10px] text-zinc-500 font-mono">Candidate:</span>
+                            {[0, 1, 2, 3].map((candIdx) => {
+                              const isSel = (selectedCandidates[sub.frame_index] ?? 0) === candIdx;
+                              return (
+                                <button
+                                  key={candIdx}
+                                  onClick={() => setSelectedCandidates((prev) => ({ ...prev, [sub.frame_index]: candIdx }))}
+                                  className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-medium transition ${
+                                    isSel
+                                      ? "bg-amber-500 text-zinc-950 font-bold shadow-sm"
+                                      : "bg-zinc-800 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700"
+                                  }`}
+                                  title={`Select Flow Candidate #${candIdx + 1}`}
+                                >
+                                  #{candIdx + 1}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <span className="text-[10px] font-mono text-zinc-500">
+                            Active: <span className="text-amber-400 font-bold">#{(selectedCandidates[sub.frame_index] ?? 0) + 1}</span>
+                          </span>
                         </div>
                       </div>
 

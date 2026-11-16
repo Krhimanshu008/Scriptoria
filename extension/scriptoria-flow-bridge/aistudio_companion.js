@@ -19,7 +19,14 @@
   }
   window.__SCRIPTORIA_AISTUDIO_ACTIVE__ = true;
 
-  const DEFAULT_WS_ENDPOINT = "ws://127.0.0.1:8000/api/v1/flow-bridge/ws";
+  async function resolveWsEndpoint() {
+    if (window.ScriptoriaConfig) {
+      const cfg = await window.ScriptoriaConfig.get();
+      return window.ScriptoriaConfig.getWsUrl(cfg);
+    }
+    return "wss://scriptoria.krhimanshu.in/api/v1/flow-bridge/ws";
+  }
+
   let ws = null;
   let reconnectTimer = null;
   let heartbeatTimer = null;
@@ -268,13 +275,14 @@
   // ==========================================================================
   // 4. WebSocket Connection to Scriptoria FastAPI Bridge
   // ==========================================================================
-  function connectWebSocket() {
+  async function connectWebSocket() {
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
       return;
     }
 
+    const baseWs = await resolveWsEndpoint();
     try {
-      ws = new WebSocket(`${DEFAULT_WS_ENDPOINT}?session_id=aistudio-${Date.now()}&source=AI_STUDIO`);
+      ws = new WebSocket(`${baseWs}?session_id=aistudio-${Date.now()}&source=AI_STUDIO`);
     } catch (err) {
       console.warn("[Scriptoria AI Studio] Could not initiate WS connection:", err);
       scheduleReconnect();
@@ -350,6 +358,19 @@
   function scheduleReconnect() {
     if (reconnectTimer) clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(connectWebSocket, 5000);
+  }
+
+  // Reconnect if server mode changes
+  if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.onChanged) {
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName === "local" && changes.scriptoria_bridge_config) {
+        console.info("[Scriptoria AI Studio] Bridge config changed. Reconnecting WS...");
+        if (ws) {
+          try { ws.close(); } catch (_) {}
+        }
+        connectWebSocket();
+      }
+    });
   }
 
   // Initialize on page load
