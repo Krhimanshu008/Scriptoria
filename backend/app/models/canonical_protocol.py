@@ -302,6 +302,10 @@ class SubSceneFrame(BaseModel):
     active_characters: List[CharacterFrameState] = Field(default_factory=list, description="Characters visible in frame with posture/gaze")
     spatial_environment_focus: str = Field(..., description="Specific zone of the location in view")
     compiled_image_prompt: str = Field(..., description="Complete production prompt formatted for Imagen 3 / Nano Banana / Flux")
+    audio_start_sec: Optional[float] = Field(default=None, description="Start timestamp of spoken span in chapter audio track")
+    audio_end_sec: Optional[float] = Field(default=None, description="End timestamp of spoken span in chapter audio track")
+    audio_duration_sec: Optional[float] = Field(default=None, description="Duration in seconds of spoken sentence span")
+    image_asset_url: Optional[str] = Field(default=None, description="Resolved URL of generated Flow/ComfyUI image asset")
 
 
 class MacroScene(BaseModel):
@@ -325,6 +329,7 @@ class HighDensityChapterStoryboard(BaseModel):
     chapter_title: str
     total_words: int
     total_frames: int = Field(..., ge=1, le=200, description="Total storyboard frames (typically 80 to 100)")
+    audio_track_url: Optional[str] = Field(default=None, description="URL of synthesized 24kHz chapter audio track")
     scenes: List[MacroScene] = Field(default_factory=list)
 
 

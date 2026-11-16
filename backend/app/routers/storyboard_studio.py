@@ -36,8 +36,26 @@ class DecomposeChapterRequest(BaseModel):
     )
     engine: Optional[str] = Field(
         default="deterministic",
-        description="Decomposition engine: 'deterministic' (fast rule-based) or 'multi_ai_brain' (Gemini cognitive swarm)"
+        description="Decomposition engine: 'deterministic', 'multi_ai_brain' (Gemini), or 'qwen_swarm' (Dual Kaggle VMs)"
     )
+
+
+class FlowDispatchBatchRequest(BaseModel):
+    book_id: str
+    chapter_index: int
+    chapter_title: str = "Chapter"
+    frames: List[Dict[str, Any]]
+    aspect_ratio: str = "16:9"
+    model_engine: str = "nano_banana"
+
+
+class AudioSynthesisRequest(BaseModel):
+    book_id: str
+    chapter_index: int
+    chapter_title: str = "Chapter"
+    raw_text: str
+    narrator_voice: str = "Enzo"
+    voice_mode: str = "SINGLE_NARRATOR"
 
 
 class ValidateStoryboardRequest(BaseModel):
@@ -100,8 +118,9 @@ def _slice_scene_into_subscenes(
     frames_allocated: int,
     start_frame_idx: int,
     global_style: str,
-) -> List[SubSceneFrame]:
-    """Slices a macro scene into 12-16 atomic visual frames (~20-25 words each)."""
+    start_audio_sec: float = 0.0,
+) -> tuple[List[SubSceneFrame], float]:
+    """Slices a macro scene into 12-16 atomic visual frames with audio timestamp tracking."""
     text = scene["text"]
     scene_id = scene["scene_id"]
     
@@ -127,6 +146,8 @@ def _slice_scene_into_subscenes(
     ]
 
     current_char = scene["char_start"]
+    current_audio_time = start_audio_sec
+
     for i in range(frames_allocated):
         frame_idx = start_frame_idx + i
         s_start_idx = int(i * step)
@@ -143,6 +164,13 @@ def _slice_scene_into_subscenes(
         char_start = current_char
         char_end = char_start + char_len
         current_char = char_end
+
+        # Audio timestamp calculation (at ~140 wpm natural narration rate = ~2.33 words/second)
+        word_count = len(sentence_span.split())
+        audio_dur = round(max(2.0, word_count / 2.33), 2)
+        audio_start = round(current_audio_time, 2)
+        audio_end = round(audio_start + audio_dur, 2)
+        current_audio_time = audio_end
 
         shot_type, lens, shot_desc = lens_cycle[i % len(lens_cycle)]
 
@@ -184,11 +212,14 @@ def _slice_scene_into_subscenes(
                 lighting_and_atmosphere="dramatic directional lighting with soft ambient fill and atmospheric particles",
                 active_characters=char_states,
                 spatial_environment_focus=scene["heading"],
-                compiled_image_prompt=image_prompt
+                compiled_image_prompt=image_prompt,
+                audio_start_sec=audio_start,
+                audio_end_sec=audio_end,
+                audio_duration_sec=audio_dur,
             )
         )
 
-    return subscenes
+    return subscenes, current_audio_time
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +284,62 @@ async def _ai_director_decompose(
     return None
 
 
+async def _qwen_swarm_decompose(
+    raw_text: str,
+    target_frames: int,
+) -> Optional[List[Dict[str, Any]]]:
+    """Queries Kaggle VM 1 (Account 1: Director Brain on Dual-T4) via tunnel with Gemini fallback."""
+    gpu0_base = os.environ.get("COMFYUI_GPU0_URL", "https://gpu0.krhimanshu.in").rstrip("/")
+    url = f"{gpu0_base}/v1/chat/completions"
+
+    prompt = (
+        "You are the Chief Narrative Director of Scriptoria fiction studio running on Kaggle Qwen Swarm.\n"
+        "Analyze the following chapter (~2,000 words) and divide it into 5 to 8 Macro Scenes "
+        "based on location shifts, time shifts, or character entrances/exits.\n"
+        f"Allocate exact frame budgets summing to {target_frames} frames.\n"
+        "Respond ONLY with valid JSON conforming to this structure:\n"
+        "{\n"
+        '  "macro_scenes": [\n'
+        '    {\n'
+        '      "scene_id": "sc01",\n'
+        '      "scene_order": 1,\n'
+        '      "heading": "Descriptive Heading",\n'
+        '      "location_handle": "@LocationHandle",\n'
+        '      "time_of_day": "e.g. dusk",\n'
+        '      "summary": "1-2 sentence dramatic summary",\n'
+        '      "frame_budget": 14\n'
+        '    }\n'
+        '  ]\n'
+        "}\n\n"
+        f"CHAPTER TEXT:\n{raw_text[:6000]}"
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            resp = await client.post(
+                url,
+                json={
+                    "model": "qwen2.5:14b",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.2
+                },
+                headers={"Content-Type": "application/json"}
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                content = data["choices"][0]["message"]["content"]
+                clean_json = re.sub(r"^```(?:json)?\s*", "", content.strip())
+                clean_json = re.sub(r"\s*```$", "", clean_json.strip())
+                parsed = json.loads(clean_json)
+                if "macro_scenes" in parsed and len(parsed["macro_scenes"]) >= 3:
+                    logger.info("Local Qwen Swarm (Kaggle VM 1) successfully decomposed chapter.")
+                    return parsed["macro_scenes"]
+    except Exception as exc:
+        logger.info("Kaggle Qwen Swarm at %s offline or booting (%s), falling back to Gemini.", url, exc)
+
+    return await _ai_director_decompose(raw_text, target_frames)
+
+
 # ---------------------------------------------------------------------------
 # API Endpoints
 # ---------------------------------------------------------------------------
@@ -267,9 +354,11 @@ async def decompose_chapter_to_storyboard(req: DecomposeChapterRequest) -> Any:
     word_count = len(raw_text.split())
     target_frames = req.target_frames
 
-    # Check if Multi-AI Cognitive Swarm ("Story Brain") was requested
+    # Check if Local Qwen Swarm or Multi-AI Cognitive Swarm ("Story Brain") was requested
     ai_scenes = None
-    if req.engine == "multi_ai_brain":
+    if req.engine == "qwen_swarm":
+        ai_scenes = await _qwen_swarm_decompose(raw_text, target_frames)
+    elif req.engine == "multi_ai_brain":
         ai_scenes = await _ai_director_decompose(raw_text, target_frames)
 
     # Step 1: Split into 5 to 8 Macro Scenes (Deterministic or AI Director)
@@ -291,14 +380,16 @@ async def decompose_chapter_to_storyboard(req: DecomposeChapterRequest) -> Any:
 
     compiled_macro_scenes: List[MacroScene] = []
     current_frame_counter = 1
+    current_audio_time = 0.0
 
     for idx, sc_data in enumerate(macro_scenes_data):
         frames_this_scene = sc_data.get("frame_budget") or (frames_per_scene + (1 if idx < remainder else 0))
-        sub_scenes = _slice_scene_into_subscenes(
+        sub_scenes, current_audio_time = _slice_scene_into_subscenes(
             sc_data,
             frames_allocated=frames_this_scene,
             start_frame_idx=current_frame_counter,
             global_style=req.global_style,
+            start_audio_sec=current_audio_time,
         )
         current_frame_counter += len(sub_scenes)
 
@@ -329,12 +420,84 @@ async def decompose_chapter_to_storyboard(req: DecomposeChapterRequest) -> Any:
     logger.info(
         "Successfully decomposed chapter %s via %s into %d macro scenes and %d sub-scene frames.",
         req.chapter_title,
-        "Multi-AI Story Brain" if ai_scenes else "Deterministic Engine",
+        f"Engine: {req.engine}" if req.engine else "Deterministic Engine",
         scene_count,
         total_actual_frames,
     )
 
     return storyboard
+
+
+@router.post("/flow/dispatch")
+async def dispatch_storyboard_to_flow(req: FlowDispatchBatchRequest) -> Any:
+    """Enqueues all 80-100 storyboard frame prompts into the Flow Bridge queue for companion execution."""
+    from app.routers.flow_bridge import flow_orchestrator
+    from app.schemas.flow_contracts import FlowGenerationTask, FlowAspectRatio, FlowModelEngine
+
+    dispatched_ids = []
+    aspect = FlowAspectRatio.LANDSCAPE_16_9 if "16:9" in req.aspect_ratio else FlowAspectRatio.SQUARE_1_1
+    engine = FlowModelEngine.NANO_BANANA if "banana" in req.model_engine.lower() else FlowModelEngine.IMAGEN_3
+
+    for f in req.frames:
+        frame_idx = f.get("frame_index", 1)
+        prompt = f.get("compiled_image_prompt") or f.get("sentence_span", "")
+        task = FlowGenerationTask(
+            project_id=req.book_id,
+            chapter_id=f"ch_{req.chapter_index:03d}",
+            scene_id=f.get("scene_id", "sc01"),
+            beat_id=f"beat_{frame_idx:03d}",
+            prompt=prompt,
+            aspect_ratio=aspect,
+            model_engine=engine,
+            priority=100 + frame_idx,
+        )
+        enqueued = await flow_orchestrator.enqueue_task(task)
+        dispatched_ids.append(enqueued.task_id)
+
+    logger.info("Dispatched %d storyboard frames for %s to Flow Bridge queue.", len(dispatched_ids), req.book_id)
+    return {
+        "ok": True,
+        "dispatched_count": len(dispatched_ids),
+        "book_id": req.book_id,
+        "chapter_index": req.chapter_index,
+        "first_ten_task_ids": dispatched_ids[:10],
+    }
+
+
+@router.post("/tts/synthesize")
+async def synthesize_chapter_audio(req: AudioSynthesisRequest) -> Any:
+    """Generates 24kHz broadcast narration audio for chapter using Google AI Studio TTS."""
+    from app.services.flow_tts_service import (
+        execute_gemini_tts_synthesis,
+        FlowAudioConfig,
+        FlowAudioGenerateRequest,
+        FlowAudioVoiceMode,
+    )
+    from pathlib import Path
+
+    output_dir = Path("output/audio")
+    mode = FlowAudioVoiceMode.SMART_MULTI_SPEAKER if "multi" in req.voice_mode.lower() else FlowAudioVoiceMode.SINGLE_NARRATOR
+    config = FlowAudioConfig(
+        narrator_voice=req.narrator_voice,
+        voice_mode=mode,
+        language="en",
+    )
+    request_obj = FlowAudioGenerateRequest(
+        project_id=req.book_id,
+        chapter_id=f"ch_{req.chapter_index:03d}",
+        chapter_title=req.chapter_title,
+        raw_text=req.raw_text,
+        config=config,
+    )
+    result = execute_gemini_tts_synthesis(request_obj, output_dir=output_dir)
+    return {
+        "ok": True,
+        "status": result.status,
+        "audio_url": result.audio_url,
+        "duration_seconds": result.duration_seconds,
+        "file_path": result.file_path,
+        "notice": result.user_notification,
+    }
 
 
 @router.post("/validate")

@@ -3,8 +3,8 @@
   "default_model": "gemini-4-hydrogen",
   "default_thinking_level": "High",
   "created_at": "2026-11-15T22:25:00+05:30",
-  "last_updated": "2026-11-15T23:30:00+05:30",
-  "active_session_id": "session_007_sprint_2_extraction_lab",
+  "last_updated": "2026-11-16T23:05:00+05:30",
+  "active_session_id": "session_011_qwen_swarm_flow_tts_av_sync",
   "contract_hash": "08e0a0b8a38adab857ec8d2c933dfd88fbbed1e0036ff675f0a18b165f036292",
   "sessions": [
     {
@@ -101,6 +101,15 @@
       "status": "PLANNING_COMPLETED_SPECIFICATION_LOCKED",
       "json_path": "docs/ai_studio/sessions/session_010_high_density_storyboard_architecture.json",
       "md_path": "docs/ai_studio/slices/slice_high_density_storyboard_80_100_images.md"
+    },
+    {
+      "session_id": "session_011_qwen_swarm_flow_tts_av_sync",
+      "topic": "Session 011: Local Qwen Swarm (2 Kaggle VMs), Flow Extension Batch Generation & AI Studio TTS AV Sync",
+      "last_timestamp": "2026-11-16T23:05:00+05:30",
+      "model": "gemini-4-argon",
+      "status": "PLANNING_COMPLETED_IMPLEMENTATION_READY",
+      "json_path": "docs/ai_studio/sessions/session_011_qwen_swarm_flow_tts_av_sync.json",
+      "md_path": "docs/ai_studio/slices/slice_chapter_image_generation_and_audio_sync_play.md"
     }
   ]
 }

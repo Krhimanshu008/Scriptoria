@@ -1,5 +1,5 @@
 export const EXPECTED_CONTRACT_HASH =
-  "953c0ba6c2cc2ab093a1ace4b3e070b846fbabd24be9fd26b847e36ea3f10608" as const;
+  "cb900f3695d43b3ce779774744d0616c6a74ae7a20921cc863df44a6f6974566" as const;
 
 export type ErrorCode =
   | "VALIDATION_ERROR"
@@ -730,6 +730,10 @@ export interface SubSceneFrame {
   active_characters: CharacterFrameState[];
   spatial_environment_focus: string;
   compiled_image_prompt: string;
+  audio_start_sec?: number | null;
+  audio_end_sec?: number | null;
+  audio_duration_sec?: number | null;
+  image_asset_url?: string | null;
 }
 
 export interface MacroScene {
@@ -749,6 +753,7 @@ export interface HighDensityChapterStoryboard {
   chapter_title: string;
   total_words: number;
   total_frames: number;
+  audio_track_url?: string | null;
   scenes: MacroScene[];
 }
 
@@ -759,4 +764,23 @@ export interface DecomposeChapterRequest {
   raw_text: string;
   target_frames?: number;
   global_style?: string;
+  engine?: "deterministic" | "multi_ai_brain" | "qwen_swarm";
+}
+
+export interface FlowDispatchBatchRequest {
+  book_id: string;
+  chapter_index: number;
+  chapter_title?: string;
+  frames: Partial<SubSceneFrame>[];
+  aspect_ratio?: string;
+  model_engine?: string;
+}
+
+export interface AudioSynthesisRequest {
+  book_id: string;
+  chapter_index: number;
+  chapter_title?: string;
+  raw_text: string;
+  narrator_voice?: string;
+  voice_mode?: "SINGLE_NARRATOR" | "SMART_MULTI_SPEAKER";
 }

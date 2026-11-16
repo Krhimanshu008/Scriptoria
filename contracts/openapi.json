@@ -75,6 +75,44 @@
         "title": "ApiErrorEnvelope",
         "type": "object"
       },
+      "AudioSynthesisRequest": {
+        "properties": {
+          "book_id": {
+            "title": "Book Id",
+            "type": "string"
+          },
+          "chapter_index": {
+            "title": "Chapter Index",
+            "type": "integer"
+          },
+          "chapter_title": {
+            "default": "Chapter",
+            "title": "Chapter Title",
+            "type": "string"
+          },
+          "narrator_voice": {
+            "default": "Enzo",
+            "title": "Narrator Voice",
+            "type": "string"
+          },
+          "raw_text": {
+            "title": "Raw Text",
+            "type": "string"
+          },
+          "voice_mode": {
+            "default": "SINGLE_NARRATOR",
+            "title": "Voice Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "book_id",
+          "chapter_index",
+          "raw_text"
+        ],
+        "title": "AudioSynthesisRequest",
+        "type": "object"
+      },
       "Body_upload_book_endpoint_api_v1_bridge_upload_book_post": {
         "properties": {
           "author": {
@@ -863,7 +901,7 @@
               }
             ],
             "default": "deterministic",
-            "description": "Decomposition engine: 'deterministic' (fast rule-based) or 'multi_ai_brain' (Gemini cognitive swarm)",
+            "description": "Decomposition engine: 'deterministic', 'multi_ai_brain' (Gemini), or 'qwen_swarm' (Dual Kaggle VMs)",
             "title": "Engine"
           },
           "global_style": {
@@ -2085,6 +2123,48 @@
         "title": "FlowConnectionState",
         "type": "string"
       },
+      "FlowDispatchBatchRequest": {
+        "properties": {
+          "aspect_ratio": {
+            "default": "16:9",
+            "title": "Aspect Ratio",
+            "type": "string"
+          },
+          "book_id": {
+            "title": "Book Id",
+            "type": "string"
+          },
+          "chapter_index": {
+            "title": "Chapter Index",
+            "type": "integer"
+          },
+          "chapter_title": {
+            "default": "Chapter",
+            "title": "Chapter Title",
+            "type": "string"
+          },
+          "frames": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Frames",
+            "type": "array"
+          },
+          "model_engine": {
+            "default": "nano_banana",
+            "title": "Model Engine",
+            "type": "string"
+          }
+        },
+        "required": [
+          "book_id",
+          "chapter_index",
+          "frames"
+        ],
+        "title": "FlowDispatchBatchRequest",
+        "type": "object"
+      },
       "FlowGenerationTask": {
         "additionalProperties": false,
         "description": "Canonical task dispatched to the Chrome Companion to generate an image or video in Flow.",
@@ -3116,6 +3196,18 @@
       "HighDensityChapterStoryboard": {
         "additionalProperties": false,
         "properties": {
+          "audio_track_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "URL of synthesized 24kHz chapter audio track",
+            "title": "Audio Track Url"
+          },
           "book_id": {
             "title": "Book Id",
             "type": "string"
@@ -4264,6 +4356,42 @@
             "title": "Active Characters",
             "type": "array"
           },
+          "audio_duration_sec": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Duration in seconds of spoken sentence span",
+            "title": "Audio Duration Sec"
+          },
+          "audio_end_sec": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "End timestamp of spoken span in chapter audio track",
+            "title": "Audio End Sec"
+          },
+          "audio_start_sec": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Start timestamp of spoken span in chapter audio track",
+            "title": "Audio Start Sec"
+          },
           "char_end": {
             "description": "Character offset end in chapter markdown",
             "minimum": 0.0,
@@ -4287,6 +4415,18 @@
             "minimum": 1.0,
             "title": "Frame Index",
             "type": "integer"
+          },
+          "image_asset_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Resolved URL of generated Flow/ComfyUI image asset",
+            "title": "Image Asset Url"
           },
           "lens": {
             "$ref": "#/components/schemas/CameraLens",
@@ -6433,6 +6573,48 @@
         ]
       }
     },
+    "/api/v1/storyboard/flow/dispatch": {
+      "post": {
+        "description": "Enqueues all 80-100 storyboard frame prompts into the Flow Bridge queue for companion execution.",
+        "operationId": "dispatch_storyboard_to_flow_api_v1_storyboard_flow_dispatch_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FlowDispatchBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Dispatch Storyboard To Flow Api V1 Storyboard Flow Dispatch Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Dispatch Storyboard To Flow",
+        "tags": [
+          "High-Density Storyboard Studio"
+        ]
+      }
+    },
     "/api/v1/storyboard/render": {
       "post": {
         "description": "Trigger background batch rendering on Kaggle GPU 0 & GPU 1.",
@@ -6515,6 +6697,48 @@
         "summary": "Stream Chapter Progress",
         "tags": [
           "Storyboard"
+        ]
+      }
+    },
+    "/api/v1/storyboard/tts/synthesize": {
+      "post": {
+        "description": "Generates 24kHz broadcast narration audio for chapter using Google AI Studio TTS.",
+        "operationId": "synthesize_chapter_audio_api_v1_storyboard_tts_synthesize_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AudioSynthesisRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Synthesize Chapter Audio Api V1 Storyboard Tts Synthesize Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Synthesize Chapter Audio",
+        "tags": [
+          "High-Density Storyboard Studio"
         ]
       }
     },
