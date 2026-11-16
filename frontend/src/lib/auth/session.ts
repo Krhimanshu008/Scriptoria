@@ -286,17 +286,16 @@ export async function ensureUserVmSlots(userId: string): Promise<void> {
 
   await ensureDbSchemaReady();
 
-  const existing = await prisma.vmInstance.findMany({
+  const existingCount = await prisma.vmInstance.count({
     where: { userId },
-    select: { target: true },
   });
 
-  const existingTargets = new Set(existing.map((e) => e.target));
-  const missingSlots = DEFAULT_VM_SLOTS.filter((s) => !existingTargets.has(s.target));
-
-  if (missingSlots.length > 0) {
+  // Only provision initial slots if user has zero VM slots configured
+  if (existingCount === 0) {
+    // Default to Account 1 (gpu0, gpu1) and Account 2 (gpu2, gpu3)
+    const initialSlots = DEFAULT_VM_SLOTS.slice(0, 4);
     await Promise.all(
-      missingSlots.map((slot) =>
+      initialSlots.map((slot) =>
         prisma.vmInstance.create({
           data: {
             userId,

@@ -1,0 +1,43 @@
+name: Production Auto-Deploy to Oracle VM
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy to Oracle Ampere VM
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Execute Remote Deployment via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.ORACLE_HOST || '141.148.202.49' }}
+          username: ${{ secrets.ORACLE_USER || 'ubuntu' }}
+          key: ${{ secrets.ORACLE_SSH_KEY }}
+          port: 22
+          script_stop: true
+          script: |
+            echo "🚀 [Deploy] Starting deployment on Oracle Ampere VM..."
+            cd /home/ubuntu/scriptoria
+            
+            echo "📥 [Deploy] Fetching latest commits from origin/main..."
+            git fetch origin main
+            git reset --hard origin/main
+            
+            echo "🔨 [Deploy] Rebuilding updated Docker containers..."
+            docker compose build scriptoria-web scriptoria-api
+            
+            echo "🔄 [Deploy] Hot-reloading Docker Compose services..."
+            docker compose up -d
+            
+            echo "🩺 [Deploy] Verifying service health..."
+            docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+            
+            echo "✅ [Deploy] Production deployment completed successfully!"

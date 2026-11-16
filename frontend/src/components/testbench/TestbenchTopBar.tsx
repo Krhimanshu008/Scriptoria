@@ -215,6 +215,7 @@ export function TestbenchTopBar({
               {/* UNIFIED VM CONTROLLER: Select VM, Select Model/Profile, Single Boot/Kill Button */}
               <UnifiedVmController
                 vms={vms}
+                kaggleAccounts={kaggleAccounts}
                 onRefreshVms={onRefreshVms}
                 onRefreshHealth={onRefreshHealth}
               />
