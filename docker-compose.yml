@@ -14,12 +14,17 @@ services:
       - PORT=8000
       - HOST=0.0.0.0
       - PYTHONUNBUFFERED=1
+    env_file:
+      - path: .env
+        required: false
+      - path: ./backend/.env
+        required: false
     volumes:
       - scriptoria_api_data:/app/data
     networks:
       - scriptoria-net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -43,7 +48,10 @@ services:
       - SCRIPTORIA_FASTAPI_URL=http://scriptoria-api:8000
       - NEXT_PUBLIC_APP_URL=https://scriptoria.krhimanshu.in
     env_file:
-      - ./frontend/.env.production
+      - path: ./frontend/.env.production
+        required: false
+      - path: .env
+        required: false
     volumes:
       - scriptoria_web_data:/app/data
     depends_on:
