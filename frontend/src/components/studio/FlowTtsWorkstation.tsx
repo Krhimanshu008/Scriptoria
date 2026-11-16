@@ -41,9 +41,13 @@ import type {
 } from "@/types/testbench-contracts";
 
 interface BookOption {
-  id: string;
+  id?: string;
+  book_id?: string;
   title: string;
   author?: string;
+  total_chapters?: number;
+  status?: string;
+  slug?: string;
 }
 
 export function FlowTtsWorkstation() {

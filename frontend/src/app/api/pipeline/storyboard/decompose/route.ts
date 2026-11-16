@@ -45,7 +45,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         extraHeaders["X-Cinematographer-Tunnel-Url"] = acc1.publicUrl;
         if (acc1.vmSecret) extraHeaders["X-Cinematographer-VM-Secret"] = acc1.vmSecret;
       }
-    }
   } catch {
     // Non-fatal: fall back to default tunnel resolution in FastAPI
   }
