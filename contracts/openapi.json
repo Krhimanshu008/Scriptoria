@@ -75,6 +75,62 @@
         "title": "ApiErrorEnvelope",
         "type": "object"
       },
+      "Body_upload_book_endpoint_api_v1_bridge_upload_book_post": {
+        "properties": {
+          "author": {
+            "default": "Unknown",
+            "title": "Author",
+            "type": "string"
+          },
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          },
+          "title": {
+            "default": "Untitled Book",
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_book_endpoint_api_v1_bridge_upload_book_post",
+        "type": "object"
+      },
+      "BridgeExecRequest": {
+        "properties": {
+          "args": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Args",
+            "type": "array"
+          },
+          "command": {
+            "title": "Command",
+            "type": "string"
+          },
+          "stdin_data": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stdin Data"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "title": "BridgeExecRequest",
+        "type": "object"
+      },
       "ChapterExtractionRequest": {
         "additionalProperties": false,
         "properties": {
@@ -4204,6 +4260,88 @@
           }
         },
         "summary": "Serve Index"
+      }
+    },
+    "/api/v1/bridge/exec": {
+      "post": {
+        "operationId": "execute_bridge_api_v1_bridge_exec_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BridgeExecRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Execute Bridge Api V1 Bridge Exec Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Execute Bridge",
+        "tags": [
+          "Pipeline Bridge Runner"
+        ]
+      }
+    },
+    "/api/v1/bridge/upload-book": {
+      "post": {
+        "operationId": "upload_book_endpoint_api_v1_bridge_upload_book_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_book_endpoint_api_v1_bridge_upload_book_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Upload Book Endpoint Api V1 Bridge Upload Book Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Book Endpoint",
+        "tags": [
+          "Pipeline Bridge Runner"
+        ]
       }
     },
     "/api/v1/compiler/characters/{book_id}": {
