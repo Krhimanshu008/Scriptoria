@@ -11,8 +11,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 
-export const EXPECTED_CONTRACT_HASH =
-  "b9f84ad7eac059f176856cb7494625e513693aed0a26dbd224bc4e54ffb1881a";
+import { EXPECTED_CONTRACT_HASH } from "@/types/testbench-contracts";
 
 export interface ContractsPayload {
   schema_version?: string;

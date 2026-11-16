@@ -468,53 +468,55 @@ export function DashboardShell({
 
       {/* Main Content Area */}
       <div className={`flex min-w-0 flex-1 flex-col ${isFullBleed ? "h-screen overflow-hidden" : ""}`}>
-        {/* Slim 48px Header */}
-        <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center justify-between gap-3 border-b border-zinc-800/90 bg-[#09090b]/95 px-4 backdrop-blur-sm">
-          <div className="flex min-w-0 items-center gap-2.5">
-            <button
-              type="button"
-              onClick={() => setMobileOpen(true)}
-              className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-white md:hidden"
-              title="Open menu"
-            >
-              <Menu className="h-4 w-4" />
-            </button>
-            <span className="truncate text-sm font-medium text-zinc-100">
-              {pageTitleForPath(pathname)}
-            </span>
-          </div>
+        {/* Slim 48px Header (hidden on full-bleed testbench to avoid redundant double navbar) */}
+        {!isFullBleed && (
+          <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center justify-between gap-3 border-b border-zinc-800/90 bg-[#09090b]/95 px-4 backdrop-blur-sm">
+            <div className="flex min-w-0 items-center gap-2.5">
+              <button
+                type="button"
+                onClick={() => setMobileOpen(true)}
+                className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-white md:hidden"
+                title="Open menu"
+              >
+                <Menu className="h-4 w-4" />
+              </button>
+              <span className="truncate text-sm font-medium text-zinc-100">
+                {pageTitleForPath(pathname)}
+              </span>
+            </div>
 
-          <div className="flex items-center gap-3">
-            {activeStream?.active && (
-              <div className="hidden items-center gap-2 rounded-md border border-zinc-800 bg-zinc-900 px-2.5 py-1 font-mono text-[11px] text-zinc-200 sm:flex">
-                <HardDriveDownload className="h-3.5 w-3.5 text-indigo-400" />
-                <span className="max-w-[180px] truncate">{activeStream.modelName}</span>
-                <span className="text-zinc-400">{activeStream.percentage}%</span>
-                <button
-                  type="button"
-                  onClick={() => setActiveStream(null)}
-                  className="text-zinc-500 hover:text-white"
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </div>
-            )}
-
-            <button
-              type="button"
-              onClick={handleEmergencyStopAll}
-              disabled={stoppingAll || onlineVms.length === 0}
-              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-rose-500/30 bg-rose-500/10 px-2.5 text-xs font-medium text-rose-300 transition hover:bg-rose-500/20 disabled:opacity-40 whitespace-nowrap"
-            >
-              {stoppingAll ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
-              ) : (
-                <PowerOff className="h-3 w-3" />
+            <div className="flex items-center gap-3">
+              {activeStream?.active && (
+                <div className="hidden items-center gap-2 rounded-md border border-zinc-800 bg-zinc-900 px-2.5 py-1 font-mono text-[11px] text-zinc-200 sm:flex">
+                  <HardDriveDownload className="h-3.5 w-3.5 text-indigo-400" />
+                  <span className="max-w-[180px] truncate">{activeStream.modelName}</span>
+                  <span className="text-zinc-400">{activeStream.percentage}%</span>
+                  <button
+                    type="button"
+                    onClick={() => setActiveStream(null)}
+                    className="text-zinc-500 hover:text-white"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
               )}
-              <span>Stop All</span>
-            </button>
-          </div>
-        </header>
+
+              <button
+                type="button"
+                onClick={handleEmergencyStopAll}
+                disabled={stoppingAll || onlineVms.length === 0}
+                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-rose-500/30 bg-rose-500/10 px-2.5 text-xs font-medium text-rose-300 transition hover:bg-rose-500/20 disabled:opacity-40 whitespace-nowrap"
+              >
+                {stoppingAll ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <PowerOff className="h-3 w-3" />
+                )}
+                <span>Stop All</span>
+              </button>
+            </div>
+          </header>
+        )}
 
         <main
           className={
