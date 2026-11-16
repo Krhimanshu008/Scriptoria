@@ -443,51 +443,46 @@ export function Tab3GraphStudio({ activeBookId }: Tab3GraphStudioProps) {
       <div className="flex border-b border-zinc-800 gap-2 overflow-x-auto">
         <button
           onClick={() => setActiveSubTab("timeline")}
-          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-semibold border-b-2 transition whitespace-nowrap ${
-            activeSubTab === "timeline"
+          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-semibold border-b-2 transition whitespace-nowrap ${activeSubTab === "timeline"
               ? "border-purple-500 text-purple-300"
               : "border-transparent text-zinc-400 hover:text-zinc-200"
-          }`}
+            }`}
         >
           <Clock className="h-4 w-4" /> 3A. Dual Timeline Scrubber (EC-3.1)
         </button>
         <button
           onClick={() => setActiveSubTab("characters")}
-          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-semibold border-b-2 transition whitespace-nowrap ${
-            activeSubTab === "characters"
+          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-semibold border-b-2 transition whitespace-nowrap ${activeSubTab === "characters"
               ? "border-purple-500 text-purple-300"
               : "border-transparent text-zinc-400 hover:text-zinc-200"
-          }`}
+            }`}
         >
           <Users className="h-4 w-4" /> 3B. Character Registry &amp; Tiers (EC-3.2)
         </button>
         <button
           onClick={() => setActiveSubTab("locations")}
-          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-semibold border-b-2 transition whitespace-nowrap ${
-            activeSubTab === "locations"
+          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-semibold border-b-2 transition whitespace-nowrap ${activeSubTab === "locations"
               ? "border-purple-500 text-purple-300"
               : "border-transparent text-zinc-400 hover:text-zinc-200"
-          }`}
+            }`}
         >
           <MapPin className="h-4 w-4" /> 3C. Location Hierarchy (EC-3.3)
         </button>
         <button
           onClick={() => setActiveSubTab("graph")}
-          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-semibold border-b-2 transition whitespace-nowrap ${
-            activeSubTab === "graph"
+          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-semibold border-b-2 transition whitespace-nowrap ${activeSubTab === "graph"
               ? "border-purple-500 text-purple-300"
               : "border-transparent text-zinc-400 hover:text-zinc-200"
-          }`}
+            }`}
         >
           <GitGraph className="h-4 w-4" /> 3D. Interactive Knowledge Graph Canvas (Task D3.5)
         </button>
         <button
           onClick={() => setActiveSubTab("items")}
-          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-semibold border-b-2 transition whitespace-nowrap ${
-            activeSubTab === "items"
+          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-semibold border-b-2 transition whitespace-nowrap ${activeSubTab === "items"
               ? "border-purple-500 text-purple-300"
               : "border-transparent text-zinc-400 hover:text-zinc-200"
-          }`}
+            }`}
         >
           <Package className="h-4 w-4" /> 3E. Items &amp; Custody Ledger
         </button>
@@ -512,11 +507,10 @@ export function Tab3GraphStudio({ activeBookId }: Tab3GraphStudioProps) {
                     <button
                       key={tick.tick_index}
                       onClick={() => setSelectedTickIdx(tick.tick_index)}
-                      className={`flex flex-col items-center shrink-0 rounded-lg border p-2.5 transition min-w-[130px] text-left ${
-                        isSelected
+                      className={`flex flex-col items-center shrink-0 rounded-lg border p-2.5 transition min-w-[130px] text-left ${isSelected
                           ? "border-purple-500 bg-purple-950/40 text-zinc-100 shadow-sm"
                           : "border-zinc-800 bg-zinc-950/80 text-zinc-400 hover:border-zinc-700"
-                      }`}
+                        }`}
                     >
                       <div className="flex items-center justify-between w-full text-[10px] font-mono">
                         <span className="font-bold text-purple-300">Tick #{tick.tick_index}</span>
@@ -610,20 +604,18 @@ export function Tab3GraphStudio({ activeBookId }: Tab3GraphStudioProps) {
                         <tr
                           key={char.entity_id}
                           onClick={() => setSelectedEntityId(char.entity_id)}
-                          className={`cursor-pointer transition ${
-                            isSelected ? "bg-purple-950/40 text-purple-200" : "hover:bg-zinc-800/40"
-                          }`}
+                          className={`cursor-pointer transition ${isSelected ? "bg-purple-950/40 text-purple-200" : "hover:bg-zinc-800/40"
+                            }`}
                         >
                           <td className="py-2.5 font-semibold">{char.canonical_name}</td>
                           <td className="py-2.5">
                             <span
-                              className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                char.visual_tier === "TIER_1_CORE"
+                              className={`px-2 py-0.5 rounded text-[10px] font-bold ${char.visual_tier === "TIER_1_CORE"
                                   ? "bg-amber-500/20 text-amber-400 border border-amber-500/40"
                                   : char.visual_tier === "TIER_2"
-                                  ? "bg-purple-500/20 text-purple-400 border border-purple-500/30"
-                                  : "bg-zinc-800 text-zinc-400"
-                              }`}
+                                    ? "bg-purple-500/20 text-purple-400 border border-purple-500/30"
+                                    : "bg-zinc-800 text-zinc-400"
+                                }`}
                             >
                               {char.visual_tier}
                             </span>

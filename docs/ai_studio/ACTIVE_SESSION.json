@@ -1,30 +1,29 @@
 {
-  "active_session_id": "session_007_sprint_2_extraction_lab",
-  "topic": "Sprint 2: Cloud VM Swarm Control & Rolling Extraction Lab (Tab 2 Completed)",
-  "started_at": "2026-11-15T23:38:00+05:30",
-  "last_updated": "2026-11-15T23:51:00+05:30",
-  "status": "SPRINT_2_COMPLETED_AND_VERIFIED",
+  "active_session_id": "session_008_google_flow_companion",
+  "topic": "Subproject: Google AI Flow Browser Companion & Asset Orchestration Engine",
+  "started_at": "2026-11-16T10:55:00+05:30",
+  "last_updated": "2026-11-16T10:55:00+05:30",
+  "status": "INITIALIZED_READY_FOR_EXECUTION",
   "models_used": [
-    "gemini-4-hydrogen",
     "gemini-4-argon"
   ],
   "thinking_level": "High",
   "grounding_google_search": true,
   "url_context": "https://github.com/Krhimanshu008/Scriptoria.git",
-  "verified_contract_hash": "08e0a0b8a38adab857ec8d2c933dfd88fbbed1e0036ff675f0a18b165f036292",
+  "slice_path": "docs/ai_studio/slices/slice_subproject_google_flow_companion.md",
   "completed_workstreams": [
     "Sprint 1: Workstreams A-E (Plumbing, Canonical Contracts, Deterministic Parser AST, 11/11 tests)",
-    "Workstream 2A: Extraction Contracts & Wire Models (QuoteAnchorMatch, EC-2.4 120-char Bloat Cap, VramLockMode)",
-    "Workstream 2B: FastAPI Endpoints (vm_swarm_control.py, extraction_lab.py, 6/6 tests passing)",
-    "Workstream 2C: Next.js Typed Proxy Bridge & Route Handlers (0 type errors)",
-    "Workstream 2D: Tab 2 UI Polish (VRAM Eviction Controller, Live Extraction, Sudden Death Crash Sim)",
-    "Workstream 2E: Sprint 2 E2E Verification & Exit Gate (17/17 pytest passing, 0 contract drift, tsc clean)"
+    "Sprint 2: Workstreams 2A-2E (VM Swarm, Extraction Lab, 17/17 tests)",
+    "Sprint 3: Workstreams 3A-3D (Stage-2 Compiler & Temporal Graph Studio, 22/22 tests)",
+    "Sprint 4: Workstreams 4A-4D (Hybrid RAG Workbench & Safe SQL Console, 30/30 tests)",
+    "Sprint 5: Workstreams 5A-5D (Live 5-Stage Stepper & QA Scorecard, 56/56 tests)"
   ],
-  "next_target_epic": "Sprint 3: Tab 3 (Graph & Timeline Studio)",
+  "next_target_epic": "Subproject: Google AI Flow Browser Companion (Workstreams F1-F5)",
   "pending_tasks": [
-    "Stage-2 Book Compiler Contracts & Endpoints (cycle detection, alias resolution)",
-    "Dual Timeline Scrubber (narrative_seq vs story_time_tick) & Flashback Isolation (EC-3.1)",
-    "Character Registry & Tier Matrix (EC-3.2)",
-    "Interactive Location Tree & Node-Link Graph Studio (EC-3.3)"
+    "Workstream F1: Canonical Flow Contracts (flow_contracts.py)",
+    "Workstream F2: Database Modeling & Prisma Schema Extensions (schema.prisma)",
+    "Workstream F3: Browser Companion Extension (Manifest V3, Fetch Interceptor, Content Script)",
+    "Workstream F4: FastAPI Bridge Router & WebSocket Hub (flow_bridge.py)",
+    "Workstream F5: Next.js Frontend Integration & Storyboard Dispatch UI"
   ]
 }

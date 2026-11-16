@@ -3,7 +3,8 @@
 import React, { useState, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { TestbenchTopBar, BookSummary, HealthState } from "./TestbenchTopBar";
-import { TestbenchNavRail, TestbenchTabId } from "./TestbenchNavRail";
+import { TestbenchTabstrip } from "./TestbenchTabstrip";
+import type { TestbenchTabId } from "./TestbenchNavRail";
 import { Tab0Plumbing } from "./tabs/Tab0Plumbing";
 import { Tab1Parser } from "./tabs/Tab1Parser";
 import { Tab2Extraction } from "./tabs/Tab2Extraction";
@@ -117,35 +118,34 @@ export function TestbenchShell() {
         onRefreshVms={handleRefreshCluster}
       />
 
-      {/* Main Body: Nav Rail (Left) + Active Tab (Right) */}
-      <div className="flex flex-1 min-h-0 overflow-hidden">
-        <TestbenchNavRail activeTab={activeTab} onSelectTab={(tab) => setActiveTab(tab)} />
+      {/* Studio Horizontal Tabstrip (Checkpoints 0 - 5) */}
+      <TestbenchTabstrip activeTab={activeTab} onSelectTab={(tab) => setActiveTab(tab)} />
 
-        <main
-          className={`flex-1 min-h-0 bg-zinc-950/50 ${
-            activeTab === "tab1" ? "overflow-hidden" : "overflow-y-auto"
-          }`}
-        >
-          {activeTab === "tab0" && (
-            <Tab0Plumbing activeBookId={activeBookId} onRefreshBooks={fetchBooks} />
-          )}
-          {activeTab === "tab1" && <Tab1Parser activeBookId={activeBookId} />}
-          {activeTab === "tab2" && (
-            <Tab2Extraction
-              activeBookId={activeBookId}
-              vms={vms}
-              kaggleAccounts={accountsData?.kaggleAccounts || []}
-              colabAccounts={accountsData?.colabAccounts || []}
-              onRefreshVms={handleRefreshCluster}
-            />
-          )}
-          {activeTab === "tab3" && <Tab3GraphStudio activeBookId={activeBookId} />}
-          {activeTab === "tab4" && <Tab4RAGWorkbench activeBookId={activeBookId} />}
-          {activeTab === "tab5" && (
-            <Tab5Scorecard activeBookId={activeBookId} onNavigateTab={(tab) => setActiveTab(tab)} />
-          )}
-        </main>
-      </div>
+      {/* Main Body: Active Tab full width */}
+      <main
+        className={`flex-1 min-h-0 w-full bg-zinc-950/50 ${
+          activeTab === "tab1" || activeTab === "tab3" ? "overflow-hidden" : "overflow-y-auto"
+        }`}
+      >
+        {activeTab === "tab0" && (
+          <Tab0Plumbing activeBookId={activeBookId} onRefreshBooks={fetchBooks} />
+        )}
+        {activeTab === "tab1" && <Tab1Parser activeBookId={activeBookId} />}
+        {activeTab === "tab2" && (
+          <Tab2Extraction
+            activeBookId={activeBookId}
+            vms={vms}
+            kaggleAccounts={accountsData?.kaggleAccounts || []}
+            colabAccounts={accountsData?.colabAccounts || []}
+            onRefreshVms={handleRefreshCluster}
+          />
+        )}
+        {activeTab === "tab3" && <Tab3GraphStudio activeBookId={activeBookId} />}
+        {activeTab === "tab4" && <Tab4RAGWorkbench activeBookId={activeBookId} />}
+        {activeTab === "tab5" && (
+          <Tab5Scorecard activeBookId={activeBookId} onNavigateTab={(tab) => setActiveTab(tab)} />
+        )}
+      </main>
     </div>
   );
 }
