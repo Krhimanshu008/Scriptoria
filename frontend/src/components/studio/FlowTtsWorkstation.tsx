@@ -91,9 +91,15 @@ export function FlowTtsWorkstation() {
           const data = await res.json();
           if (Array.isArray(data.books) && data.books.length > 0) {
             setBooks(data.books);
-            const moby = data.books.find((b: any) => b.title?.toLowerCase().includes("moby") || b.slug?.toLowerCase().includes("moby"));
-            if (moby) {
-              setSelectedBookId(moby.id);
+            const parsedMoby = data.books.find(
+              (b: any) =>
+                (b.title?.toLowerCase().includes("moby") || b.slug?.toLowerCase().includes("moby")) &&
+                (b.status === "PARSED" || (b.total_chapters && b.total_chapters > 0))
+            ) || data.books.find((b: any) => b.title?.toLowerCase().includes("moby") || b.slug?.toLowerCase().includes("moby"));
+            if (parsedMoby) {
+              setSelectedBookId(parsedMoby.book_id || parsedMoby.id);
+            } else if (data.books[0]) {
+              setSelectedBookId(data.books[0].book_id || data.books[0].id);
             }
           }
         }
@@ -103,6 +109,26 @@ export function FlowTtsWorkstation() {
     }
     loadBooks();
   }, []);
+
+  // Fetch chapter text from R2 whenever selected book or chapter changes
+  useEffect(() => {
+    async function loadChapterProse() {
+      const bookId = selectedBookId || "31d94e54-6308-488b-a6fc-1085ee418d7c";
+      try {
+        const chKey = `parsed/${bookId}/ch_${String(selectedChapterIdx).padStart(3, "0")}.md`;
+        const res = await fetch(`/api/pipeline/r2/object?key=${encodeURIComponent(chKey)}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.content && typeof data.content === "string") {
+            setChapterText(data.content);
+          }
+        }
+      } catch {
+        // Non-fatal
+      }
+    }
+    loadChapterProse();
+  }, [selectedBookId, selectedChapterIdx]);
 
   // Flattened frames list for theater playback
   const allFlatFrames: SubSceneFrame[] = React.useMemo(() => {
@@ -163,15 +189,16 @@ export function FlowTtsWorkstation() {
   // Handle Decompose Chapter Execution
   const handleDecompose = async () => {
     setIsDecomposing(true);
+    const bookIdToSend = selectedBookId || "31d94e54-6308-488b-a6fc-1085ee418d7c";
     try {
       const res = await fetch("/api/pipeline/storyboard/decompose", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          book_id: selectedBookId,
+          book_id: bookIdToSend,
           chapter_index: selectedChapterIdx,
           chapter_title: chapterTitle,
-          raw_text: chapterText.trim().length > 100 ? chapterText : "",
+          raw_text: chapterText.trim().length > 50 ? chapterText : "",
           target_frames: targetFrames,
           global_style: globalStyle,
           engine: engine,
@@ -444,14 +471,18 @@ export function FlowTtsWorkstation() {
               className="w-full h-8 rounded border border-zinc-800 bg-zinc-900 px-2 text-xs text-zinc-200 focus:border-amber-500 focus:outline-none"
             >
               {books.length > 0 ? (
-                books.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {b.title} {b.author ? `— ${b.author}` : ""}
-                  </option>
-                ))
+                books.map((b) => {
+                  const id = b.book_id || b.id;
+                  const chapterLabel = b.total_chapters ? `${b.total_chapters} chapters` : b.status || "uploaded";
+                  return (
+                    <option key={id} value={id}>
+                      {b.title} ({chapterLabel})
+                    </option>
+                  );
+                })
               ) : (
                 <option value="31d94e54-6308-488b-a6fc-1085ee418d7c">
-                  Herman Melville — Moby Dick (Parsed: 147 Ch)
+                  herman-melville_moby-dick (147 chapters - PARSED)
                 </option>
               )}
             </select>

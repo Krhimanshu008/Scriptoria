@@ -352,13 +352,13 @@ async def _qwen_swarm_decompose(
         headers["X-VM-Secret"] = secret
 
     try:
-        async with httpx.AsyncClient(timeout=12.0) as client:
+        async with httpx.AsyncClient(timeout=45.0) as client:
             resp = await client.post(
                 url,
                 json={
-                    "model": "qwen2.5:14b",
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.2,
+                    "max_tokens": 1500,
                 },
                 headers=headers,
             )

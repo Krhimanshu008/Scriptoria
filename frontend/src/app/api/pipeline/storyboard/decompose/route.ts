@@ -11,13 +11,22 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   try {
     const user = await getAuthUser(req);
-    if (user) {
-      const vms = await prisma.vmInstance.findMany({
+    let vms = user
+      ? await prisma.vmInstance.findMany({
+          where: {
+            userId: user.userId,
+            status: { in: ["ONLINE", "BUSY"] },
+          },
+        })
+      : [];
+
+    if (!vms || vms.length === 0) {
+      vms = await prisma.vmInstance.findMany({
         where: {
-          userId: user.userId,
           status: { in: ["ONLINE", "BUSY"] },
         },
       });
+    }
 
       const acc1 = vms.find((v) => v.accountAlias === "acc1" && v.publicUrl);
       const acc2 = vms.find((v) => v.accountAlias === "acc2" && v.publicUrl);
