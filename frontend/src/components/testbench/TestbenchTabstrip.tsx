@@ -129,13 +129,13 @@ export function TestbenchTabstrip({
               />
 
               {/* Responsive Text Label */}
-              <span className="truncate lg:hidden">{cp.shortLabel}</span>
-              <span className="truncate hidden lg:inline 2xl:hidden">{cp.midLabel}</span>
-              <span className="truncate hidden 2xl:inline">{cp.fullLabel}</span>
+              <span className="truncate md:hidden">{cp.shortLabel}</span>
+              <span className="truncate hidden md:inline xl:hidden">{cp.midLabel}</span>
+              <span className="truncate hidden xl:inline">{cp.fullLabel}</span>
 
-              {/* Tag for Ultra-wide screens */}
+              {/* Tag for Ultra-wide screens only (>= 1800px) */}
               <span
-                className={`hidden 2xl:inline text-[9px] font-mono px-1 rounded truncate shrink-0 ${
+                className={`hidden min-[1800px]:inline text-[9px] font-mono px-1 rounded truncate shrink-0 ${
                   isActive
                     ? "text-amber-300/80 bg-amber-500/10"
                     : "text-zinc-500 group-hover:text-zinc-400"
