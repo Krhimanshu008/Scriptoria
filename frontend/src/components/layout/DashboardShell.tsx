@@ -82,6 +82,13 @@ export function DashboardShell({
 
   const isFullBleed = pathname.startsWith("/testbench");
 
+  // Auto-collapse sidebar on /testbench to grant full viewport width (Argon layout spec)
+  useEffect(() => {
+    if (pathname.startsWith("/testbench")) {
+      setCollapsed(true);
+    }
+  }, [pathname]);
+
   const activeStream = useClusterStore((s) => s.activeStream);
   const setActiveStream = useClusterStore((s) => s.setActiveStream);
   const syncTargetWithVms = useClusterStore((s) => s.syncTargetWithVms);
