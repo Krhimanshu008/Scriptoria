@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { runPipelineBridge } from "@/lib/pipeline/bridge";
 import { writeFile, mkdir } from "fs/promises";
 import path from "path";
+import os from "os";
 import crypto from "crypto";
 
 export const dynamic = "force-dynamic";
@@ -51,12 +52,36 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "No file provided" }, { status: 400 });
     }
 
+    // 1. Forward directly to FastAPI backend service if available (Docker / multi-container stack)
+    const fastApiUrl = process.env.SCRIPTORIA_FASTAPI_URL;
+    if (fastApiUrl) {
+      const uploadPayload = new FormData();
+      uploadPayload.append("file", file, file.name);
+      uploadPayload.append("title", title);
+      uploadPayload.append("author", author);
+
+      const upstreamRes = await fetch(`${fastApiUrl}/api/v1/bridge/upload-book`, {
+        method: "POST",
+        body: uploadPayload,
+        signal: AbortSignal.timeout(60000),
+      });
+
+      if (upstreamRes.ok) {
+        const data = await upstreamRes.json();
+        return NextResponse.json(data);
+      }
+      const errData = await upstreamRes.json().catch(() => ({}));
+      throw new Error(
+        errData.detail || errData.error || `FastAPI book upload returned HTTP ${upstreamRes.status}`
+      );
+    }
+
+    // 2. Local dev fallback using os.tmpdir() (safe on Windows, Linux, macOS with non-root permissions)
     const bookId = crypto.randomUUID();
     const bytes = await file.arrayBuffer();
     const buffer = Buffer.from(bytes);
 
-    // Save temporarily
-    const tmpDir = path.resolve(process.cwd(), "..", "backend", "output", "uploads");
+    const tmpDir = path.join(os.tmpdir(), "scriptoria_uploads");
     await mkdir(tmpDir, { recursive: true });
     const localPath = path.join(tmpDir, `${bookId}_${file.name}`);
     await writeFile(localPath, buffer);

@@ -20,4 +20,5 @@ beautifulsoup4>=4.12.3
 pymupdf>=1.24.0
 numpy>=1.26.0
 langgraph>=0.2.0
+python-multipart>=0.0.9
 

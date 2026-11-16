@@ -11,6 +11,25 @@ export async function runPipelineBridge<T = any>(
   stdinData?: string,
   timeoutMs: number = 30000
 ): Promise<T> {
+  const fastApiUrl = process.env.SCRIPTORIA_FASTAPI_URL;
+  if (fastApiUrl) {
+    try {
+      const res = await fetch(`${fastApiUrl}/api/v1/bridge/exec`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ command, args, stdin_data: stdinData }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        return data as T;
+      }
+    } catch (err) {
+      console.warn(`FastAPI bridge /api/v1/bridge/exec failed, falling back to local runner:`, err);
+    }
+  }
+
   let rootDir = process.cwd();
   let bridgeScript = path.resolve(rootDir, "backend", "scripts", "pipeline_bridge.py");
 

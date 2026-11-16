@@ -9,6 +9,7 @@ from app.api.v1.api import api_router
 from app.core.config import settings
 from app.middleware.bridge_guard import install_bridge_guard
 from app.routers import (
+    bridge_runner,
     extraction_lab,
     flow_bridge,
     graph_studio,
@@ -45,6 +46,7 @@ install_bridge_guard(
 
 # Include API Routers
 app.include_router(api_router, prefix="/api/v1")
+app.include_router(bridge_runner.router, prefix="/api/v1")
 app.include_router(testbench_system.router, prefix="/api/v1")
 app.include_router(parser_inspector.router, prefix="/api/v1")
 app.include_router(vm_swarm_control.router, prefix="/api/v1")

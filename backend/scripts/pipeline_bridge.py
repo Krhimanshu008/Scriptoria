@@ -13,6 +13,7 @@ import difflib
 import json
 import time
 import uuid
+import tempfile
 import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -242,6 +243,53 @@ def upload_book_r2(local_path: str, title: str, author: str) -> Dict[str, Any]:
     }
 
 
+def upload_book_bytes(file_bytes: bytes, filename: str, title: str, author: str) -> Dict[str, Any]:
+    """Uploads EPUB/PDF bytes directly to R2 raw lake and creates row in Supabase."""
+    import re
+    import uuid
+
+    book_id = str(uuid.uuid4())
+    slug = re.sub(r"[^a-z0-9]+", "-", f"{title}-{author}".lower()).strip("-")[:60]
+    fmt = "EPUB" if filename.lower().endswith(".epub") else "PDF"
+
+    r2 = R2StorageService()
+    r2_key = f"raw/{book_id}/{filename}"
+    content_type = "application/epub+zip" if fmt == "EPUB" else "application/pdf"
+    r2.put_bytes(r2_key, file_bytes, content_type=content_type)
+
+    # Insert into Supabase
+    s_url, s_hdrs = _supabase_client()
+    if s_url and s_hdrs.get("apikey"):
+        import requests
+        payload = {
+            "book_id": book_id,
+            "slug": slug,
+            "title": title,
+            "author": author,
+            "source_filename": filename,
+            "format": fmt,
+            "status": "UPLOADED",
+            "r2_raw_key": r2_key,
+            "total_chapters": 0,
+        }
+        hdrs = {**s_hdrs, "Prefer": "resolution=merge-duplicates"}
+        try:
+            requests.post(f"{s_url}/rest/v1/books_catalog", headers=hdrs, json=payload, timeout=5)
+        except Exception as e:
+            print(f"Supabase catalog insert error: {e}", file=sys.stderr)
+
+    return {
+        "success": True,
+        "book_id": book_id,
+        "slug": slug,
+        "title": title,
+        "author": author,
+        "format": fmt,
+        "r2_raw_key": r2_key,
+        "status": "UPLOADED",
+    }
+
+
 def list_books() -> Dict[str, Any]:
     """Lists books from Supabase catalog."""
     import requests
@@ -294,7 +342,7 @@ def parse_novel(book_id: str, options_json: Optional[str] = None) -> Dict[str, A
     suffix = Path(raw_key).suffix.lower()
     if suffix not in [".epub", ".pdf"]:
         suffix = ".epub"
-    local_tmp = Path(f"backend/output/temp_{book_id}{suffix}")
+    local_tmp = Path(tempfile.gettempdir()) / f"temp_{book_id}{suffix}"
     local_tmp.parent.mkdir(parents=True, exist_ok=True)
 
     # Download from R2
@@ -787,6 +835,12 @@ def compile_book(book_id: str) -> Dict[str, Any]:
     }
 
 
+def _local_book_db_path(book_id: str) -> Path:
+    p = Path(tempfile.gettempdir()) / "scriptoria_dbs" / str(book_id) / "book.db"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
 def package_rag(book_id: str) -> Dict[str, Any]:
     """Packages compiled graph and beats into local and R2 book.db."""
     r2 = R2StorageService()
@@ -800,8 +854,7 @@ def package_rag(book_id: str) -> Dict[str, Any]:
     for k in sorted(obs_keys):
         observations.append(ChapterObservation.model_validate(r2.get_json(k)))
 
-    local_db_path = Path(f"backend/output/{book_id}/book.db")
-    local_db_path.parent.mkdir(parents=True, exist_ok=True)
+    local_db_path = _local_book_db_path(book_id)
     indexer = HybridRAGIndexer()
     t0 = time.time()
     built_path = indexer.build_database(compiled_graph, observations, str(local_db_path))
@@ -843,10 +896,9 @@ def package_rag(book_id: str) -> Dict[str, Any]:
 
 def rag_hybrid_search(book_id: str, query: str, max_narrative_seq: int = 9999, top_k: int = 5) -> Dict[str, Any]:
     """Executes hybrid vector + BM25 reciprocal rank fusion search."""
-    local_db = Path(f"backend/output/{book_id}/book.db")
+    local_db = _local_book_db_path(book_id)
     if not local_db.exists():
         r2 = R2StorageService()
-        local_db.parent.mkdir(parents=True, exist_ok=True)
         raw_db = r2.get_bytes(f"compiled/{book_id}/book.db")
         with open(local_db, "wb") as f:
             f.write(raw_db)
@@ -875,10 +927,9 @@ def rag_hybrid_search(book_id: str, query: str, max_narrative_seq: int = 9999, t
 
 def rag_timeline_state(book_id: str, character_ids: List[str], tick: int) -> Dict[str, Any]:
     """Recovers temporal entity states at a given story tick."""
-    local_db = Path(f"backend/output/{book_id}/book.db")
+    local_db = _local_book_db_path(book_id)
     if not local_db.exists():
         r2 = R2StorageService()
-        local_db.parent.mkdir(parents=True, exist_ok=True)
         raw_db = r2.get_bytes(f"compiled/{book_id}/book.db")
         with open(local_db, "wb") as f:
             f.write(raw_db)
@@ -889,10 +940,9 @@ def rag_timeline_state(book_id: str, character_ids: List[str], tick: int) -> Dic
 
 def rag_graph_traverse(book_id: str, entity_id: str, max_hops: int = 2, tick: Optional[int] = None) -> Dict[str, Any]:
     """Expands temporal knowledge graph around seed entity."""
-    local_db = Path(f"backend/output/{book_id}/book.db")
+    local_db = _local_book_db_path(book_id)
     if not local_db.exists():
         r2 = R2StorageService()
-        local_db.parent.mkdir(parents=True, exist_ok=True)
         raw_db = r2.get_bytes(f"compiled/{book_id}/book.db")
         with open(local_db, "wb") as f:
             f.write(raw_db)
@@ -919,10 +969,9 @@ def rag_sql_query(book_id: str, sql_str: str) -> Dict[str, Any]:
     if intersection:
         return {"error": f"Forbidden keyword detected ({', '.join(intersection)}). Only read-only queries are permitted."}
 
-    local_db = Path(f"backend/output/{book_id}/book.db")
+    local_db = _local_book_db_path(book_id)
     if not local_db.exists():
         r2 = R2StorageService()
-        local_db.parent.mkdir(parents=True, exist_ok=True)
         raw_db = r2.get_bytes(f"compiled/{book_id}/book.db")
         with open(local_db, "wb") as f:
             f.write(raw_db)
@@ -1061,7 +1110,7 @@ def qa_scorecard(book_id: str) -> Dict[str, Any]:
 
     # EC-4.4: Database Footprint Budget
     try:
-        local_db = Path(f"backend/output/{book_id}/book.db")
+        local_db = _local_book_db_path(book_id)
         if local_db.exists():
             kb = round(os.path.getsize(local_db) / 1024, 1)
             checks.append({
@@ -1136,95 +1185,101 @@ def run_pytest_suite(suite_name: Optional[str] = None) -> Dict[str, Any]:
     }
 
 
+def dispatch_command(cmd: str, args: list[str] = [], stdin_data: Optional[str] = None) -> Any:
+    """Dispatches a pipeline bridge command with provided arguments and optional stdin data."""
+    if cmd == "health":
+        book_id = args[0] if len(args) > 0 else None
+        return get_health(book_id)
+    elif cmd == "r2_upload_book":
+        local_path = args[0]
+        title = args[1] if len(args) > 1 else "Untitled"
+        author = args[2] if len(args) > 2 else "Unknown"
+        return upload_book_r2(local_path, title, author)
+    elif cmd == "r2_tree":
+        book_id = args[0]
+        return get_r2_tree(book_id)
+    elif cmd == "r2_get":
+        key = args[0]
+        return get_r2_object(key)
+    elif cmd == "books_list":
+        return list_books()
+    elif cmd == "validate_contract":
+        if len(args) > 0 and args[0] != "-":
+            json_input = args[0]
+        else:
+            json_input = stdin_data or ""
+        return validate_contract_json(json_input)
+    elif cmd == "parse_book":
+        book_id = args[0]
+        opts = args[1] if len(args) > 1 else None
+        return parse_novel(book_id, opts)
+    elif cmd == "panic_kill":
+        return panic_kill_all_vms()
+    elif cmd == "run_tests":
+        suite = args[0] if len(args) > 0 else None
+        return run_pytest_suite(suite)
+    elif cmd == "r2_smoke":
+        return r2_smoke_test()
+    elif cmd == "turso_ping":
+        return turso_ping()
+    elif cmd == "save_manifest":
+        book_id = args[0]
+        manifest_str = args[1] if len(args) > 1 and args[1] != "-" else (stdin_data or "")
+        return save_manifest(book_id, manifest_str)
+    elif cmd == "audit_chapter":
+        book_id = args[0]
+        ch_idx = int(args[1]) if len(args) > 1 else 1
+        return audit_chapter(book_id, ch_idx)
+    elif cmd == "extract_chapter":
+        book_id = args[0]
+        ch_idx = int(args[1]) if len(args) > 1 else 1
+        opts = args[2] if len(args) > 2 else None
+        return extract_chapter(book_id, ch_idx, opts)
+    elif cmd == "compile_book":
+        book_id = args[0]
+        return compile_book(book_id)
+    elif cmd == "package_rag":
+        book_id = args[0]
+        return package_rag(book_id)
+    elif cmd == "rag_hybrid_search":
+        book_id = args[0]
+        query = args[1]
+        max_seq = int(args[2]) if len(args) > 2 else 9999
+        top_k = int(args[3]) if len(args) > 3 else 5
+        return rag_hybrid_search(book_id, query, max_seq, top_k)
+    elif cmd == "rag_timeline_state":
+        book_id = args[0]
+        char_ids = json.loads(args[1]) if len(args) > 1 else []
+        tick = int(args[2]) if len(args) > 2 else 1
+        return rag_timeline_state(book_id, char_ids, tick)
+    elif cmd == "rag_graph_traverse":
+        book_id = args[0]
+        entity_id = args[1]
+        max_hops = int(args[2]) if len(args) > 2 else 2
+        tick = int(args[3]) if len(args) > 3 and args[3] != "null" else None
+        return rag_graph_traverse(book_id, entity_id, max_hops, tick)
+    elif cmd == "rag_sql":
+        book_id = args[0]
+        sql_str = args[1] if len(args) > 1 and args[1] != "-" else (stdin_data or "")
+        return rag_sql_query(book_id, sql_str)
+    elif cmd == "qa_scorecard":
+        book_id = args[0]
+        return qa_scorecard(book_id)
+    else:
+        return {"error": f"Unknown command: {cmd}"}
+
+
 def main():
     if len(sys.argv) < 2:
         print(json.dumps({"error": "No command provided"}))
         sys.exit(1)
 
     cmd = sys.argv[1]
+    args = sys.argv[2:]
 
     try:
-        if cmd == "health":
-            book_id = sys.argv[2] if len(sys.argv) > 2 else None
-            out = get_health(book_id)
-        elif cmd == "r2_upload_book":
-            local_path = sys.argv[2]
-            title = sys.argv[3] if len(sys.argv) > 3 else "Untitled"
-            author = sys.argv[4] if len(sys.argv) > 4 else "Unknown"
-            out = upload_book_r2(local_path, title, author)
-        elif cmd == "r2_tree":
-            book_id = sys.argv[2]
-            out = get_r2_tree(book_id)
-        elif cmd == "r2_get":
-            key = sys.argv[2]
-            out = get_r2_object(key)
-        elif cmd == "books_list":
-            out = list_books()
-        elif cmd == "validate_contract":
-            if len(sys.argv) > 2 and sys.argv[2] != "-":
-                json_input = sys.argv[2]
-            else:
-                json_input = sys.stdin.read()
-            out = validate_contract_json(json_input)
-        elif cmd == "parse_book":
-            book_id = sys.argv[2]
-            opts = sys.argv[3] if len(sys.argv) > 3 else None
-            out = parse_novel(book_id, opts)
-        elif cmd == "panic_kill":
-            out = panic_kill_all_vms()
-        elif cmd == "run_tests":
-            suite = sys.argv[2] if len(sys.argv) > 2 else None
-            out = run_pytest_suite(suite)
-        elif cmd == "r2_smoke":
-            out = r2_smoke_test()
-        elif cmd == "turso_ping":
-            out = turso_ping()
-        elif cmd == "save_manifest":
-            book_id = sys.argv[2]
-            manifest_str = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] != "-" else sys.stdin.read()
-            out = save_manifest(book_id, manifest_str)
-        elif cmd == "audit_chapter":
-            book_id = sys.argv[2]
-            ch_idx = int(sys.argv[3]) if len(sys.argv) > 3 else 1
-            out = audit_chapter(book_id, ch_idx)
-        elif cmd == "extract_chapter":
-            book_id = sys.argv[2]
-            ch_idx = int(sys.argv[3]) if len(sys.argv) > 3 else 1
-            opts = sys.argv[4] if len(sys.argv) > 4 else None
-            out = extract_chapter(book_id, ch_idx, opts)
-        elif cmd == "compile_book":
-            book_id = sys.argv[2]
-            out = compile_book(book_id)
-        elif cmd == "package_rag":
-            book_id = sys.argv[2]
-            out = package_rag(book_id)
-        elif cmd == "rag_hybrid_search":
-            book_id = sys.argv[2]
-            query = sys.argv[3]
-            max_seq = int(sys.argv[4]) if len(sys.argv) > 4 else 9999
-            top_k = int(sys.argv[5]) if len(sys.argv) > 5 else 5
-            out = rag_hybrid_search(book_id, query, max_seq, top_k)
-        elif cmd == "rag_timeline_state":
-            book_id = sys.argv[2]
-            char_ids = json.loads(sys.argv[3]) if len(sys.argv) > 3 else []
-            tick = int(sys.argv[4]) if len(sys.argv) > 4 else 1
-            out = rag_timeline_state(book_id, char_ids, tick)
-        elif cmd == "rag_graph_traverse":
-            book_id = sys.argv[2]
-            entity_id = sys.argv[3]
-            max_hops = int(sys.argv[4]) if len(sys.argv) > 4 else 2
-            tick = int(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5] != "null" else None
-            out = rag_graph_traverse(book_id, entity_id, max_hops, tick)
-        elif cmd == "rag_sql":
-            book_id = sys.argv[2]
-            sql_str = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] != "-" else sys.stdin.read()
-            out = rag_sql_query(book_id, sql_str)
-        elif cmd == "qa_scorecard":
-            book_id = sys.argv[2]
-            out = qa_scorecard(book_id)
-        else:
-            out = {"error": f"Unknown command: {cmd}"}
-
+        stdin_data = sys.stdin.read() if not sys.stdin.isatty() else None
+        out = dispatch_command(cmd, args, stdin_data)
         print(json.dumps(out))
     except Exception as e:
         import traceback
