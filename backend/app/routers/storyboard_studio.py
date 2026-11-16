@@ -491,13 +491,15 @@ async def synthesize_chapter_audio(req: AudioSynthesisRequest) -> Any:
         config=config,
     )
     result = execute_gemini_tts_synthesis(request_obj, output_dir=output_dir)
+    audio_url = f"/api/outputs/{Path(result.audio_path).name}" if result.status == "COMPLETED" else None
     return {
-        "ok": True,
+        "ok": result.status == "COMPLETED",
         "status": result.status,
-        "audio_url": result.audio_url,
+        "audio_url": audio_url,
         "duration_seconds": result.duration_seconds,
-        "file_path": result.file_path,
+        "file_path": result.audio_path,
         "notice": result.user_notification,
+        "error": result.error_message,
     }
 
 
