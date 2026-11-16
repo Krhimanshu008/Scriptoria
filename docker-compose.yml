@@ -1,0 +1,85 @@
+services:
+  # ============================================================================
+  # Scriptoria FastAPI Backend Engine
+  # ============================================================================
+  scriptoria-api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: scriptoria-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - HOST=0.0.0.0
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - scriptoria_api_data:/app/data
+    networks:
+      - scriptoria-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ============================================================================
+  # Scriptoria Next.js Production Web Application
+  # ============================================================================
+  scriptoria-web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: scriptoria-web
+    restart: unless-stopped
+    ports:
+      - "3100:3000"
+    environment:
+      - PORT=3000
+      - NODE_ENV=production
+      - DATABASE_URL=file:/app/data/scriptoria.db
+      - SCRIPTORIA_FASTAPI_URL=http://scriptoria-api:8000
+      - NEXT_PUBLIC_APP_URL=https://scriptoria.krhimanshu.in
+    env_file:
+      - ./frontend/.env.production
+    volumes:
+      - scriptoria_web_data:/app/data
+    depends_on:
+      scriptoria-api:
+        condition: service_started
+    networks:
+      - scriptoria-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ============================================================================
+  # Cloudflare Zero Trust Ingress Tunnel (Zero Open Inbound Ports)
+  # ============================================================================
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: scriptoria-tunnel
+    restart: unless-stopped
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - scriptoria-web
+    networks:
+      - scriptoria-net
+
+networks:
+  scriptoria-net:
+    name: scriptoria-net
+    driver: bridge
+
+volumes:
+  scriptoria_api_data:
+    name: scriptoria_api_data
+  scriptoria_web_data:
+    name: scriptoria_web_data
