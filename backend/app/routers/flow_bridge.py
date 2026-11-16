@@ -16,6 +16,7 @@ from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from pydantic import BaseModel
 
 from app.schemas.flow_contracts import (
     FlowAudioGenerateRequest,
