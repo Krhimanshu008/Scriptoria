@@ -109,3 +109,27 @@ def test_storyboard_validate_endpoint():
     res = client.post("/api/v1/storyboard/validate", json=valid_payload)
     assert res.status_code == 200
     assert res.json()["valid"] is True
+
+
+def test_storyboard_multi_ai_brain_engine():
+    """Verify POST /api/v1/storyboard/decompose executes with engine='multi_ai_brain'."""
+    payload = {
+        "book_id": "book-brain-test",
+        "chapter_index": 1,
+        "chapter_title": "The Quarter-Deck",
+        "raw_text": SAMPLE_2000_WORD_CHAPTER,
+        "target_frames": 80,
+        "global_style": "19th-century maritime realism",
+        "engine": "multi_ai_brain",
+    }
+
+    res = client.post("/api/v1/storyboard/decompose", json=payload)
+    assert res.status_code == 200
+    data = res.json()
+
+    assert data["schema_version"] == "2.0.0"
+    assert data["total_frames"] == 80
+    assert len(data["scenes"]) >= 4
+    for sc in data["scenes"]:
+        assert len(sc["sub_scenes"]) >= 5
+

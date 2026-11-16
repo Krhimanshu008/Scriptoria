@@ -30,6 +30,8 @@
     "https://*.flow.google.com/*",
     "https://flow-content.google/*",
     "https://*.flow-content.google/*",
+    "https://aistudio.google.com/*",
+    "https://*.aistudio.google.com/*",
     "https://labs.google/*",
     "https://*.googleusercontent.com/*",
     "http://127.0.0.1:8000/*",
@@ -45,7 +47,21 @@
         "https://labs.google/fx/*"
       ],
       "js": [
+        "flow_deck_controller.js",
+        "flow_character_sync.js",
+        "flow_scene_sync.js",
         "content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://aistudio.google.com/*",
+        "https://*.aistudio.google.com/*"
+      ],
+      "js": [
+        "aistudio_companion.js"
       ],
       "run_at": "document_start",
       "all_frames": false
@@ -54,7 +70,10 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "injected.js"
+        "injected.js",
+        "flow_deck_controller.js",
+        "flow_character_sync.js",
+        "flow_scene_sync.js"
       ],
       "matches": [
         "https://flow.google/*",

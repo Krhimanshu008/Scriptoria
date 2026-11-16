@@ -49,19 +49,40 @@ class FlowMediaType(StrEnum):
 
 
 class FlowModelEngine(StrEnum):
+    NANO_BANANA_2_1 = "NANO_BANANA_2_1"
+    NANO_BANANA_PRO = "NANO_BANANA_PRO"
+    NANO_BANANA_2_LITE = "NANO_BANANA_2_LITE"
+    NANO_BANANA = "NANO_BANANA"  # Canonical backward-compatible alias
     IMAGEN_3 = "IMAGEN_3"
-    NANO_BANANA = "NANO_BANANA"
+    OMNI_1_2_FLASH = "OMNI_1_2_FLASH"
+    OMNI_1_1_FLASH = "OMNI_1_1_FLASH"
+    VEO_3_1_LITE = "VEO_3_1_LITE"
+    VEO_3_1_FAST = "VEO_3_1_FAST"
+    VEO_3_1_QUALITY = "VEO_3_1_QUALITY"
     VEO_2 = "VEO_2"
     VEO_3 = "VEO_3"
     FLOW_AUTO = "FLOW_AUTO"
+
+
+class FlowThinkingLevel(StrEnum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    EXTRA_THOROUGH = "EXTRA_THOROUGH"
+
+
+class FlowVideoMode(StrEnum):
+    FRAMES = "FRAMES"
+    INGREDIENTS = "INGREDIENTS"
 
 
 class FlowAspectRatio(StrEnum):
     LANDSCAPE_16_9 = "16:9"
     PORTRAIT_9_16 = "9:16"
     SQUARE_1_1 = "1:1"
-    CINEMATIC_21_9 = "21:9"
     STANDARD_4_3 = "4:3"
+    PORTRAIT_3_4 = "3:4"
+    CINEMATIC_21_9 = "21:9"
 
 
 class FlowTaskStatus(StrEnum):
@@ -197,9 +218,13 @@ class FlowGenerationTask(StrictModel):
     negative_prompt: str | None = Field(default=None, max_length=2000)
     ingredient_refs: tuple[FlowIngredientRef, ...] = Field(default_factory=tuple)
     media_type: FlowMediaType = Field(default=FlowMediaType.IMAGE)
-    model_engine: FlowModelEngine = Field(default=FlowModelEngine.NANO_BANANA)
+    model_engine: FlowModelEngine = Field(default=FlowModelEngine.NANO_BANANA_2_1)
     aspect_ratio: FlowAspectRatio = Field(default=FlowAspectRatio.LANDSCAPE_16_9)
     candidate_count: int = Field(default=1, ge=1, le=4)
+    thinking_level: FlowThinkingLevel = Field(default=FlowThinkingLevel.HIGH)
+    video_mode: FlowVideoMode = Field(default=FlowVideoMode.INGREDIENTS)
+    video_duration_seconds: int = Field(default=5, ge=3, le=15)
+    video_resolution: Literal["360p", "720p"] = Field(default="720p")
     seed: int | None = Field(default=None, ge=0)
     priority: int = Field(default=5, ge=1, le=10, description="1 = highest priority, 10 = lowest")
     timeout_seconds: int = Field(default=180, ge=15, le=600)
@@ -211,13 +236,14 @@ class FlowGenerationTask(StrictModel):
 class FlowMediaCandidate(StrictModel):
     """A single captured image or video output intercepted from Google Flow's RPC response."""
 
-    candidate_index: int = Field(default=0, ge=0, le=10)
+    candidate_index: int = Field(default=0, ge=0, le=100)
     remote_url: str = Field(
         ...,
         min_length=8,
         max_length=4096,
         description="Captured *.googleusercontent.com, storage.googleapis.com, or blob: URL.",
     )
+    media_type: FlowMediaType = Field(default=FlowMediaType.IMAGE)
     mime_type: str = Field(default="image/png", max_length=64)
     width: int | None = Field(default=None, ge=16, le=8192)
     height: int | None = Field(default=None, ge=16, le=8192)
@@ -300,6 +326,83 @@ class FlowQueueAction(StrictModel):
         return self
 
 
+class FlowAudioVoiceMode(StrEnum):
+    SINGLE_NARRATOR = "SINGLE_NARRATOR"
+    SMART_MULTI_SPEAKER = "SMART_MULTI_SPEAKER"
+
+
+class FlowAudioExecutionMode(StrEnum):
+    AUTO = "AUTO"
+    IN_TAB = "IN_TAB"
+    HEADLESS = "HEADLESS"
+
+
+class FlowAudioConfig(StrictModel):
+    """Configuration for Gemini 3.8 Flash TTS audio generation."""
+
+    model_name: Literal["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"] = Field(
+        default="gemini-3.8-flash-tts",
+        description="Flagship or Lite variant of Gemini 3.8 Flash TTS.",
+    )
+    voice_mode: FlowAudioVoiceMode = Field(
+        default=FlowAudioVoiceMode.SINGLE_NARRATOR,
+        description="Default is SINGLE_NARRATOR (no dual/multi-speaker) unless user explicitly selects SMART_MULTI_SPEAKER.",
+    )
+    narrator_voice: str = Field(
+        default="Enzo",
+        max_length=64,
+        description="Voice preset for the master narrator (default: Enzo).",
+    )
+    character_voices: dict[str, str] = Field(
+        default_factory=dict,
+        description="Optional mapping of character names to voice presets when in SMART_MULTI_SPEAKER mode.",
+    )
+    language: Literal["en", "hi"] = Field(
+        default="en",
+        description="Language for generation (en = English, hi = Hindi). Supports cross-lingual voice transfer.",
+    )
+    enable_emotion_tags: bool = Field(
+        default=True,
+        description="Whether to inject inline audio tags (<breath/>, <gasp>, <shout>, <whisper>).",
+    )
+    execution_mode: FlowAudioExecutionMode = Field(
+        default=FlowAudioExecutionMode.AUTO,
+        description="AUTO: tries active AI Studio browser tab, falls back to headless SDK.",
+    )
+
+
+class FlowAudioGenerateRequest(StrictModel):
+    """Request payload to synthesize chapter narration audio via Gemini 3.8 Flash TTS."""
+
+    project_id: str = Field(..., min_length=1, max_length=128)
+    chapter_id: str = Field(..., min_length=1, max_length=128)
+    chapter_title: str = Field(..., min_length=1, max_length=200)
+    raw_text: str = Field(..., min_length=5, max_length=50000)
+    config: FlowAudioConfig = Field(default_factory=FlowAudioConfig)
+
+
+class FlowAudioResultEvent(StrictModel):
+    """Result emitted after synthesizing chapter audio via Gemini 3.8 Flash TTS."""
+
+    task_id: str = Field(default_factory=lambda: str(uuid4()))
+    project_id: str = Field(..., min_length=1, max_length=128)
+    chapter_id: str = Field(..., min_length=1, max_length=128)
+    chapter_title: str = Field(..., min_length=1, max_length=200)
+    audio_path: str = Field(..., min_length=1, max_length=1024)
+    duration_seconds: float = Field(..., ge=0.0)
+    sample_rate_hz: int = Field(default=24000, ge=8000, le=48000)
+    voice_used: str = Field(default="Enzo", max_length=64)
+    voice_mode: FlowAudioVoiceMode = Field(default=FlowAudioVoiceMode.SINGLE_NARRATOR)
+    language: str = Field(default="en", max_length=10)
+    user_notification: str = Field(
+        default="Using default single narrator voice: Enzo. You can configure multi-speaker voiceover in settings.",
+        max_length=512,
+    )
+    status: Literal["COMPLETED", "FAILED"] = Field(default="COMPLETED")
+    error_message: str | None = Field(default=None, max_length=2048)
+    created_at: str = Field(default_factory=utc_now_iso)
+
+
 class FlowWsEnvelope(StrictModel):
     """Wire-level WebSocket frame envelope for all Companion <-> FastAPI communications."""
 
@@ -314,6 +417,15 @@ class FlowWsEnvelope(StrictModel):
         "INGREDIENT_SYNC",
         "INGREDIENT_SYNC_ACK",
         "QUEUE_ACTION",
+        "CONFIGURE_DECK",
+        "DECK_CONFIG_RESULT",
+        "SYNC_CHARACTER",
+        "CHARACTER_SYNC_RESULT",
+        "ORCHESTRATE_SCENE",
+        "SCENE_ORCHESTRATION_RESULT",
+        "DISPATCH_AUDIO_TASK",
+        "AUDIO_PROGRESS",
+        "AUDIO_RESULT",
         "BRIDGE_ACK",
         "BRIDGE_ERROR",
     ]

@@ -18,13 +18,25 @@ export type FlowIngredientCategory =
 export type FlowMediaType = "IMAGE" | "VIDEO";
 
 export type FlowModelEngine =
-  | "IMAGEN_3"
+  | "NANO_BANANA_2_1"
+  | "NANO_BANANA_PRO"
+  | "NANO_BANANA_2_LITE"
   | "NANO_BANANA"
+  | "IMAGEN_3"
+  | "OMNI_1_2_FLASH"
+  | "OMNI_1_1_FLASH"
+  | "VEO_3_1_LITE"
+  | "VEO_3_1_FAST"
+  | "VEO_3_1_QUALITY"
   | "VEO_2"
   | "VEO_3"
   | "FLOW_AUTO";
 
-export type FlowAspectRatio = "16:9" | "9:16" | "1:1" | "21:9" | "4:3";
+export type FlowThinkingLevel = "LOW" | "MEDIUM" | "HIGH" | "EXTRA_THOROUGH";
+
+export type FlowVideoMode = "FRAMES" | "INGREDIENTS";
+
+export type FlowAspectRatio = "16:9" | "9:16" | "1:1" | "4:3" | "3:4" | "21:9";
 
 export type FlowTaskStatus =
   | "QUEUED"
@@ -106,6 +118,10 @@ export interface FlowGenerationTask {
   readonly model_engine?: FlowModelEngine;
   readonly aspect_ratio?: FlowAspectRatio;
   readonly candidate_count?: number;
+  readonly thinking_level?: FlowThinkingLevel;
+  readonly video_mode?: FlowVideoMode;
+  readonly video_duration_seconds?: number;
+  readonly video_resolution?: "360p" | "720p";
   readonly seed?: number | null;
   readonly priority?: number;
   readonly timeout_seconds?: number;
@@ -117,6 +133,7 @@ export interface FlowGenerationTask {
 export interface FlowMediaCandidate {
   readonly candidate_index: number;
   readonly remote_url: string;
+  readonly media_type?: FlowMediaType;
   readonly mime_type: string;
   readonly width?: number | null;
   readonly height?: number | null;
@@ -165,6 +182,44 @@ export interface FlowQueueAction {
   readonly requested_at?: string;
 }
 
+export type FlowAudioVoiceMode = "SINGLE_NARRATOR" | "SMART_MULTI_SPEAKER";
+export type FlowAudioExecutionMode = "AUTO" | "IN_TAB" | "HEADLESS";
+
+export interface FlowAudioConfig {
+  readonly model_name?: "gemini-3.8-flash-tts" | "gemini-3.8-flash-lite-tts";
+  readonly voice_mode?: FlowAudioVoiceMode;
+  readonly narrator_voice?: string;
+  readonly character_voices?: Record<string, string>;
+  readonly language?: "en" | "hi";
+  readonly enable_emotion_tags?: boolean;
+  readonly execution_mode?: FlowAudioExecutionMode;
+}
+
+export interface FlowAudioGenerateRequest {
+  readonly project_id: string;
+  readonly chapter_id: string;
+  readonly chapter_title: string;
+  readonly raw_text: string;
+  readonly config?: FlowAudioConfig;
+}
+
+export interface FlowAudioResultEvent {
+  readonly task_id: string;
+  readonly project_id: string;
+  readonly chapter_id: string;
+  readonly chapter_title: string;
+  readonly audio_path: string;
+  readonly duration_seconds: number;
+  readonly sample_rate_hz?: number;
+  readonly voice_used: string;
+  readonly voice_mode: FlowAudioVoiceMode;
+  readonly language: string;
+  readonly user_notification: string;
+  readonly status: "COMPLETED" | "FAILED";
+  readonly error_message?: string | null;
+  readonly created_at: string;
+}
+
 export type FlowDispatchRequestBody =
   | {
       readonly kind: "GENERATION_TASK";
@@ -177,4 +232,8 @@ export type FlowDispatchRequestBody =
   | {
       readonly kind: "QUEUE_ACTION";
       readonly payload: FlowQueueAction;
+    }
+  | {
+      readonly kind: "AUDIO_GENERATE";
+      readonly payload: FlowAudioGenerateRequest;
     };

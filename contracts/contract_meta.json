@@ -2,7 +2,7 @@
   "artifacts": {
     "openapi": "openapi.json"
   },
-  "contract_hash": "0a5d77a823a8630986234d068dbd01a3425a7b53652d899c4d134b719a7090f6",
+  "contract_hash": "953c0ba6c2cc2ab093a1ace4b3e070b846fbabd24be9fd26b847e36ea3f10608",
   "hash_algorithm": "sha256",
   "openapi_version": "3.1.0",
   "paths_count": 45,

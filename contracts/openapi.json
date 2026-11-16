@@ -853,6 +853,19 @@
             "title": "Chapter Title",
             "type": "string"
           },
+          "engine": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "deterministic",
+            "description": "Decomposition engine: 'deterministic' (fast rule-based) or 'multi_ai_brain' (Gemini cognitive swarm)",
+            "title": "Engine"
+          },
           "global_style": {
             "default": "cinematic 35mm film grain, atmospheric lighting, high-contrast chiaroscuro, aspect ratio 16:9",
             "description": "Global artistic visual style signature",

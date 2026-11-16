@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
 import re
 from typing import Any, Dict, List, Optional
+import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from app.core.config import settings
 from app.models.canonical_protocol import (
     HighDensityChapterStoryboard,
     MacroScene,
@@ -30,6 +33,10 @@ class DecomposeChapterRequest(BaseModel):
     global_style: str = Field(
         default="cinematic 35mm film grain, atmospheric lighting, high-contrast chiaroscuro, aspect ratio 16:9",
         description="Global artistic visual style signature"
+    )
+    engine: Optional[str] = Field(
+        default="deterministic",
+        description="Decomposition engine: 'deterministic' (fast rule-based) or 'multi_ai_brain' (Gemini cognitive swarm)"
     )
 
 
@@ -185,6 +192,68 @@ def _slice_scene_into_subscenes(
 
 
 # ---------------------------------------------------------------------------
+# Multi-AI Cognitive Swarm ("The Story Brain")
+# ---------------------------------------------------------------------------
+
+async def _ai_director_decompose(
+    raw_text: str,
+    target_frames: int,
+    api_key: Optional[str] = None
+) -> Optional[List[Dict[str, Any]]]:
+    """Invokes Gemini 3.5 Flash / Google AI Studio Director Brain to divide chapter into macro scenes."""
+    key = api_key or os.environ.get("GEMINI_API_KEY") or getattr(settings, "GEMINI_API_KEY", None)
+    if not key:
+        logger.info("No GEMINI_API_KEY configured for AI Story Brain, using deterministic fallback.")
+        return None
+
+    model = "gemini-3.5-flash-lite"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+
+    director_prompt = (
+        "You are the Chief Narrative Director of Scriptoria Storyboard Studio.\n"
+        "Your task is to analyze the following chapter (~2,000 words) and divide it into 5 to 8 Macro Scenes "
+        "based on location shifts, time shifts, or character entrances/exits.\n"
+        f"You must allocate an exact frame budget per scene such that the sum equals {target_frames} frames.\n\n"
+        "Respond ONLY with valid JSON conforming to this structure:\n"
+        "{\n"
+        '  "macro_scenes": [\n'
+        '    {\n'
+        '      "scene_id": "sc01",\n'
+        '      "scene_order": 1,\n'
+        '      "heading": "Descriptive Heading",\n'
+        '      "location_handle": "@LocationHandle",\n'
+        '      "time_of_day": "e.g. cold morning / sunset",\n'
+        '      "summary": "1-2 sentence dramatic summary",\n'
+        '      "frame_budget": 14\n'
+        '    }\n'
+        '  ]\n'
+        "}\n\n"
+        f"CHAPTER TEXT:\n{raw_text[:6000]}"
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                url,
+                json={"contents": [{"parts": [{"text": director_prompt}]}]},
+                headers={"Content-Type": "application/json"}
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                raw_reply = data["candidates"][0]["content"]["parts"][0]["text"]
+                clean_json = re.sub(r"^```(?:json)?\s*", "", raw_reply.strip())
+                clean_json = re.sub(r"\s*```$", "", clean_json.strip())
+                parsed = json.loads(clean_json)
+                if "macro_scenes" in parsed and len(parsed["macro_scenes"]) >= 3:
+                    logger.info("AI Director successfully decomposed chapter into %d macro scenes.", len(parsed["macro_scenes"]))
+                    return parsed["macro_scenes"]
+    except Exception as exc:
+        logger.warning("AI Director decomposition exception: %s. Falling back to deterministic NLP engine.", exc)
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # API Endpoints
 # ---------------------------------------------------------------------------
 
@@ -198,11 +267,25 @@ async def decompose_chapter_to_storyboard(req: DecomposeChapterRequest) -> Any:
     word_count = len(raw_text.split())
     target_frames = req.target_frames
 
-    # Step 1: Split into 5 to 8 Macro Scenes
-    macro_scenes_data = _split_into_macro_scenes(raw_text, target_scene_count=6)
+    # Check if Multi-AI Cognitive Swarm ("Story Brain") was requested
+    ai_scenes = None
+    if req.engine == "multi_ai_brain":
+        ai_scenes = await _ai_director_decompose(raw_text, target_frames)
+
+    # Step 1: Split into 5 to 8 Macro Scenes (Deterministic or AI Director)
+    macro_scenes_data = _split_into_macro_scenes(raw_text, target_scene_count=len(ai_scenes) if ai_scenes else 6)
     scene_count = len(macro_scenes_data)
 
-    # Step 2: Allocate frames across scenes proportionally
+    # If AI Director provided headings and frame budgets, merge them
+    if ai_scenes and len(ai_scenes) == scene_count:
+        for idx, sc in enumerate(macro_scenes_data):
+            sc["heading"] = ai_scenes[idx].get("heading", sc["heading"])
+            sc["location_handle"] = ai_scenes[idx].get("location_handle", f"@Location_{sc['scene_id']}")
+            sc["time_of_day"] = ai_scenes[idx].get("time_of_day", "continuous narrative progression")
+            sc["summary"] = ai_scenes[idx].get("summary", "")
+            sc["frame_budget"] = ai_scenes[idx].get("frame_budget")
+
+    # Step 2: Allocate frames across scenes
     frames_per_scene = math.floor(target_frames / scene_count)
     remainder = target_frames % scene_count
 
@@ -210,23 +293,23 @@ async def decompose_chapter_to_storyboard(req: DecomposeChapterRequest) -> Any:
     current_frame_counter = 1
 
     for idx, sc_data in enumerate(macro_scenes_data):
-        frames_this_scene = frames_per_scene + (1 if idx < remainder else 0)
+        frames_this_scene = sc_data.get("frame_budget") or (frames_per_scene + (1 if idx < remainder else 0))
         sub_scenes = _slice_scene_into_subscenes(
             sc_data,
             frames_allocated=frames_this_scene,
             start_frame_idx=current_frame_counter,
             global_style=req.global_style,
         )
-        current_frame_counter += frames_this_scene
+        current_frame_counter += len(sub_scenes)
 
         compiled_macro_scenes.append(
             MacroScene(
                 scene_id=sc_data["scene_id"],
                 scene_order=sc_data["scene_order"],
                 scene_heading=sc_data["heading"],
-                location_handle=f"@Location_{sc_data['scene_id']}",
-                time_of_day="continuous narrative progression",
-                summary=f"Macro Scene {sc_data['scene_order']}: {sc_data['heading']}. Covers {len(sub_scenes)} atomic visual frames.",
+                location_handle=sc_data.get("location_handle", f"@Location_{sc_data['scene_id']}"),
+                time_of_day=sc_data.get("time_of_day", "continuous narrative progression"),
+                summary=sc_data.get("summary") or f"Macro Scene {sc_data['scene_order']}: {sc_data['heading']}. Covers {len(sub_scenes)} atomic visual frames.",
                 sub_scenes=sub_scenes,
             )
         )
@@ -244,8 +327,9 @@ async def decompose_chapter_to_storyboard(req: DecomposeChapterRequest) -> Any:
     )
 
     logger.info(
-        "Successfully decomposed chapter %s into %d macro scenes and %d sub-scene frames.",
+        "Successfully decomposed chapter %s via %s into %d macro scenes and %d sub-scene frames.",
         req.chapter_title,
+        "Multi-AI Story Brain" if ai_scenes else "Deterministic Engine",
         scene_count,
         total_actual_frames,
     )

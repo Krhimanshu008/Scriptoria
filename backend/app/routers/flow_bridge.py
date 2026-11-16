@@ -18,6 +18,8 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 
 from app.schemas.flow_contracts import (
+    FlowAudioGenerateRequest,
+    FlowAudioResultEvent,
     FlowCompanionStatus,
     FlowConnectionState,
     FlowGenerationTask,
@@ -31,6 +33,11 @@ from app.schemas.flow_contracts import (
     FlowTaskStatus,
     FlowWsEnvelope,
     utc_now_iso,
+)
+from app.services.flow_av_pipeline import (
+    FlowAVMuxRequest,
+    FlowAVMuxResult,
+    execute_chapter_av_assembly,
 )
 
 logger = logging.getLogger("scriptoria.flow_bridge")
@@ -261,6 +268,54 @@ class FlowBridgeOrchestrator:
             "ingredients_count": len(sync_req.ingredients),
         }
 
+    async def configure_deck(self, settings: dict[str, Any]) -> dict[str, Any]:
+        async with self._lock:
+            ws = self._active_ws
+        if ws is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Google Flow Chrome Companion is not currently connected.",
+            )
+        envelope = FlowWsEnvelope(
+            event_type="CONFIGURE_DECK",
+            correlation_id=str(uuid4()),
+            payload=settings,
+        )
+        await ws.send_json(envelope.model_dump())
+        return {"status": "DISPATCHED_TO_COMPANION", "settings": settings}
+
+    async def sync_character(self, character_payload: dict[str, Any]) -> dict[str, Any]:
+        async with self._lock:
+            ws = self._active_ws
+        if ws is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Google Flow Chrome Companion is not currently connected.",
+            )
+        envelope = FlowWsEnvelope(
+            event_type="SYNC_CHARACTER",
+            correlation_id=str(uuid4()),
+            payload=character_payload,
+        )
+        await ws.send_json(envelope.model_dump())
+        return {"status": "DISPATCHED_TO_COMPANION", "character": character_payload}
+
+    async def orchestrate_scene(self, scene_payload: dict[str, Any]) -> dict[str, Any]:
+        async with self._lock:
+            ws = self._active_ws
+        if ws is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Google Flow Chrome Companion is not currently connected.",
+            )
+        envelope = FlowWsEnvelope(
+            event_type="ORCHESTRATE_SCENE",
+            correlation_id=str(uuid4()),
+            payload=scene_payload,
+        )
+        await ws.send_json(envelope.model_dump())
+        return {"status": "DISPATCHED_TO_COMPANION", "scene": scene_payload}
+
     async def execute_queue_action(self, action_req: FlowQueueAction) -> FlowCompanionStatus:
         ws_to_notify: WebSocket | None = None
 
@@ -487,45 +542,65 @@ async def flow_companion_websocket(
     try:
         while True:
             raw_message = await websocket.receive_json()
-            envelope = FlowWsEnvelope.model_validate(raw_message)
+            try:
+                envelope = FlowWsEnvelope.model_validate(raw_message)
+            except Exception as parse_err:
+                logger.warning("Malformed WS envelope received: %s | data=%s", parse_err, raw_message)
+                continue
 
-            if envelope.event_type in {
-                "COMPANION_HELLO",
-                "COMPANION_HEARTBEAT",
-                "COMPANION_STATUS",
-            }:
-                updated_status = await flow_orchestrator.update_companion_status(
-                    envelope.payload
-                )
-                ack = FlowWsEnvelope(
-                    event_type="BRIDGE_ACK",
-                    correlation_id=envelope.envelope_id,
-                    payload={"status": updated_status.connection_state},
-                )
-                await websocket.send_json(ack.model_dump())
+            try:
+                if envelope.event_type in {
+                    "COMPANION_HELLO",
+                    "COMPANION_HEARTBEAT",
+                    "COMPANION_STATUS",
+                }:
+                    updated_status = await flow_orchestrator.update_companion_status(
+                        envelope.payload
+                    )
+                    ack = FlowWsEnvelope(
+                        event_type="BRIDGE_ACK",
+                        correlation_id=envelope.envelope_id,
+                        payload={"status": updated_status.connection_state},
+                    )
+                    await websocket.send_json(ack.model_dump())
 
-            elif envelope.event_type == "MEDIA_RESULT":
-                saved_event = await flow_orchestrator.handle_media_result(
-                    envelope.payload
-                )
-                ack = FlowWsEnvelope(
-                    event_type="BRIDGE_ACK",
-                    correlation_id=saved_event.task_id,
-                    payload={
-                        "task_id": saved_event.task_id,
-                        "saved_count": len(saved_event.saved_assets),
-                        "saved_assets": [a.model_dump() for a in saved_event.saved_assets],
-                    },
-                )
-                await websocket.send_json(ack.model_dump())
+                elif envelope.event_type == "MEDIA_RESULT":
+                    saved_event = await flow_orchestrator.handle_media_result(
+                        envelope.payload
+                    )
+                    ack = FlowWsEnvelope(
+                        event_type="BRIDGE_ACK",
+                        correlation_id=saved_event.task_id,
+                        payload={
+                            "task_id": saved_event.task_id,
+                            "saved_count": len(saved_event.saved_assets),
+                            "saved_assets": [a.model_dump() for a in saved_event.saved_assets],
+                        },
+                    )
+                    await websocket.send_json(ack.model_dump())
 
-            elif envelope.event_type in {"TASK_PROGRESS", "INGREDIENT_SYNC_ACK"}:
-                ack = FlowWsEnvelope(
-                    event_type="BRIDGE_ACK",
-                    correlation_id=envelope.correlation_id or envelope.envelope_id,
-                    payload={"received": envelope.event_type},
-                )
-                await websocket.send_json(ack.model_dump())
+                elif envelope.event_type in {"TASK_PROGRESS", "INGREDIENT_SYNC_ACK"}:
+                    ack = FlowWsEnvelope(
+                        event_type="BRIDGE_ACK",
+                        correlation_id=envelope.correlation_id or envelope.envelope_id,
+                        payload={"received": envelope.event_type},
+                    )
+                    await websocket.send_json(ack.model_dump())
+
+                elif envelope.event_type == "DISPATCH_AUDIO_TASK":
+                    from app.services.flow_tts_service import execute_gemini_tts_synthesis
+
+                    audio_req = FlowAudioGenerateRequest.model_validate(envelope.payload)
+                    out_dir = Path("output") / "flow_assets" / audio_req.project_id / "chapters" / audio_req.chapter_id
+                    audio_res = execute_gemini_tts_synthesis(request=audio_req, output_dir=out_dir)
+                    res_env = FlowWsEnvelope(
+                        event_type="AUDIO_RESULT",
+                        correlation_id=envelope.correlation_id or envelope.envelope_id,
+                        payload=audio_res.model_dump(),
+                    )
+                    await websocket.send_json(res_env.model_dump())
+            except Exception as dispatch_err:
+                logger.warning("Error processing %s: %s", envelope.event_type, dispatch_err)
 
     except WebSocketDisconnect:
         await flow_orchestrator.disconnect_companion(websocket)
@@ -565,3 +640,42 @@ async def control_task_queue(action_req: FlowQueueAction) -> FlowCompanionStatus
 async def list_recent_media_events() -> list[FlowMediaResultEvent]:
     """Return the most recent captured media events and their local disk paths."""
     return list(flow_orchestrator._recent_events)
+
+
+@router.post("/deck/configure")
+async def configure_flow_deck(settings: dict[str, Any]) -> dict[str, Any]:
+    """Programmatically configure Google Flow deck settings (model, ratio, thinking level)."""
+    return await flow_orchestrator.configure_deck(settings)
+
+
+@router.post("/character/sync")
+async def sync_flow_character(character_payload: dict[str, Any]) -> dict[str, Any]:
+    """Instruct the companion to register a character in Flow's Character Studio."""
+    return await flow_orchestrator.sync_character(character_payload)
+
+
+@router.post("/scene/orchestrate")
+async def orchestrate_flow_scene(scene_payload: dict[str, Any]) -> dict[str, Any]:
+    """Instruct the companion to build a multi-clip scene in Flow's Scenebuilder."""
+    return await flow_orchestrator.orchestrate_scene(scene_payload)
+
+
+@router.post("/av/mux", response_model=FlowAVMuxResult)
+async def mux_chapter_storyboard(mux_req: FlowAVMuxRequest) -> FlowAVMuxResult:
+    """Mux Flow visual assets with voiceover narration into a chapter video storyboard."""
+    return await execute_chapter_av_assembly(mux_req)
+
+
+@router.post("/audio/generate", response_model=FlowAudioResultEvent)
+async def generate_chapter_audio(request: FlowAudioGenerateRequest) -> FlowAudioResultEvent:
+    """
+    Synthesize broadcast-grade 24kHz chapter audio using Gemini 3.8 Flash TTS.
+    Defaults to SINGLE_NARRATOR (Enzo) unless the user explicitly selected SMART_MULTI_SPEAKER.
+    Notifies user of the selected configuration.
+    """
+    from app.services.flow_tts_service import execute_gemini_tts_synthesis
+
+    output_dir = Path("output") / "flow_assets" / request.project_id / "chapters" / request.chapter_id
+    result = execute_gemini_tts_synthesis(request=request, output_dir=output_dir)
+    return result
+

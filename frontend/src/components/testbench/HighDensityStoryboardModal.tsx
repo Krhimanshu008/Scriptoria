@@ -72,10 +72,12 @@ export function HighDensityStoryboardModal({
 }: HighDensityStoryboardModalProps) {
   const [targetFrames, setTargetFrames] = useState<number>(90);
   const [selectedStyleId, setSelectedStyleId] = useState<string>("19th-century-realism");
+  const [engine, setEngine] = useState<"multi_ai_brain" | "deterministic">("multi_ai_brain");
   const [isDecomposing, setIsDecomposing] = useState<boolean>(false);
   const [storyboard, setStoryboard] = useState<HighDensityChapterStoryboard | null>(null);
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
   const [copiedFrameIdx, setCopiedFrameIdx] = useState<number | null>(null);
+  const [allPromptsCopied, setAllPromptsCopied] = useState<boolean>(false);
 
   if (!isOpen) return null;
 
@@ -108,6 +110,7 @@ export function HighDensityStoryboardModal({
           raw_text: textToUse,
           target_frames: targetFrames,
           global_style: currentStyle,
+          engine: engine,
         }),
       });
 
@@ -122,13 +125,30 @@ export function HighDensityStoryboardModal({
         setSelectedSceneId(data.scenes[0].scene_id);
       }
       toast.success(
-        `Generated ${data.total_frames} cinematic sub-scene frames across ${data.scenes.length} macro scenes!`
+        `Generated ${data.total_frames} cinematic sub-scene frames via ${engine === "multi_ai_brain" ? "Multi-AI Story Brain" : "Fast NLP"} across ${data.scenes.length} macro scenes!`
       );
     } catch (err: any) {
       toast.error("Decomposition failed: " + err.message);
     } finally {
       setIsDecomposing(false);
     }
+  };
+
+  const handleCopyAllPrompts = () => {
+    if (!storyboard) return;
+    const allPrompts = storyboard.scenes.flatMap((s) =>
+      s.sub_scenes.map((sub) => ({
+        frame_index: sub.frame_index,
+        scene_id: sub.scene_id,
+        lens: sub.lens,
+        shot_type: sub.shot_type,
+        prompt: sub.compiled_image_prompt,
+      }))
+    );
+    navigator.clipboard.writeText(JSON.stringify(allPrompts, null, 2));
+    setAllPromptsCopied(true);
+    toast.success(`Copied all ${allPrompts.length} compiled prompts to clipboard (Flow / ComfyUI format)!`);
+    setTimeout(() => setAllPromptsCopied(false), 2500);
   };
 
   const handleCopyPrompt = (prompt: string, frameIdx: number) => {
@@ -208,18 +228,70 @@ export function HighDensityStoryboardModal({
               />
               <span className="text-xs font-bold text-amber-400 min-w-[28px]">{targetFrames}</span>
             </div>
+
+            {/* Engine Selection: Story Brain vs Fast NLP */}
+            <div className="flex items-center gap-1 border-l border-zinc-800 pl-3">
+              <span className="text-xs text-zinc-400 mr-1">Engine:</span>
+              <div className="flex rounded-md bg-zinc-900 p-0.5 border border-zinc-800">
+                <button
+                  type="button"
+                  onClick={() => setEngine("multi_ai_brain")}
+                  className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium transition-all ${
+                    engine === "multi_ai_brain"
+                      ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                      : "text-zinc-400 hover:text-zinc-200"
+                  }`}
+                  title="Multi-AI Cognitive Swarm (Gemini Director, Cinematographer & Continuity Brain)"
+                >
+                  <Sparkles className="h-3 w-3 text-amber-400" />
+                  <span>Story Brain</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEngine("deterministic")}
+                  className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium transition-all ${
+                    engine === "deterministic"
+                      ? "bg-zinc-800 text-zinc-200 border border-zinc-700"
+                      : "text-zinc-400 hover:text-zinc-200"
+                  }`}
+                  title="Deterministic NLP Rule Engine (Fast, 0-cost, 100% offline)"
+                >
+                  <span>⚡ Fast NLP</span>
+                </button>
+              </div>
+            </div>
           </div>
 
           <div className="flex items-center gap-2">
+            {storyboard && (
+              <button
+                onClick={handleCopyAllPrompts}
+                className="flex items-center gap-1 rounded-lg border border-zinc-700 bg-zinc-800 hover:bg-zinc-700 px-2.5 py-1.5 text-xs font-medium text-zinc-200 transition-colors cursor-pointer"
+                title="Copy all 80-100 prompts as JSON array for Google Flow Companion or ComfyUI"
+              >
+                {allPromptsCopied ? (
+                  <>
+                    <Check className="h-3.5 w-3.5 text-emerald-400" />
+                    <span className="text-emerald-400">Copied Prompts!</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="h-3.5 w-3.5 text-zinc-400" />
+                    <span>Export Flow Prompts</span>
+                  </>
+                )}
+              </button>
+            )}
+
             <button
               onClick={handleDecompose}
               disabled={isDecomposing}
-              className="flex items-center gap-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 px-3 py-1.5 text-xs font-bold text-black shadow-md shadow-amber-500/20 transition-all disabled:opacity-50"
+              className="flex items-center gap-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 px-3 py-1.5 text-xs font-bold text-black shadow-md shadow-amber-500/20 transition-all disabled:opacity-50 cursor-pointer"
             >
               {isDecomposing ? (
                 <>
                   <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-black border-t-transparent" />
-                  <span>Decomposing Chapter...</span>
+                  <span>Decomposing via {engine === "multi_ai_brain" ? "Story Brain..." : "Fast NLP..."}</span>
                 </>
               ) : (
                 <>

@@ -120,6 +120,452 @@
   }
 
   // ==========================================================================
+  // 2.5 Deck, Character, and Scene Controller Submodules
+  // ==========================================================================
+  const MODEL_NAME_MAP = {
+    NANO_BANANA_2_1: "Nano Banana 2.1",
+    NANO_BANANA_PRO: "Nano Banana Pro",
+    NANO_BANANA_2_LITE: "Nano Banana 2 Lite",
+    NANO_BANANA: "Nano Banana 2.1",
+    OMNI_1_2_FLASH: "Omni 1.2 Flash",
+    OMNI_1_1_FLASH: "Omni 1.1 Flash",
+    VEO_3_1_LITE: "Veo 3.1 - Lite",
+    VEO_3_1_FAST: "Veo 3.1 - Fast",
+    VEO_3_1_QUALITY: "Veo 3.1 - Quality",
+  };
+
+  const THINKING_LEVEL_MAP = {
+    LOW: "Low",
+    MEDIUM: "Medium",
+    HIGH: "High",
+    EXTRA_THOROUGH: "Extra thorough",
+  };
+
+  function findSettingsTrigger() {
+    return (
+      document.querySelector("button.settings-trigger-button") ||
+      document.querySelector('button[aria-label="Settings trigger"]') ||
+      Array.from(document.querySelectorAll("button")).find(
+        (b) =>
+          b.getAttribute("aria-label") === "Settings trigger" ||
+          (b.innerText &&
+            (b.innerText.includes("Nano Banana") ||
+              b.innerText.includes("Omni") ||
+              b.innerText.includes("Veo")))
+      )
+    );
+  }
+
+  function findRadioByText(textPattern) {
+    const radios = Array.from(
+      document.querySelectorAll('[role="radio"], input[type="radio"]')
+    );
+    return radios.find((r) => {
+      const text = (r.innerText || r.getAttribute("aria-label") || r.value || "").trim().toLowerCase();
+      return text === textPattern.toLowerCase() || text.startsWith(textPattern.toLowerCase());
+    });
+  }
+
+  async function openSettingsPopup() {
+    const trigger = findSettingsTrigger();
+    if (!trigger) {
+      console.warn("[FlowDeckController] Settings trigger button not found.");
+      return false;
+    }
+    trigger.click();
+    await sleep(250);
+    return true;
+  }
+
+  async function closeSettingsPopup() {
+    const escEvent = new KeyboardEvent("keydown", {
+      key: "Escape",
+      code: "Escape",
+      keyCode: 27,
+      which: 27,
+      bubbles: true,
+      cancelable: true,
+    });
+    (document.activeElement || document.body).dispatchEvent(escEvent);
+    await sleep(150);
+  }
+
+  async function selectModelFamily(targetModelText) {
+    const modelFamilyBtn = Array.from(document.querySelectorAll("button")).find(
+      (b) =>
+        b.getAttribute("aria-label") === "Select model family" ||
+        (b.innerText && b.innerText.includes("Select model family"))
+    );
+
+    if (!modelFamilyBtn) {
+      console.warn("[FlowDeckController] Select model family button not found.");
+      return false;
+    }
+
+    modelFamilyBtn.click();
+    await sleep(250);
+
+    const menuItems = Array.from(
+      document.querySelectorAll('[role="menuitem"], [role="option"]')
+    );
+
+    const match = menuItems.find((item) => {
+      const text = (item.innerText || item.getAttribute("aria-label") || "").toLowerCase();
+      return text.includes(targetModelText.toLowerCase());
+    });
+
+    if (match) {
+      match.click();
+      await sleep(200);
+      return true;
+    } else {
+      console.warn(`[FlowDeckController] Model "${targetModelText}" not found in menu.`);
+      return false;
+    }
+  }
+
+  async function configureFlowDeck(options = {}) {
+    console.log("[FlowDeckController] Applying deck settings:", options);
+    const opened = await openSettingsPopup();
+    if (!opened) return false;
+
+    try {
+      const mediaType = options.media_type || options.mediaType;
+      const aspectRatio = options.aspect_ratio || options.aspectRatio;
+      const candidateCount = options.candidate_count || options.candidateCount;
+      const thinkingLevel = options.thinking_level || options.thinkingLevel;
+      const modelEngine = options.model_engine || options.modelEngine;
+
+      // 1. Modality (Image vs Video)
+      if (mediaType) {
+        const modalityTarget = mediaType.toUpperCase() === "VIDEO" ? "Video" : "Image";
+        const radio = findRadioByText(modalityTarget);
+        if (radio && !radio.checked && radio.getAttribute("aria-checked") !== "true") {
+          radio.click();
+          await sleep(200);
+        }
+      }
+
+      // 2. Aspect Ratio (16:9, 9:16, 1:1, 4:3, 3:4)
+      if (aspectRatio) {
+        const ratioRadio = findRadioByText(aspectRatio);
+        if (ratioRadio) {
+          ratioRadio.click();
+          await sleep(150);
+        }
+      }
+
+      // 3. Batch Count (x1, x2, x3, x4)
+      if (candidateCount) {
+        const countTarget = `x${candidateCount}`;
+        const countRadio = findRadioByText(countTarget);
+        if (countRadio) {
+          countRadio.click();
+          await sleep(150);
+        }
+      }
+
+      // 4. Thinking Level (Low, Medium, High, Extra thorough)
+      if (thinkingLevel) {
+        const levelTarget = THINKING_LEVEL_MAP[thinkingLevel] || thinkingLevel;
+        const levelRadio = findRadioByText(levelTarget);
+        if (levelRadio) {
+          levelRadio.click();
+          await sleep(150);
+        }
+      }
+
+      // 5. Model Family
+      if (modelEngine) {
+        const targetModelName = MODEL_NAME_MAP[modelEngine] || modelEngine;
+        await selectModelFamily(targetModelName);
+      }
+
+      return true;
+    } catch (err) {
+      console.error("[FlowDeckController] Error configuring deck:", err);
+      return false;
+    } finally {
+      await closeSettingsPopup();
+    }
+  }
+
+  function findCharacterEditor() {
+    return (
+      document.querySelector('div.ProseMirror[contenteditable="true"]') ||
+      document.querySelector('textarea[placeholder*="character" i]') ||
+      document.querySelector('[aria-label*="Describe your character" i]')
+    );
+  }
+
+  function findCharacterButton(labelSubstring) {
+    const btns = Array.from(document.querySelectorAll("button"));
+    return btns.find((b) => {
+      const text = (b.innerText || b.getAttribute("aria-label") || "").toLowerCase();
+      return text.includes(labelSubstring.toLowerCase());
+    });
+  }
+
+  async function openCharacterStudio(flowProjectId) {
+    if (window.location.pathname.endsWith("/character")) {
+      return true;
+    }
+    const charsBtn = findCharacterButton("Characters");
+    if (charsBtn) {
+      charsBtn.click();
+      await sleep(600);
+      return true;
+    }
+    if (flowProjectId) {
+      window.location.href = `https://flow.google.com/project/${flowProjectId}/character`;
+      return true;
+    }
+    return false;
+  }
+
+  async function injectCharacterPrompt(promptText) {
+    const editor = findCharacterEditor();
+    if (!editor) {
+      console.error("[FlowCharacterSync] Character prompt editor not found.");
+      return false;
+    }
+
+    editor.focus();
+    if (editor.tagName === "TEXTAREA" || editor.tagName === "INPUT") {
+      editor.value = promptText;
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+      editor.dispatchEvent(new Event("change", { bubbles: true }));
+    } else {
+      document.execCommand("selectAll", false, null);
+      document.execCommand("delete", false, null);
+      document.execCommand("insertText", false, promptText);
+      editor.dispatchEvent(new InputEvent("input", { bubbles: true, data: promptText }));
+    }
+    await sleep(200);
+    return true;
+  }
+
+  async function triggerCharacterGeneration() {
+    const genBtn = findCharacterButton("Start generation");
+    if (!genBtn) {
+      console.warn("[FlowCharacterSync] Start generation button not found in Character Studio.");
+      return false;
+    }
+    genBtn.removeAttribute("disabled");
+    genBtn.click();
+    await sleep(500);
+    return true;
+  }
+
+  async function selectCandidateFromProject(imageIndex = 0) {
+    const addFromProjectBtn = findCharacterButton("Add from project");
+    if (!addFromProjectBtn) {
+      console.warn("[FlowCharacterSync] 'Add from project' button not found.");
+      return false;
+    }
+    addFromProjectBtn.click();
+    await sleep(400);
+
+    const candidates = Array.from(
+      document.querySelectorAll('img[src*="flow-content.google"], img[src*="flow.google.com/asb/"]')
+    );
+    if (candidates.length > imageIndex) {
+      candidates[imageIndex].click();
+      await sleep(300);
+      return true;
+    }
+    return false;
+  }
+
+  async function finalizeCharacter(characterHandle) {
+    const doneBtn = findCharacterButton("Done");
+    if (!doneBtn) {
+      console.warn("[FlowCharacterSync] Done button not found in Character Studio.");
+      return false;
+    }
+    doneBtn.click();
+    await sleep(800);
+    return true;
+  }
+
+  async function syncCharacterProfile(characterPayload) {
+    console.log("[FlowCharacterSync] Syncing character:", characterPayload);
+    const flowProjectId = characterPayload.flow_project_id || detectFlowProjectId();
+    
+    await openCharacterStudio(flowProjectId);
+    await sleep(500);
+
+    const visualPrompt = characterPayload.visual_prompt || characterPayload.visualPrompt;
+    if (visualPrompt) {
+      await injectCharacterPrompt(visualPrompt);
+    }
+
+    const useCanvas = characterPayload.use_canvas_candidate || characterPayload.useCanvasCandidate;
+    const genPortrait = characterPayload.generate_portrait || characterPayload.generatePortrait;
+    const candIndex = characterPayload.candidate_index || characterPayload.candidateIndex || 0;
+    const handle = characterPayload.mention_handle || characterPayload.mentionHandle || "Character";
+
+    if (useCanvas) {
+      await selectCandidateFromProject(candIndex);
+    } else if (genPortrait) {
+      await triggerCharacterGeneration();
+    }
+
+    await sleep(500);
+    await finalizeCharacter(handle);
+
+    return {
+      success: true,
+      mention_handle: handle,
+      flow_project_id: flowProjectId,
+    };
+  }
+
+  function findButtonByTextOrAria(textPattern) {
+    const btns = Array.from(document.querySelectorAll("button, [role=\"button\"], [role=\"menuitem\"]"));
+    return btns.find((b) => {
+      const text = (b.innerText || b.getAttribute("aria-label") || "").toLowerCase();
+      return text.includes(textPattern.toLowerCase());
+    });
+  }
+
+  async function createNewScene() {
+    if (window.location.pathname.includes("/scene/")) {
+      return window.location.href;
+    }
+
+    const addMediaBtn =
+      document.querySelector('button[aria-label*="Add media" i]') ||
+      findButtonByTextOrAria("Add media");
+
+    if (!addMediaBtn) {
+      console.error("[FlowSceneSync] 'Add media' button not found.");
+      return null;
+    }
+
+    addMediaBtn.click();
+    await sleep(350);
+
+    const newSceneItem = findButtonByTextOrAria("New scene");
+    if (!newSceneItem) {
+      console.error("[FlowSceneSync] 'New scene' menu item not found.");
+      return null;
+    }
+
+    newSceneItem.click();
+    await sleep(1500);
+
+    return window.location.href;
+  }
+
+  async function setSceneTitle(chapterTitle) {
+    const titleInput =
+      document.querySelector('input[aria-label="Editable text"]') ||
+      document.querySelector('input[value*="Untitled Scene"]') ||
+      document.querySelector('h1[contenteditable="true"]');
+
+    if (!titleInput) {
+      console.warn("[FlowSceneSync] Scene title input not found.");
+      return false;
+    }
+
+    titleInput.focus();
+    if (titleInput.tagName === "INPUT") {
+      titleInput.value = chapterTitle;
+      titleInput.dispatchEvent(new Event("input", { bubbles: true }));
+      titleInput.dispatchEvent(new Event("change", { bubbles: true }));
+    } else {
+      document.execCommand("selectAll", false, null);
+      document.execCommand("insertText", false, chapterTitle);
+    }
+    await sleep(200);
+    return true;
+  }
+
+  async function injectClipPrompt(promptText) {
+    const clipEditor =
+      document.querySelector('div.ProseMirror[contenteditable="true"]') ||
+      document.querySelector('textarea[aria-label*="clip" i]') ||
+      document.querySelector('[placeholder*="clip" i]');
+
+    if (!clipEditor) {
+      console.warn("[FlowSceneSync] Clip prompt editor not found.");
+      return false;
+    }
+
+    clipEditor.focus();
+    document.execCommand("selectAll", false, null);
+    document.execCommand("delete", false, null);
+    document.execCommand("insertText", false, promptText);
+    clipEditor.dispatchEvent(new InputEvent("input", { bubbles: true, data: promptText }));
+    await sleep(200);
+    return true;
+  }
+
+  async function triggerClipGeneration() {
+    const genBtn =
+      document.querySelector('button[aria-label="Start generation"]') ||
+      document.querySelector('flow-generate-icon-button button');
+
+    if (genBtn) {
+      genBtn.removeAttribute("disabled");
+      genBtn.click();
+      await sleep(500);
+      return true;
+    }
+    return false;
+  }
+
+  async function addNewTimelineClip() {
+    const addClipBtn =
+      document.querySelector('button[aria-label*="Add clip" i]') ||
+      findButtonByTextOrAria("Add clip");
+
+    if (addClipBtn) {
+      addClipBtn.click();
+      await sleep(400);
+      return true;
+    }
+    return false;
+  }
+
+  async function orchestrateChapterScene(scenePayload) {
+    console.log("[FlowSceneSync] Orchestrating chapter scene:", scenePayload);
+
+    await createNewScene();
+    await sleep(800);
+
+    const chapterTitle = scenePayload.chapter_title || scenePayload.chapterTitle;
+    if (chapterTitle) {
+      await setSceneTitle(chapterTitle);
+    }
+
+    const beats = scenePayload.beats || [];
+    for (let i = 0; i < beats.length; i++) {
+      const beat = beats[i];
+      if (i > 0) {
+        await addNewTimelineClip();
+        await sleep(400);
+      }
+      await injectClipPrompt(beat.prompt);
+      await sleep(200);
+      await triggerClipGeneration();
+      await sleep(2000);
+    }
+
+    return {
+      success: true,
+      scene_id: scenePayload.scene_id || scenePayload.sceneId,
+      scene_url: window.location.href,
+    };
+  }
+
+  // Bind to globalThis for external access as well
+  globalThis.FlowDeckController = { configureFlowDeck, openSettingsPopup, closeSettingsPopup };
+  globalThis.FlowCharacterSync = { syncCharacterProfile, openCharacterStudio };
+  globalThis.FlowSceneSync = { orchestrateChapterScene, createNewScene };
+
+  // ==========================================================================
   // 3. DOM Prompt Editor & @Ingredient Automation Engine
   // ==========================================================================
   function findPromptEditor() {
@@ -539,6 +985,18 @@
       );
       sendEnvelope("COMPANION_STATUS", buildStatusPayload("BUSY_GENERATING"));
 
+      // 1. Programmatically apply deck configuration (model engine, aspect ratio, thinking level, candidate count)
+      if (globalThis.FlowDeckController && typeof globalThis.FlowDeckController.configureFlowDeck === "function") {
+        await globalThis.FlowDeckController.configureFlowDeck({
+          mediaType: task.media_type,
+          modelEngine: task.model_engine,
+          aspectRatio: task.aspect_ratio,
+          thinkingLevel: task.thinking_level,
+          candidateCount: task.candidate_count,
+        });
+        await sleep(250);
+      }
+
       const editor = findPromptEditor();
       if (!editor) {
         throw new Error(
@@ -737,6 +1195,48 @@
             } else if (payload.action === "PING_COMPANION") {
               const state = activeTask ? "BUSY_GENERATING" : "IDLE";
               sendEnvelope("COMPANION_STATUS", buildStatusPayload(state), correlation_id);
+            }
+            break;
+
+          case "CONFIGURE_DECK":
+            console.log("[Scriptoria Companion] Received CONFIGURE_DECK:", payload);
+            try {
+              const deckOk = await configureFlowDeck(payload);
+              console.log("[Scriptoria Companion] CONFIGURE_DECK result:", deckOk);
+              sendEnvelope("DECK_CONFIG_RESULT", { success: deckOk, settings: payload }, correlation_id);
+            } catch (err) {
+              console.error("[Scriptoria Companion] CONFIGURE_DECK failed:", err);
+              sendEnvelope("DECK_CONFIG_RESULT", { success: false, error: String(err) }, correlation_id);
+            }
+            break;
+
+          case "SYNC_CHARACTER":
+            console.log("[Scriptoria Companion] Received SYNC_CHARACTER:", payload);
+            try {
+              sendEnvelope("COMPANION_STATUS", buildStatusPayload("SYNCING_INGREDIENTS"));
+              const charResult = await syncCharacterProfile(payload);
+              console.log("[Scriptoria Companion] SYNC_CHARACTER result:", charResult);
+              sendEnvelope("CHARACTER_SYNC_RESULT", charResult, correlation_id);
+              sendEnvelope("COMPANION_STATUS", buildStatusPayload("IDLE"));
+            } catch (err) {
+              console.error("[Scriptoria Companion] SYNC_CHARACTER failed:", err);
+              sendEnvelope("CHARACTER_SYNC_RESULT", { success: false, error: String(err) }, correlation_id);
+              sendEnvelope("COMPANION_STATUS", buildStatusPayload("IDLE"));
+            }
+            break;
+
+          case "ORCHESTRATE_SCENE":
+            console.log("[Scriptoria Companion] Received ORCHESTRATE_SCENE:", payload);
+            try {
+              sendEnvelope("COMPANION_STATUS", buildStatusPayload("BUSY_GENERATING"));
+              const sceneResult = await orchestrateChapterScene(payload);
+              console.log("[Scriptoria Companion] ORCHESTRATE_SCENE result:", sceneResult);
+              sendEnvelope("SCENE_ORCHESTRATION_RESULT", sceneResult, correlation_id);
+              sendEnvelope("COMPANION_STATUS", buildStatusPayload("IDLE"));
+            } catch (err) {
+              console.error("[Scriptoria Companion] ORCHESTRATE_SCENE failed:", err);
+              sendEnvelope("SCENE_ORCHESTRATION_RESULT", { success: false, error: String(err) }, correlation_id);
+              sendEnvelope("COMPANION_STATUS", buildStatusPayload("IDLE"));
             }
             break;
 
