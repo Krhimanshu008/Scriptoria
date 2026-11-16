@@ -139,18 +139,15 @@ export function HighDensityStoryboardModal({
   const handleDecompose = async () => {
     setIsDecomposing(true);
     try {
-      const textToUse =
-        chapterText.trim().length > 100
-          ? chapterText
-          : `# ${defaultChapterTitle}\n\nIt was not a great while after the affair of the pipe, that one morning Ahab came upon deck...`;
+      const textToUse = chapterText.trim().length > 100 ? chapterText : "";
 
       const res = await fetch("/api/pipeline/storyboard/decompose", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          book_id: activeBookId || "book-active",
-          chapter_index: defaultChapterIndex,
-          chapter_title: defaultChapterTitle,
+          book_id: activeBookId || "31d94e54-6308-488b-a6fc-1085ee418d7c",
+          chapter_index: defaultChapterIndex || 1,
+          chapter_title: defaultChapterTitle || "Chapter 1: Loomings",
           raw_text: textToUse,
           target_frames: targetFrames,
           global_style: globalStyle,

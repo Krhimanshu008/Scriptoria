@@ -29,7 +29,7 @@ class DecomposeChapterRequest(BaseModel):
     book_id: str = Field(..., description="UUID or slug of the book")
     chapter_index: int = Field(default=1, ge=1)
     chapter_title: str = Field(default="Untitled Chapter")
-    raw_text: str = Field(..., description="Raw markdown/text of the chapter (~2000 words)")
+    raw_text: str = Field(default="", description="Raw markdown/text of the chapter (~2000 words); if empty, auto-loads from R2 lake")
     target_frames: int = Field(default=90, ge=40, le=150, description="Target total frames (typically 80-100)")
     global_style: str = Field(
         default="cinematic 35mm film grain, atmospheric lighting, high-contrast chiaroscuro, aspect ratio 16:9",
@@ -385,8 +385,21 @@ async def _qwen_swarm_decompose(
 async def decompose_chapter_to_storyboard(req: DecomposeChapterRequest, request: Request) -> Any:
     """Decomposes ~2,000-word chapter into 80-100 granular visual sub-scene frames with zero context loss."""
     raw_text = req.raw_text.strip()
+    
+    # Auto-load from R2 Lake if raw_text was omitted or short
+    if not raw_text or len(raw_text) < 100:
+        try:
+            from app.services.r2_storage import R2StorageService
+            r2 = R2StorageService()
+            md_key = f"parsed/{req.book_id}/ch_{req.chapter_index:03d}.md"
+            if r2.exists(md_key):
+                raw_text = r2.get_text(md_key)
+                logger.info("Auto-loaded %d words from R2: %s", len(raw_text.split()), md_key)
+        except Exception as err:
+            logger.warning("Could not auto-fetch chapter from R2: %s", err)
+
     if not raw_text:
-        raise HTTPException(status_code=400, detail="raw_text cannot be empty")
+        raise HTTPException(status_code=400, detail="raw_text cannot be empty and could not be loaded from R2")
 
     word_count = len(raw_text.split())
     target_frames = req.target_frames
