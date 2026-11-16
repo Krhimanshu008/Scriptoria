@@ -18,6 +18,7 @@ import {
   ChevronDown,
   Loader2,
   ExternalLink,
+  Clapperboard,
 } from "lucide-react";
 import type { PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
 import type { KaggleAccountSummary, ColabAccountSummary } from "@/app/api/vm/accounts/route";
@@ -52,6 +53,7 @@ interface TestbenchTopBarProps {
   health: HealthState | null;
   onRefreshHealth: () => void;
   onOpenUploadModal: () => void;
+  onOpenStoryboardModal?: () => void;
   vms?: PublicVmInstance[];
   kaggleAccounts?: KaggleAccountSummary[];
   colabAccounts?: ColabAccountSummary[];
@@ -65,6 +67,7 @@ export function TestbenchTopBar({
   health,
   onRefreshHealth,
   onOpenUploadModal,
+  onOpenStoryboardModal,
   vms = [],
   kaggleAccounts = [],
   colabAccounts = [],
@@ -191,6 +194,17 @@ export function TestbenchTopBar({
                 <Plus className="h-3.5 w-3.5 text-amber-400" />
                 <span className="hidden sm:inline">Upload</span>
               </button>
+
+              {onOpenStoryboardModal && (
+                <button
+                  onClick={onOpenStoryboardModal}
+                  className="flex h-7 items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 sm:px-2.5 text-xs font-semibold text-amber-300 transition-colors hover:border-amber-400 hover:bg-amber-500/20 shrink-0"
+                  title="Open High-Density Storyboard Studio (80-100 Frames)"
+                >
+                  <Clapperboard className="h-3.5 w-3.5 text-amber-400" />
+                  <span className="hidden sm:inline">Storyboard (80-100 Fr)</span>
+                </button>
+              )}
             </div>
           </div>
 

@@ -11,6 +11,7 @@ import { Tab2Extraction } from "./tabs/Tab2Extraction";
 import { Tab3GraphStudio } from "./tabs/Tab3GraphStudio";
 import { Tab4RAGWorkbench } from "./tabs/Tab4RAGWorkbench";
 import { Tab5Scorecard } from "./tabs/Tab5Scorecard";
+import { HighDensityStoryboardModal } from "./HighDensityStoryboardModal";
 import type { PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
 import type { KaggleAccountSummary, ColabAccountSummary } from "@/app/api/vm/accounts/route";
 import { toast } from "sonner";
@@ -22,6 +23,7 @@ export function TestbenchShell() {
   const [activeBookId, setActiveBookId] = useState<string>("");
   const [health, setHealth] = useState<HealthState | null>(null);
   const [booksLoading, setBooksLoading] = useState(true);
+  const [isStoryboardOpen, setIsStoryboardOpen] = useState(false);
 
   // Cluster VM Status Query (shared with DashboardShell and GPU Cluster)
   const { data: vmData, refetch: refetchVms } = useQuery<{ vms: PublicVmInstance[] }>({
@@ -114,6 +116,7 @@ export function TestbenchShell() {
         health={health}
         onRefreshHealth={fetchHealth}
         onOpenUploadModal={() => setActiveTab("tab0")}
+        onOpenStoryboardModal={() => setIsStoryboardOpen(true)}
         vms={vms}
         kaggleAccounts={accountsData?.kaggleAccounts || []}
         colabAccounts={accountsData?.colabAccounts || []}
@@ -148,6 +151,15 @@ export function TestbenchShell() {
           <Tab5Scorecard activeBookId={activeBookId} onNavigateTab={(tab) => setActiveTab(tab)} />
         )}
       </main>
+
+      {/* High-Density Storyboard Studio Modal (80-100 Frames) */}
+      <HighDensityStoryboardModal
+        isOpen={isStoryboardOpen}
+        onClose={() => setIsStoryboardOpen(false)}
+        activeBookId={activeBookId}
+        defaultChapterTitle={books.find((b) => b.book_id === activeBookId)?.title || "Active Chapter"}
+        defaultChapterIndex={1}
+      />
     </div>
   );
 }

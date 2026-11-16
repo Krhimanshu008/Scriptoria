@@ -250,3 +250,81 @@ class CompiledBookGraph(BaseModel):
     locations: Dict[str, CompiledLocation] = Field(default_factory=dict)
     edges: List[CompiledGraphEdge] = Field(default_factory=list)
 
+
+# ---------------------------------------------------------------------------
+# Layer E: High-Density Visual Storyboard Protocols (80-100 Frames / Chapter)
+# ---------------------------------------------------------------------------
+
+class ShotType(str, enum.Enum):
+    EXTREME_WIDE_ESTABLISHING = "EXTREME_WIDE_ESTABLISHING"  # 24mm
+    WIDE_ESTABLISHING = "WIDE_ESTABLISHING"                  # 28mm
+    MEDIUM_TWO_SHOT = "MEDIUM_TWO_SHOT"                      # 35mm
+    MEDIUM_SINGLE = "MEDIUM_SINGLE"                          # 50mm
+    OVER_THE_SHOULDER = "OVER_THE_SHOULDER"                  # 50mm
+    CLOSE_UP_EMOTIONAL = "CLOSE_UP_EMOTIONAL"                # 85mm
+    EXTREME_CLOSE_UP = "EXTREME_CLOSE_UP"                    # 85mm macro
+    INSERT_PROP_DETAIL = "INSERT_PROP_DETAIL"                # 85mm macro
+    LOW_ANGLE_HEROIC = "LOW_ANGLE_HEROIC"                    # 28mm low
+    HIGH_ANGLE_VULNERABLE = "HIGH_ANGLE_VULNERABLE"          # 35mm high
+    POINT_OF_VIEW = "POINT_OF_VIEW"                          # 35mm eye-level
+
+
+class CameraLens(str, enum.Enum):
+    MM_24 = "24mm anamorphic wide-angle lens"
+    MM_28 = "28mm dynamic wide lens"
+    MM_35 = "35mm prime cinematic lens"
+    MM_50 = "50mm prime portrait lens"
+    MM_85 = "85mm prime telephoto lens"
+
+
+class CharacterFrameState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    handle: str = Field(..., description="Canonical handle e.g. '@CaptainAhab'")
+    pose_and_blocking: str = Field(..., description="Physical stance, spatial positioning relative to camera and other entities")
+    facial_expression: str = Field(..., description="Exact micro-expression (e.g. grim fury, dilated eyes, tense jaw)")
+    gaze_direction: str = Field(..., description="Where eyes are focused (e.g. looking down at the nail on the mast)")
+    wardrobe_state: str = Field(..., description="Active state of clothing (e.g. coat whipping in wind, salt-crusted, unbuttoned)")
+    held_props: List[str] = Field(default_factory=list, description="Items held in hand during this frame")
+
+
+class SubSceneFrame(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    frame_index: int = Field(..., ge=1, le=200, description="Sequential frame number in chapter (1 to 100)")
+    scene_id: str = Field(..., description="Parent macro scene identifier e.g. 'sc01'")
+    sentence_span: str = Field(..., description="Verbatim 15-25 word excerpt from the novel text")
+    char_start: int = Field(..., ge=0, description="Character offset start in chapter markdown")
+    char_end: int = Field(..., ge=0, description="Character offset end in chapter markdown")
+    shot_type: ShotType = Field(..., description="Cinematographic shot grammar")
+    lens: CameraLens = Field(..., description="Focal length")
+    lighting_and_atmosphere: str = Field(..., description="Exact lighting key, rim, direction, and atmospheric particles")
+    active_characters: List[CharacterFrameState] = Field(default_factory=list, description="Characters visible in frame with posture/gaze")
+    spatial_environment_focus: str = Field(..., description="Specific zone of the location in view")
+    compiled_image_prompt: str = Field(..., description="Complete production prompt formatted for Imagen 3 / Nano Banana / Flux")
+
+
+class MacroScene(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scene_id: str = Field(..., description="Unique scene ID e.g. 'sc01'")
+    scene_order: int = Field(..., ge=1, description="Order of macro scene in chapter")
+    scene_heading: str = Field(..., description="Narrative heading e.g. 'The Golden Doubloon on the Mast'")
+    location_handle: str = Field(..., description="Canonical location e.g. '@PequodQuarterDeck'")
+    time_of_day: str = Field(..., description="e.g. 'late afternoon brewing storm'")
+    summary: str = Field(..., description="2-3 sentence narrative summary")
+    sub_scenes: List[SubSceneFrame] = Field(default_factory=list, description="10-20 micro-frames per scene")
+
+
+class HighDensityChapterStoryboard(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str = Field(default="2.0.0")
+    book_id: str
+    chapter_index: int
+    chapter_title: str
+    total_words: int
+    total_frames: int = Field(..., ge=1, le=200, description="Total storyboard frames (typically 80 to 100)")
+    scenes: List[MacroScene] = Field(default_factory=list)
+
+

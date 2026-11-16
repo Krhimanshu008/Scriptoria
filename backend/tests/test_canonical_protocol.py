@@ -153,3 +153,64 @@ def test_rejection_empty_visual_beats():
             key_visual_beats=[]  # Empty!
         )
     assert "List should have at least 1 item" in str(exc.value)
+
+
+def test_high_density_storyboard_protocol():
+    """Verify HighDensityChapterStoryboard Layer E contract validation."""
+    from app.models.canonical_protocol import (
+        HighDensityChapterStoryboard,
+        MacroScene,
+        SubSceneFrame,
+        ShotType,
+        CameraLens,
+        CharacterFrameState,
+    )
+
+    storyboard = HighDensityChapterStoryboard(
+        schema_version="2.0.0",
+        book_id="book-moby-dick",
+        chapter_index=36,
+        chapter_title="The Quarter-Deck",
+        total_words=2140,
+        total_frames=92,
+        scenes=[
+            MacroScene(
+                scene_id="sc01",
+                scene_order=1,
+                scene_heading="Ahab Paces the Deck",
+                location_handle="@PequodQuarterDeck",
+                time_of_day="late stormy afternoon",
+                summary="Ahab emerges onto the quarter-deck and commands the crew to assemble.",
+                sub_scenes=[
+                    SubSceneFrame(
+                        frame_index=1,
+                        scene_id="sc01",
+                        sentence_span="Captain Ahab stood upon his quarter-deck, his ivory leg firmly anchored in the deck auger hole.",
+                        char_start=0,
+                        char_end=96,
+                        shot_type=ShotType.LOW_ANGLE_HEROIC,
+                        lens=CameraLens.MM_28,
+                        lighting_and_atmosphere="bruised indigo storm sky with cold slate-blue ocean spray",
+                        active_characters=[
+                            CharacterFrameState(
+                                handle="@CaptainAhab",
+                                pose_and_blocking="standing rigidly with left ivory whalebone leg in auger hole",
+                                facial_expression="livid grim fury, piercing stare toward horizon",
+                                gaze_direction="horizon line",
+                                wardrobe_state="heavy black woolen sea-coat whipping in gale",
+                                held_props=[]
+                            )
+                        ],
+                        spatial_environment_focus="weather-beaten timber deck by the mainmast",
+                        compiled_image_prompt="Low angle wide shot of @CaptainAhab on @PequodQuarterDeck..."
+                    )
+                ]
+            )
+        ]
+    )
+
+    dumped = storyboard.model_dump_json()
+    assert "The Quarter-Deck" in dumped
+    assert storyboard.total_frames == 92
+    assert storyboard.scenes[0].sub_scenes[0].shot_type == ShotType.LOW_ANGLE_HEROIC
+

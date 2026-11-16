@@ -1,5 +1,5 @@
 export const EXPECTED_CONTRACT_HASH =
-  "c66b9a2ee04b20cd0c51cc4e043c5321b8da9eed4b9f572c0b895684c0ba70f9" as const;
+  "0a5d77a823a8630986234d068dbd01a3425a7b53652d899c4d134b719a7090f6" as const;
 
 export type ErrorCode =
   | "VALIDATION_ERROR"
@@ -683,4 +683,80 @@ export function isApiErrorEnvelope(value: unknown): value is ApiErrorEnvelope {
     typeof errorBody.message === "string" &&
     typeof errorBody.trace_id === "string"
   );
+}
+
+// ---------------------------------------------------------------------------
+// Layer E: High-Density Visual Storyboard Contracts (80-100 Frames / Chapter)
+// ---------------------------------------------------------------------------
+
+export type ShotType =
+  | "EXTREME_WIDE_ESTABLISHING"
+  | "WIDE_ESTABLISHING"
+  | "MEDIUM_TWO_SHOT"
+  | "MEDIUM_SINGLE"
+  | "OVER_THE_SHOULDER"
+  | "CLOSE_UP_EMOTIONAL"
+  | "EXTREME_CLOSE_UP"
+  | "INSERT_PROP_DETAIL"
+  | "LOW_ANGLE_HEROIC"
+  | "HIGH_ANGLE_VULNERABLE"
+  | "POINT_OF_VIEW";
+
+export type CameraLens =
+  | "24mm anamorphic wide-angle lens"
+  | "28mm dynamic wide lens"
+  | "35mm prime cinematic lens"
+  | "50mm prime portrait lens"
+  | "85mm prime telephoto lens";
+
+export interface CharacterFrameState {
+  handle: string;
+  pose_and_blocking: string;
+  facial_expression: string;
+  gaze_direction: string;
+  wardrobe_state: string;
+  held_props: string[];
+}
+
+export interface SubSceneFrame {
+  frame_index: number;
+  scene_id: string;
+  sentence_span: string;
+  char_start: number;
+  char_end: number;
+  shot_type: ShotType;
+  lens: CameraLens;
+  lighting_and_atmosphere: string;
+  active_characters: CharacterFrameState[];
+  spatial_environment_focus: string;
+  compiled_image_prompt: string;
+}
+
+export interface MacroScene {
+  scene_id: string;
+  scene_order: number;
+  scene_heading: string;
+  location_handle: string;
+  time_of_day: string;
+  summary: string;
+  sub_scenes: SubSceneFrame[];
+}
+
+export interface HighDensityChapterStoryboard {
+  schema_version: string;
+  book_id: string;
+  chapter_index: number;
+  chapter_title: string;
+  total_words: number;
+  total_frames: number;
+  scenes: MacroScene[];
+}
+
+export interface DecomposeChapterRequest {
+  book_id: string;
+  chapter_index?: number;
+  chapter_title?: string;
+  raw_text: string;
+  target_frames?: number;
+  global_style?: string;
 }

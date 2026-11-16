@@ -16,6 +16,7 @@ from app.routers import (
     parser_inspector,
     rag_workbench,
     scorecard_stepper,
+    storyboard_studio,
     testbench_system,
     vm_swarm_control,
 )
@@ -54,6 +55,7 @@ app.include_router(extraction_lab.router, prefix="/api/v1")
 app.include_router(graph_studio.router, prefix="/api/v1")
 app.include_router(rag_workbench.router, prefix="/api/v1")
 app.include_router(scorecard_stepper.router, prefix="/api/v1")
+app.include_router(storyboard_studio.router, prefix="/api/v1")
 app.include_router(flow_bridge.router)
 
 # Static media mounts
