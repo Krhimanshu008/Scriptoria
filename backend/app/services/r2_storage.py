@@ -66,7 +66,10 @@ class R2StorageService:
         else:
             # Local disk lake fallback
             self.s3 = None
-            self.local_root = PROJECT_ROOT / "data" / "r2_lake"
+            if Path("/app/data/r2_lake").exists():
+                self.local_root = Path("/app/data/r2_lake")
+            else:
+                self.local_root = PROJECT_ROOT / "data" / "r2_lake"
             self.local_root.mkdir(parents=True, exist_ok=True)
             self.storage_mode = "local_lake"
 
