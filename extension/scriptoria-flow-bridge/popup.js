@@ -182,6 +182,9 @@
       } else if (state === "BUSY_GENERATING") {
         elConnectionBadge.classList.add("badge-busy");
         elConnectionText.textContent = "GENERATING";
+      } else if (state === "DISCONNECTED") {
+        elConnectionBadge.classList.add("badge-busy");
+        elConnectionText.textContent = "WAITING FOR FLOW TAB";
       } else {
         elConnectionBadge.classList.add("badge-disconnected");
         elConnectionText.textContent = state;

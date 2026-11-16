@@ -48,7 +48,7 @@
         "https://*.flow.google/*",
         "https://flow.google.com/*",
         "https://*.flow.google.com/*",
-        "https://labs.google/fx/*"
+        "https://labs.google/*"
       ],
       "js": [
         "config.js",
