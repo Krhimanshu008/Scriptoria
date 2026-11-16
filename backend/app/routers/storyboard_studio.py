@@ -307,9 +307,16 @@ async def _qwen_swarm_decompose(
     raw_text: str,
     target_frames: int,
 ) -> Optional[List[Dict[str, Any]]]:
-    """Queries Kaggle VM 1 (Account 1: Director Brain on Dual-T4) via tunnel with Gemini fallback."""
-    gpu0_base = os.environ.get("COMFYUI_GPU0_URL", "https://gpu0.krhimanshu.in").rstrip("/")
-    url = f"{gpu0_base}/v1/chat/completions"
+    """Queries Kaggle VM 1 (Account 1: Director Brain on Dual-T4) via dynamic Caddy tunnel with Gemini fallback."""
+    tunnel_url = (
+        os.environ.get("VM_TUNNEL_URL")
+        or os.environ.get("COMFYUI_GPU0_URL")
+        or "https://gpu0.krhimanshu.in"
+    ).rstrip("/")
+    vm_secret = os.environ.get("VM_SECRET", "")
+    target_port = os.environ.get("VM_TARGET_PORT", "8190")
+
+    url = f"{tunnel_url}/v1/chat/completions"
 
     prompt = (
         "You are the Chief Narrative Director of Scriptoria fiction studio running on Kaggle Qwen Swarm.\n"
@@ -333,16 +340,23 @@ async def _qwen_swarm_decompose(
         f"CHAPTER TEXT:\n{raw_text[:6000]}"
     )
 
+    headers = {
+        "Content-Type": "application/json",
+        "X-Target-Port": target_port,
+    }
+    if vm_secret:
+        headers["X-VM-Secret"] = vm_secret
+
     try:
-        async with httpx.AsyncClient(timeout=6.0) as client:
+        async with httpx.AsyncClient(timeout=8.0) as client:
             resp = await client.post(
                 url,
                 json={
                     "model": "qwen2.5:14b",
                     "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.2
+                    "temperature": 0.2,
                 },
-                headers={"Content-Type": "application/json"}
+                headers=headers,
             )
             if resp.status_code == 200:
                 data = resp.json()
@@ -351,10 +365,10 @@ async def _qwen_swarm_decompose(
                 clean_json = re.sub(r"\s*```$", "", clean_json.strip())
                 parsed = json.loads(clean_json)
                 if "macro_scenes" in parsed and len(parsed["macro_scenes"]) >= 3:
-                    logger.info("Local Qwen Swarm (Kaggle VM 1) successfully decomposed chapter.")
+                    logger.info("Local Qwen Swarm (Kaggle VM via Caddy :%s) successfully decomposed chapter.", target_port)
                     return parsed["macro_scenes"]
     except Exception as exc:
-        logger.info("Kaggle Qwen Swarm at %s offline or booting (%s), falling back to Gemini.", url, exc)
+        logger.info("Kaggle Qwen Swarm at %s (port %s) offline or booting (%s), falling back to Gemini.", url, target_port, exc)
 
     return await _ai_director_decompose(raw_text, target_frames)
 
