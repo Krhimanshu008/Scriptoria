@@ -16,18 +16,22 @@ interface TestbenchTabstripProps {
   onSelectTab: (tab: TestbenchTabId) => void;
 }
 
-const CHECKPOINTS: Array<{
+interface TabCheckpoint {
   id: TestbenchTabId;
   step: string;
   shortLabel: string;
+  midLabel: string;
   fullLabel: string;
   tag: string;
   icon: React.ComponentType<{ className?: string }>;
-}> = [
+}
+
+const CHECKPOINTS: TabCheckpoint[] = [
   {
     id: "tab0",
     step: "0",
     shortLabel: "Plumbing",
+    midLabel: "Plumbing",
     fullLabel: "Plumbing & Lake",
     tag: "R2 & Schemas",
     icon: Wrench,
@@ -36,6 +40,7 @@ const CHECKPOINTS: Array<{
     id: "tab1",
     step: "1",
     shortLabel: "Parser",
+    midLabel: "Parser AST",
     fullLabel: "Parser Inspector",
     tag: "Dual-Span AST",
     icon: FileCode,
@@ -43,7 +48,8 @@ const CHECKPOINTS: Array<{
   {
     id: "tab2",
     step: "2",
-    shortLabel: "VM Swarm",
+    shortLabel: "Swarm",
+    midLabel: "VM Swarm",
     fullLabel: "Swarm & Extraction",
     tag: "3-Col Stream",
     icon: Cpu,
@@ -52,6 +58,7 @@ const CHECKPOINTS: Array<{
     id: "tab3",
     step: "3",
     shortLabel: "Graph",
+    midLabel: "Graph & Time",
     fullLabel: "Graph & Timeline",
     tag: "Dual Clock",
     icon: GitGraph,
@@ -59,7 +66,8 @@ const CHECKPOINTS: Array<{
   {
     id: "tab4",
     step: "4",
-    shortLabel: "Hybrid RAG",
+    shortLabel: "RAG",
+    midLabel: "Hybrid RAG",
     fullLabel: "Hybrid RAG Workbench",
     tag: "Safe SQL & BM25",
     icon: Search,
@@ -68,6 +76,7 @@ const CHECKPOINTS: Array<{
     id: "tab5",
     step: "5",
     shortLabel: "Scorecard",
+    midLabel: "Scorecard",
     fullLabel: "E2E & Scorecard",
     tag: "15 Invariants",
     icon: CheckCircle2,
@@ -81,9 +90,9 @@ export function TestbenchTabstrip({
   return (
     <nav
       aria-label="Testbench Checkpoints"
-      className="flex h-10 w-full shrink-0 items-center border-b border-zinc-800 bg-[#09090b] px-2 sm:px-3 select-none"
+      className="flex h-10 w-full shrink-0 items-center border-b border-zinc-800 bg-[#09090b] px-2 sm:px-3 select-none overflow-x-auto"
     >
-      <div className="grid grid-cols-6 w-full gap-1 sm:gap-1.5">
+      <div className="grid grid-cols-6 w-full gap-1 sm:gap-1.5 min-w-[580px]">
         {CHECKPOINTS.map((cp) => {
           const isActive = activeTab === cp.id;
           const Icon = cp.icon;
@@ -120,11 +129,9 @@ export function TestbenchTabstrip({
               />
 
               {/* Responsive Text Label */}
-              <span className="truncate sm:hidden">{cp.shortLabel}</span>
-              <span className="truncate hidden sm:inline xl:hidden">
-                {cp.shortLabel}
-              </span>
-              <span className="truncate hidden xl:inline">{cp.fullLabel}</span>
+              <span className="truncate lg:hidden">{cp.shortLabel}</span>
+              <span className="truncate hidden lg:inline 2xl:hidden">{cp.midLabel}</span>
+              <span className="truncate hidden 2xl:inline">{cp.fullLabel}</span>
 
               {/* Tag for Ultra-wide screens */}
               <span

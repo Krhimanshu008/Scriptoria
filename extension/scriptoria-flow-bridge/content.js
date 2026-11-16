@@ -370,6 +370,7 @@
           if (!src || seenDomMediaSrcs.has(src)) continue;
           if (
             src.includes("googleusercontent.com") ||
+            src.includes("flow-content.google") ||
             src.includes("storage.googleapis.com")
           ) {
             // Skip tiny UI icons
@@ -466,6 +467,7 @@
 
     sendEnvelope("MEDIA_RESULT", resultPayload, finishedTask.task_id);
     sendEnvelope("COMPANION_STATUS", buildStatusPayload("IDLE"));
+    updateFloatingPill("IDLE");
   }
 
   function finalizeActiveTaskFailure(errorMessage) {
@@ -497,6 +499,7 @@
 
     sendEnvelope("MEDIA_RESULT", resultPayload, failedTask.task_id);
     sendEnvelope("COMPANION_STATUS", buildStatusPayload("IDLE", errorMessage));
+    updateFloatingPill("IDLE");
   }
 
   async function executeFlowGenerationTask(task) {
@@ -515,6 +518,7 @@
     activeTask = task;
     activeTaskStartTime = Date.now();
     snapshotExistingDomMedia();
+    updateFloatingPill("BUSY_GENERATING");
 
     const timeoutMs = (task.timeout_seconds || 180) * 1000;
     activeTaskTimeoutHandle = setTimeout(() => {
@@ -703,6 +707,7 @@
       const state = activeTask ? "BUSY_GENERATING" : "IDLE";
       sendEnvelope("COMPANION_HELLO", buildStatusPayload(state));
       startHeartbeat();
+      updateFloatingPill(state);
       console.info(
         `[Scriptoria Companion] Connected to FastAPI Bridge (${wsUrl})`
       );
@@ -745,6 +750,7 @@
 
     ws.onclose = () => {
       stopHeartbeat();
+      updateFloatingPill("DISCONNECTED");
       scheduleReconnect();
     };
 
@@ -762,6 +768,167 @@
       RECONNECT_MAX_DELAY_MS
     );
     setTimeout(connectWebSocket, delay);
+  }
+
+  // ==========================================================================
+  // 6. On-Page Floating HUD & Toast Notifications
+  // ==========================================================================
+  function injectFloatingHUD() {
+    if (document.getElementById("scriptoria-companion-dock")) return;
+
+    // 1. Ambient Status Pill (Bottom-Right)
+    const dock = document.createElement("div");
+    dock.id = "scriptoria-companion-dock";
+    dock.style.cssText = `
+      position: fixed;
+      bottom: 18px;
+      right: 18px;
+      z-index: 999999;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: #09090b;
+      border: 1px solid #27272a;
+      border-radius: 9999px;
+      padding: 6px 14px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.6);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 11px;
+      font-weight: 600;
+      color: #fafafa;
+      user-select: none;
+      transition: all 0.2s ease;
+      cursor: pointer;
+    `;
+    dock.innerHTML = `
+      <span id="scriptoria-dock-dot" style="width: 8px; height: 8px; border-radius: 50%; background: #10b981; box-shadow: 0 0 8px #10b981;"></span>
+      <span id="scriptoria-dock-text">Scriptoria Companion</span>
+    `;
+    dock.title = "Click to toggle Scriptoria Quick Bar";
+    dock.addEventListener("click", () => {
+      const bar = document.getElementById("scriptoria-quick-bar");
+      if (bar) bar.style.display = bar.style.display === "none" ? "flex" : "none";
+    });
+    document.body.appendChild(dock);
+
+    // 2. Quick Ingredient Bar (Above Prompt Input)
+    const quickBar = document.createElement("div");
+    quickBar.id = "scriptoria-quick-bar";
+    quickBar.style.cssText = `
+      position: fixed;
+      bottom: 72px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 999990;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(18, 18, 21, 0.95);
+      backdrop-filter: blur(8px);
+      border: 1px solid #27272a;
+      border-radius: 20px;
+      padding: 5px 12px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 11px;
+    `;
+    quickBar.innerHTML = `
+      <span style="color: #71717a; font-weight: 600; text-transform: uppercase; font-size: 9px; letter-spacing: 0.5px;">Scriptoria:</span>
+      <button class="scriptoria-quick-chip" data-handle="Detective_Kael" style="background:#27272a; border:none; border-radius:12px; color:#10b981; padding:3px 8px; font-size:10px; font-weight:600; cursor:pointer;">👤 @Detective_Kael</button>
+      <button class="scriptoria-quick-chip" data-handle="Ancient_Castle" style="background:#27272a; border:none; border-radius:12px; color:#60a5fa; padding:3px 8px; font-size:10px; font-weight:600; cursor:pointer;">🏰 @Ancient_Castle</button>
+      <button class="scriptoria-quick-chip" data-handle="Glowing_Grimoire" style="background:#27272a; border:none; border-radius:12px; color:#f59e0b; padding:3px 8px; font-size:10px; font-weight:600; cursor:pointer;">📖 @Glowing_Grimoire</button>
+    `;
+    document.body.appendChild(quickBar);
+
+    // Wire quick chips
+    quickBar.querySelectorAll(".scriptoria-quick-chip").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const handle = btn.getAttribute("data-handle");
+        const editor = findPromptEditor();
+        if (editor && handle) {
+          await injectMentionToken(editor, handle);
+        }
+      });
+    });
+  }
+
+  function updateFloatingPill(state) {
+    const dot = document.getElementById("scriptoria-dock-dot");
+    const text = document.getElementById("scriptoria-dock-text");
+    if (!dot || !text) return;
+
+    if (state === "IDLE" || state === "CONNECTED") {
+      dot.style.background = "#10b981";
+      dot.style.boxShadow = "0 0 8px #10b981";
+      text.textContent = "Scriptoria (Connected)";
+    } else if (state === "BUSY_GENERATING") {
+      dot.style.background = "#3b82f6";
+      dot.style.boxShadow = "0 0 10px #3b82f6";
+      text.textContent = "Scriptoria Generating...";
+    } else {
+      dot.style.background = "#ef4444";
+      dot.style.boxShadow = "none";
+      text.textContent = "Scriptoria (Offline)";
+    }
+  }
+
+  function showCaptureToast(candidateCount, remoteUrl) {
+    const toast = document.createElement("div");
+    toast.style.cssText = `
+      position: fixed;
+      top: 24px;
+      right: 24px;
+      z-index: 999999;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: #09090b;
+      border: 1px solid #10b981;
+      border-radius: 10px;
+      padding: 10px 14px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.8), 0 0 12px rgba(16,185,129,0.3);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      color: #fafafa;
+      animation: slideIn 0.3s ease;
+    `;
+    toast.innerHTML = `
+      <img src="${remoteUrl}" style="width: 48px; height: 32px; object-fit: cover; border-radius: 4px; border: 1px solid #27272a;" />
+      <div>
+        <div style="font-size: 11px; font-weight: 700; color: #10b981;">✨ Assets Captured & Saved!</div>
+        <div style="font-size: 10px; color: #a1a1aa;">${candidateCount} images streamed to /output/flow_assets/</div>
+      </div>
+    `;
+    document.body.appendChild(toast);
+    setTimeout(() => {
+      toast.style.opacity = "0";
+      toast.style.transition = "opacity 0.4s ease";
+      setTimeout(() => toast.remove(), 400);
+    }, 4500);
+  }
+
+  // Hook capture event
+  window.addEventListener("SCRIPTORIA_FLOW_MEDIA_CAPTURED", (e) => {
+    if (e.detail && e.detail.candidates && e.detail.candidates.length > 0) {
+      showCaptureToast(e.detail.candidates.length, e.detail.candidates[0].remote_url);
+    }
+  });
+
+  // Listen to messages from popup
+  if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage) {
+    chrome.runtime.onMessage.addListener(async (msg) => {
+      if (msg.type === "SCRIPTORIA_INSERT_HANDLE") {
+        const editor = findPromptEditor();
+        if (editor) {
+          await injectMentionToken(editor, msg.handle);
+        }
+      }
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", injectFloatingHUD);
+  } else {
+    injectFloatingHUD();
   }
 
   connectWebSocket();

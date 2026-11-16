@@ -4,6 +4,20 @@
   "short_name": "ScriptoriaFlow",
   "version": "1.0.0",
   "description": "Zero-ban browser companion connecting Google AI Flow (Nano Banana, Imagen 3, Veo) to Scriptoria via local WebSocket.",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Scriptoria Flow Companion",
+    "default_icon": {
+      "16": "icon.png",
+      "48": "icon.png",
+      "128": "icon.png"
+    }
+  },
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  },
   "permissions": [
     "storage",
     "activeTab",

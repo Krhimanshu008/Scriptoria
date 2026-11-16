@@ -248,13 +248,12 @@ export function ContractHashBadge({
             type="button"
             onClick={handleCopyFullHash}
             title={tooltipSummary}
-            className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-950/60 px-3 py-1 text-emerald-300 shadow-sm transition-colors hover:border-emerald-400/70 hover:bg-emerald-950/80 shrink-0"
+            className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-950/60 px-2.5 sm:px-3 py-1 text-emerald-300 shadow-sm transition-colors hover:border-emerald-400/70 hover:bg-emerald-950/80 shrink-0 text-xs"
           >
             <ShieldCheck className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
-            <span>
-              Contract Hash: <strong className="font-semibold">{shortActual}</strong>{" "}
-              (Verified)
-            </span>
+            <span className="hidden xl:inline">Contract:</span>
+            <strong className="font-mono font-semibold">{shortActual}</strong>
+            <span className="hidden 2xl:inline text-emerald-400/90">(Verified)</span>
           </button>
         )}
 
@@ -263,12 +262,12 @@ export function ContractHashBadge({
             type="button"
             onClick={handleCopyFullHash}
             title={tooltipSummary}
-            className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/60 bg-amber-950/75 px-3 py-1 text-amber-200 shadow-sm transition-colors hover:border-red-400 hover:bg-red-950/80 shrink-0"
+            className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/60 bg-amber-950/75 px-2.5 sm:px-3 py-1 text-amber-200 shadow-sm transition-colors hover:border-red-400 hover:bg-red-950/80 shrink-0 text-xs"
           >
             <AlertTriangle className="h-3.5 w-3.5 text-amber-400 shrink-0" />
-            <span>
-              Contract Drift: <strong>{shortActual}</strong> != {shortExpected}
-            </span>
+            <span className="hidden xl:inline">Drift:</span>
+            <strong className="font-mono">{shortActual}</strong>
+            <span className="hidden 2xl:inline">!= {shortExpected}</span>
           </button>
         )}
 
@@ -277,10 +276,10 @@ export function ContractHashBadge({
             type="button"
             onClick={() => void verifyContracts()}
             title={tooltipSummary}
-            className="inline-flex items-center gap-1.5 rounded-full border border-red-500/50 bg-red-950/70 px-3 py-1 text-red-300 shadow-sm transition-colors hover:border-red-400 shrink-0"
+            className="inline-flex items-center gap-1.5 rounded-full border border-red-500/50 bg-red-950/70 px-2.5 sm:px-3 py-1 text-red-300 shadow-sm transition-colors hover:border-red-400 shrink-0 text-xs"
           >
             <ShieldAlert className="h-3.5 w-3.5 text-red-400 shrink-0" />
-            <span>FastAPI Offline (Retry)</span>
+            <span>FastAPI Offline</span>
           </button>
         )}
 
@@ -342,10 +341,10 @@ export function ContractHashBadge({
             ? `Click to copy X-Trace-ID: ${traceId}`
             : "No active X-Trace-ID yet"
         }
-        className="inline-flex items-center gap-1.5 rounded-full border border-zinc-700/80 bg-zinc-900/80 px-2.5 py-1 text-zinc-300 transition-colors hover:border-zinc-500 hover:bg-zinc-800/90 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+        className="hidden xl:inline-flex items-center gap-1.5 rounded-full border border-zinc-700/80 bg-zinc-900/80 px-2.5 py-1 text-xs text-zinc-300 transition-colors hover:border-zinc-500 hover:bg-zinc-800/90 hover:text-white disabled:cursor-not-allowed disabled:opacity-50 shrink-0"
       >
-        <span className="text-zinc-500">X-Trace-ID:</span>
-        <span className="text-sky-300">{shortTrace}</span>
+        <span className="text-zinc-500 hidden 2xl:inline">X-Trace-ID:</span>
+        <span className="text-sky-300 font-mono">{shortTrace}</span>
         {copiedTrace ? (
           <Check className="h-3 w-3 text-emerald-400" />
         ) : (
@@ -359,7 +358,7 @@ export function ContractHashBadge({
         onClick={() => void verifyContracts()}
         disabled={status === "loading"}
         title="Re-verify contract hash"
-        className="inline-flex items-center justify-center rounded-full border border-zinc-800 bg-zinc-900/70 p-1.5 text-zinc-400 transition-colors hover:border-zinc-600 hover:text-zinc-200 disabled:opacity-50"
+        className="hidden 2xl:inline-flex items-center justify-center rounded-full border border-zinc-800 bg-zinc-900/70 p-1.5 text-zinc-400 transition-colors hover:border-zinc-600 hover:text-zinc-200 disabled:opacity-50 shrink-0"
       >
         <RefreshCw
           className={`h-3 w-3 ${status === "loading" ? "animate-spin" : ""}`}

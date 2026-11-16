@@ -122,11 +122,7 @@ export function TestbenchShell() {
       <TestbenchTabstrip activeTab={activeTab} onSelectTab={(tab) => setActiveTab(tab)} />
 
       {/* Main Body: Active Tab full width */}
-      <main
-        className={`flex-1 min-h-0 w-full bg-zinc-950/50 ${
-          activeTab === "tab1" || activeTab === "tab3" ? "overflow-hidden" : "overflow-y-auto"
-        }`}
-      >
+      <main className="flex-1 min-h-0 w-full bg-zinc-950/50 overflow-y-auto">
         {activeTab === "tab0" && (
           <Tab0Plumbing activeBookId={activeBookId} onRefreshBooks={fetchBooks} />
         )}

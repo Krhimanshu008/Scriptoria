@@ -20,7 +20,7 @@
   const EVENT_RPC_ERROR = "SCRIPTORIA_FLOW_RPC_ERROR";
 
   const MEDIA_URL_REGEX =
-    /https:\/\/(?:[a-z0-9-]+\.)*(?:googleusercontent\.com|ggpht\.com|storage\.googleapis\.com)\/[^\s"'<>\\]+/gi;
+    /https:\/\/(?:[a-z0-9-]+\.)*(?:googleusercontent\.com|ggpht\.com|storage\.googleapis\.com|flow-content\.google)\/[^\s"'<>\\]+/gi;
 
   const DATA_URI_REGEX =
     /^data:(image\/(?:png|jpeg|webp|gif)|video\/(?:mp4|webm));base64,[A-Za-z0-9+/=]+$/i;

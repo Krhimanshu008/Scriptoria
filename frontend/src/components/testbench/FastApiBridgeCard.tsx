@@ -272,6 +272,7 @@ export function FastApiBridgeCard() {
   const [probeLatencyMs, setProbeLatencyMs] = useState<number | null>(null);
   const [probeTraceId, setProbeTraceId] = useState<string | null>(null);
   const [copiedProbeTrace, setCopiedProbeTrace] = useState<boolean>(false);
+  const [isProbeExpanded, setIsProbeExpanded] = useState<boolean>(true);
 
   const clientMetrics = useMemo(
     () => computeClientUnicodeMetrics(probeText),
@@ -609,185 +610,198 @@ export function FastApiBridgeCard() {
       </div>
 
       {/* Section 2: Interactive Unicode & UTF-16 Parity Probe */}
-      <div className="mt-6 border-t border-zinc-800/80 pt-5">
-        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-          <div className="flex items-center gap-2">
+      <div className="mt-4 border-t border-zinc-800/80 pt-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+          <button
+            type="button"
+            onClick={() => setIsProbeExpanded((prev) => !prev)}
+            className="flex items-center gap-2 group text-left hover:opacity-80 transition cursor-pointer"
+          >
             <Sparkles className="h-4 w-4 text-amber-400" />
             <h4 className="text-xs font-semibold uppercase tracking-wider text-zinc-200">
               Interactive Unicode &amp; UTF-16 Parity Probe
             </h4>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-1.5">
-            {UNICODE_PRESETS.map((preset) => (
-              <button
-                key={preset.label}
-                type="button"
-                onClick={() => setProbeText(preset.sample)}
-                className="rounded border border-zinc-800 bg-zinc-900/90 px-2 py-0.5 text-[11px] text-zinc-300 transition hover:border-sky-500/50 hover:text-sky-300"
-              >
-                {preset.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-2.5 sm:flex-row">
-          <input
-            type="text"
-            value={probeText}
-            onChange={(e) => setProbeText(e.target.value)}
-            placeholder="Enter multi-script text, emojis, or smart typography to test offset parity…"
-            className="flex-1 rounded-lg border border-zinc-700/90 bg-zinc-900 px-3.5 py-2 text-sm font-mono text-zinc-100 placeholder-zinc-500 focus:border-sky-500 focus:outline-none"
-          />
-          <button
-            type="button"
-            onClick={() => void runUnicodeProbe()}
-            disabled={probeLoading || probeText.length === 0}
-            className="inline-flex items-center justify-center gap-2 rounded-lg bg-sky-600 px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {probeLoading ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Send className="h-4 w-4" />
-            )}
-            <span>Test Unicode &amp; UTF-16 Parity</span>
-          </button>
-        </div>
-
-        {/* Real-Time Client Length Metrics */}
-        <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-          <div className="rounded-lg border border-zinc-800/80 bg-zinc-900/40 p-3">
-            <div className="flex items-center justify-between text-[11px] text-zinc-400">
-              <span>Unicode Code Points</span>
-              <span className="font-mono text-[10px] text-zinc-500">
-                Python len(s)
-              </span>
-            </div>
-            <div className="mt-1 flex items-baseline gap-2">
-              <span className="text-xl font-bold font-mono text-emerald-400">
-                {clientMetrics.codePoints}
-              </span>
-              <span className="text-[11px] text-zinc-400">codepoints</span>
-            </div>
-          </div>
-
-          <div className="rounded-lg border border-zinc-800/80 bg-zinc-900/40 p-3">
-            <div className="flex items-center justify-between text-[11px] text-zinc-400">
-              <span>UTF-16 Code Units</span>
-              <span className="font-mono text-[10px] text-zinc-500">
-                JS s.length
-              </span>
-            </div>
-            <div className="mt-1 flex items-baseline gap-2">
-              <span className="text-xl font-bold font-mono text-sky-400">
-                {clientMetrics.utf16Units}
-              </span>
-              <span className="text-[11px] text-zinc-400">
-                units{" "}
-                {clientMetrics.surrogateDelta > 0 && (
-                  <span className="text-amber-400">
-                    (+{clientMetrics.surrogateDelta} surrogate)
-                  </span>
-                )}
-              </span>
-            </div>
-          </div>
-
-          <div className="rounded-lg border border-zinc-800/80 bg-zinc-900/40 p-3">
-            <div className="flex items-center justify-between text-[11px] text-zinc-400">
-              <span>UTF-8 Wire Bytes</span>
-              <span className="font-mono text-[10px] text-zinc-500">
-                TextEncoder
-              </span>
-            </div>
-            <div className="mt-1 flex items-baseline gap-2">
-              <span className="text-xl font-bold font-mono text-purple-400">
-                {clientMetrics.utf8Bytes}
-              </span>
-              <span className="text-[11px] text-zinc-400">bytes</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Server Response Display */}
-        {probeError && (
-          <div className="mt-3 flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-950/50 px-3.5 py-2.5 text-xs text-red-200">
-            <XCircle className="h-4 w-4 text-red-400 shrink-0" />
-            <span>
-              <strong>Echo-Validate Error:</strong> {probeError}
+            <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] font-mono text-zinc-400 group-hover:text-zinc-200 transition">
+              {isProbeExpanded ? "Collapse" : "Expand"}
             </span>
-          </div>
-        )}
+          </button>
 
-        {serverMetrics && (
-          <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-900/70 p-3.5 text-xs">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-800 pb-2.5">
-              <div className="flex items-center gap-2">
-                {serverMetrics.parityMatch ? (
-                  <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-950/70 px-2.5 py-0.5 font-mono text-[11px] text-emerald-300">
-                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
-                    PARITY VERIFIED (Client == FastAPI)
-                  </span>
+          {isProbeExpanded && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {UNICODE_PRESETS.map((preset) => (
+                <button
+                  key={preset.label}
+                  type="button"
+                  onClick={() => setProbeText(preset.sample)}
+                  className="rounded border border-zinc-800 bg-zinc-900/90 px-2 py-0.5 text-[11px] text-zinc-300 transition hover:border-sky-500/50 hover:text-sky-300"
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {isProbeExpanded && (
+          <div className="mt-3 space-y-3">
+            <div className="flex flex-col gap-2.5 sm:flex-row">
+              <input
+                type="text"
+                value={probeText}
+                onChange={(e) => setProbeText(e.target.value)}
+                placeholder="Enter multi-script text, emojis, or smart typography to test offset parity…"
+                className="flex-1 rounded-lg border border-zinc-700/90 bg-zinc-900 px-3.5 py-2 text-sm font-mono text-zinc-100 placeholder-zinc-500 focus:border-sky-500 focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => void runUnicodeProbe()}
+                disabled={probeLoading || probeText.length === 0}
+                className="inline-flex items-center justify-center gap-2 rounded-lg bg-sky-600 px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {probeLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
-                  <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/40 bg-amber-950/70 px-2.5 py-0.5 font-mono text-[11px] text-amber-300">
-                    <XCircle className="h-3.5 w-3.5 text-amber-400" />
-                    OFFSET DRIFT DETECTED
-                  </span>
+                  <Send className="h-4 w-4" />
                 )}
+                <span>Test Unicode &amp; UTF-16 Parity</span>
+              </button>
+            </div>
+
+            {/* Real-Time Client Length Metrics */}
+            <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+              <div className="rounded-lg border border-zinc-800/80 bg-zinc-900/40 p-3">
+                <div className="flex items-center justify-between text-[11px] text-zinc-400">
+                  <span>Unicode Code Points</span>
+                  <span className="font-mono text-[10px] text-zinc-500">
+                    Python len(s)
+                  </span>
+                </div>
+                <div className="mt-1 flex items-baseline gap-2">
+                  <span className="text-xl font-bold font-mono text-emerald-400">
+                    {clientMetrics.codePoints}
+                  </span>
+                  <span className="text-[11px] text-zinc-400">codepoints</span>
+                </div>
               </div>
 
-              <div className="flex items-center gap-2 font-mono text-[11px]">
-                {probeLatencyMs !== null && (
-                  <span className="text-zinc-400">{probeLatencyMs} ms</span>
-                )}
-                {probeTraceId && (
-                  <button
-                    type="button"
-                    onClick={() => void copyText(probeTraceId, setCopiedProbeTrace)}
-                    className="inline-flex items-center gap-1 rounded border border-zinc-700 bg-zinc-950 px-2 py-0.5 text-zinc-300 hover:border-zinc-600"
-                  >
-                    <Terminal className="h-3 w-3 text-sky-400" />
-                    <span>{probeTraceId.slice(0, 8)}</span>
-                    {copiedProbeTrace ? (
-                      <Check className="h-3 w-3 text-emerald-400" />
-                    ) : (
-                      <Copy className="h-3 w-3 text-zinc-400" />
+              <div className="rounded-lg border border-zinc-800/80 bg-zinc-900/40 p-3">
+                <div className="flex items-center justify-between text-[11px] text-zinc-400">
+                  <span>UTF-16 Code Units</span>
+                  <span className="font-mono text-[10px] text-zinc-500">
+                    JS s.length
+                  </span>
+                </div>
+                <div className="mt-1 flex items-baseline gap-2">
+                  <span className="text-xl font-bold font-mono text-sky-400">
+                    {clientMetrics.utf16Units}
+                  </span>
+                  <span className="text-[11px] text-zinc-400">
+                    units{" "}
+                    {clientMetrics.surrogateDelta > 0 && (
+                      <span className="text-amber-400">
+                        (+{clientMetrics.surrogateDelta} surrogate)
+                      </span>
                     )}
-                  </button>
-                )}
+                  </span>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-zinc-800/80 bg-zinc-900/40 p-3">
+                <div className="flex items-center justify-between text-[11px] text-zinc-400">
+                  <span>UTF-8 Wire Bytes</span>
+                  <span className="font-mono text-[10px] text-zinc-500">
+                    TextEncoder
+                  </span>
+                </div>
+                <div className="mt-1 flex items-baseline gap-2">
+                  <span className="text-xl font-bold font-mono text-purple-400">
+                    {clientMetrics.utf8Bytes}
+                  </span>
+                  <span className="text-[11px] text-zinc-400">bytes</span>
+                </div>
               </div>
             </div>
 
-            <div className="mt-2.5 grid grid-cols-3 gap-2 font-mono text-[11px]">
-              <div className="rounded bg-zinc-950/70 p-2">
-                <div className="text-zinc-500">Backend Code Points</div>
-                <div className="mt-0.5 text-sm font-semibold text-emerald-300">
-                  {serverMetrics.codePoints}{" "}
-                  <span className="text-[10px] text-zinc-500">
-                    (Client: {clientMetrics.codePoints})
-                  </span>
+            {/* Server Response Display */}
+            {probeError && (
+              <div className="mt-3 flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-950/50 px-3.5 py-2.5 text-xs text-red-200">
+                <XCircle className="h-4 w-4 text-red-400 shrink-0" />
+                <span>
+                  <strong>Echo-Validate Error:</strong> {probeError}
+                </span>
+              </div>
+            )}
+
+            {serverMetrics && (
+              <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-900/70 p-3.5 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-800 pb-2.5">
+                  <div className="flex items-center gap-2">
+                    {serverMetrics.parityMatch ? (
+                      <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-950/70 px-2.5 py-0.5 font-mono text-[11px] text-emerald-300">
+                        <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                        PARITY VERIFIED (Client == FastAPI)
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/40 bg-amber-950/70 px-2.5 py-0.5 font-mono text-[11px] text-amber-300">
+                        <XCircle className="h-3.5 w-3.5 text-amber-400" />
+                        OFFSET DRIFT DETECTED
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2 font-mono text-[11px]">
+                    {probeLatencyMs !== null && (
+                      <span className="text-zinc-400">{probeLatencyMs} ms</span>
+                    )}
+                    {probeTraceId && (
+                      <button
+                        type="button"
+                        onClick={() => void copyText(probeTraceId, setCopiedProbeTrace)}
+                        className="inline-flex items-center gap-1 rounded border border-zinc-700 bg-zinc-950 px-2 py-0.5 text-zinc-300 hover:border-zinc-600"
+                      >
+                        <Terminal className="h-3 w-3 text-sky-400" />
+                        <span>{probeTraceId.slice(0, 8)}</span>
+                        {copiedProbeTrace ? (
+                          <Check className="h-3 w-3 text-emerald-400" />
+                        ) : (
+                          <Copy className="h-3 w-3 text-zinc-400" />
+                        )}
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="mt-2.5 grid grid-cols-3 gap-2 font-mono text-[11px]">
+                  <div className="rounded bg-zinc-950/70 p-2">
+                    <div className="text-zinc-500">Backend Code Points</div>
+                    <div className="mt-0.5 text-sm font-semibold text-emerald-300">
+                      {serverMetrics.codePoints}{" "}
+                      <span className="text-[10px] text-zinc-500">
+                        (Client: {clientMetrics.codePoints})
+                      </span>
+                    </div>
+                  </div>
+                  <div className="rounded bg-zinc-950/70 p-2">
+                    <div className="text-zinc-500">Backend UTF-16 Units</div>
+                    <div className="mt-0.5 text-sm font-semibold text-sky-300">
+                      {serverMetrics.utf16Units}{" "}
+                      <span className="text-[10px] text-zinc-500">
+                        (Client: {clientMetrics.utf16Units})
+                      </span>
+                    </div>
+                  </div>
+                  <div className="rounded bg-zinc-950/70 p-2">
+                    <div className="text-zinc-500">Backend UTF-8 Bytes</div>
+                    <div className="mt-0.5 text-sm font-semibold text-purple-300">
+                      {serverMetrics.utf8Bytes}{" "}
+                      <span className="text-[10px] text-zinc-500">
+                        (Client: {clientMetrics.utf8Bytes})
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
-              <div className="rounded bg-zinc-950/70 p-2">
-                <div className="text-zinc-500">Backend UTF-16 Units</div>
-                <div className="mt-0.5 text-sm font-semibold text-sky-300">
-                  {serverMetrics.utf16Units}{" "}
-                  <span className="text-[10px] text-zinc-500">
-                    (Client: {clientMetrics.utf16Units})
-                  </span>
-                </div>
-              </div>
-              <div className="rounded bg-zinc-950/70 p-2">
-                <div className="text-zinc-500">Backend UTF-8 Bytes</div>
-                <div className="mt-0.5 text-sm font-semibold text-purple-300">
-                  {serverMetrics.utf8Bytes}{" "}
-                  <span className="text-[10px] text-zinc-500">
-                    (Client: {clientMetrics.utf8Bytes})
-                  </span>
-                </div>
-              </div>
-            </div>
+            )}
           </div>
         )}
       </div>

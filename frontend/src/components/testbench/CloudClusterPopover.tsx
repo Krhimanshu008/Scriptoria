@@ -77,7 +77,7 @@ export function CloudClusterPopover({
       <button
         type="button"
         onClick={() => setOpen((prev) => !prev)}
-        className={`flex h-8 items-center gap-2 rounded-lg border px-2.5 text-xs font-medium transition-all ${
+        className={`flex h-8 items-center gap-1.5 sm:gap-2 rounded-lg border px-2 sm:px-2.5 text-xs font-medium transition-all shrink-0 ${
           open
             ? "border-sky-500/60 bg-sky-950/40 text-sky-200 shadow-sm"
             : "border-zinc-800 bg-zinc-900/90 text-zinc-300 hover:border-zinc-700 hover:bg-zinc-800"
@@ -89,7 +89,7 @@ export function CloudClusterPopover({
             r2Ok ? "text-cyan-400" : "text-amber-400 animate-pulse"
           }`}
         />
-        <span className="font-semibold text-zinc-200">Cloud Lake</span>
+        <span className="font-semibold text-zinc-200 hidden sm:inline">Cloud Lake</span>
 
         <span
           className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold border ${
@@ -100,7 +100,8 @@ export function CloudClusterPopover({
               : "bg-red-500/15 text-red-400 border-red-500/30"
           }`}
         >
-          {onlineServices}/{totalCore} Ready
+          {onlineServices}/{totalCore}
+          <span className="hidden md:inline"> {onlineServices === totalCore ? "Ready" : "Degraded"}</span>
         </span>
 
         <ChevronDown
@@ -112,7 +113,7 @@ export function CloudClusterPopover({
 
       {/* Floating Dark Glass Popover */}
       {open && (
-        <div className="absolute left-1/2 -translate-x-1/2 top-full mt-2 w-80 sm:w-96 rounded-xl border border-zinc-700/80 bg-zinc-950/95 p-4 text-xs shadow-2xl backdrop-blur-xl z-50 animate-in fade-in zoom-in-95 duration-100">
+        <div className="absolute right-0 top-full mt-2 w-80 sm:w-96 rounded-xl border border-zinc-700/80 bg-zinc-950/95 p-4 text-xs shadow-2xl backdrop-blur-xl z-50 animate-in fade-in zoom-in-95 duration-100">
           {/* Header */}
           <div className="flex items-center justify-between border-b border-zinc-800 pb-2.5 mb-3">
             <div className="flex items-center gap-2">

@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Scriptoria — Google AI Flow Companion</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <!-- Header -->
+    <header class="popup-header">
+      <div class="brand">
+        <img src="icon.png" class="brand-icon" alt="Scriptoria">
+        <div>
+          <h1 class="brand-title">Scriptoria</h1>
+          <span class="brand-subtitle">Flow Companion Bridge</span>
+        </div>
+      </div>
+      <div id="connection-badge" class="badge badge-disconnected">
+        <span class="badge-dot"></span>
+        <span id="connection-text">CONNECTING</span>
+      </div>
+    </header>
+
+    <!-- Nav Tabs -->
+    <nav class="nav-tabs">
+      <button class="nav-tab active" data-tab="tab-status">Status</button>
+      <button class="nav-tab" data-tab="tab-dispatch">Dispatch</button>
+      <button class="nav-tab" data-tab="tab-ingredients">Ingredients</button>
+      <button class="nav-tab" data-tab="tab-gallery">Gallery</button>
+    </nav>
+
+    <!-- Tab 1: Status & Queue -->
+    <section id="tab-status" class="tab-pane active">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Flow Project Context</span>
+          <button id="btn-refresh-status" class="btn-icon" title="Refresh Status">🔄</button>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Flow Project ID:</span>
+          <span id="info-project-id" class="info-value font-mono">Scanning...</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">WebSocket:</span>
+          <span id="info-ws-status" class="info-value">ws://127.0.0.1:8000</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Heartbeat:</span>
+          <span id="info-heartbeat" class="info-value text-muted">-</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Task Queue</span>
+          <div class="card-actions">
+            <button id="btn-pause-queue" class="btn btn-secondary btn-xs">Pause</button>
+            <button id="btn-clear-queue" class="btn btn-danger btn-xs">Clear</button>
+          </div>
+        </div>
+        <div id="queue-empty-msg" class="empty-state">No pending tasks in queue</div>
+        <div id="active-task-container" class="active-task-card hidden">
+          <div class="task-badge-row">
+            <span class="task-status-pill">BUSY GENERATING</span>
+            <span id="task-model-pill" class="pill-muted">NANO_BANANA</span>
+          </div>
+          <p id="task-prompt-text" class="task-prompt"></p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 2: Quick Dispatch -->
+    <section id="tab-dispatch" class="tab-pane">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Manual Dispatch to Flow</span>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="input-prompt">Prompt Text (use @Handle for ingredients):</label>
+          <textarea id="input-prompt" class="textarea" rows="3" placeholder="e.g. @Detective_Kael examining glowing neon runes in dark alley..."></textarea>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group flex-1">
+            <label class="form-label" for="select-model">Model Engine:</label>
+            <select id="select-model" class="select">
+              <option value="NANO_BANANA" selected>Nano Banana 2.1 (Fast)</option>
+              <option value="IMAGEN_3">Imagen 3 (HQ)</option>
+              <option value="VEO_2">Veo 2 (Video)</option>
+            </select>
+          </div>
+          <div class="form-group flex-1">
+            <label class="form-label" for="select-aspect">Aspect Ratio:</label>
+            <select id="select-aspect" class="select">
+              <option value="16:9" selected>16:9 (Landscape)</option>
+              <option value="9:16">9:16 (Portrait)</option>
+              <option value="1:1">1:1 (Square)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="actions-row">
+          <button id="btn-dispatch-prompt" class="btn btn-primary w-full">⚡ Send to Google Flow</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 3: Synced @Ingredients -->
+    <section id="tab-ingredients" class="tab-pane">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Project @Ingredients</span>
+          <button id="btn-sync-ingredients" class="btn btn-secondary btn-xs">🔄 Sync</button>
+        </div>
+        <p class="card-desc">Click any chip to insert into Google Flow's prompt box:</p>
+        <div id="ingredients-list" class="ingredients-chip-grid">
+          <button class="chip" data-handle="Detective_Kael">👤 @Detective_Kael</button>
+          <button class="chip" data-handle="Ancient_Castle">🏰 @Ancient_Castle</button>
+          <button class="chip" data-handle="Glowing_Grimoire">📖 @Glowing_Grimoire</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 4: Recent Captures Gallery -->
+    <section id="tab-gallery" class="tab-pane">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Recent Captures</span>
+          <span id="gallery-count" class="pill-muted">4 saved</span>
+        </div>
+        <div id="gallery-grid" class="gallery-grid">
+          <!-- Dynamically populated -->
+        </div>
+        <div class="gallery-footer">
+          <span class="text-xs text-muted">📁 output/flow_assets/</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="popup-footer">
+      <a href="https://scriptoria.krhimanshu.in/testbench" target="_blank" class="footer-link">Open Scriptoria Testbench ↗</a>
+      <span class="footer-version">v1.0.0</span>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

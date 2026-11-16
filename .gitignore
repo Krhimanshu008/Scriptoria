@@ -15,6 +15,7 @@ service_account*.json
 /notebooks/
 /kaggle_logs/
 /outputs/
+/output/
 
 # Python bytecode & cache
 __pycache__/

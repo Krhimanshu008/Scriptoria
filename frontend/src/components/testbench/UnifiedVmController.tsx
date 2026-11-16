@@ -122,11 +122,11 @@ export function UnifiedVmController({
   };
 
   return (
-    <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 bg-zinc-900/90 border border-zinc-800 rounded-lg p-1">
+    <div className="flex items-center gap-1 sm:gap-1.5 shrink-0 bg-zinc-900/90 border border-zinc-800 rounded-lg p-0.5 sm:p-1">
       {/* 1. Target VM Selector */}
       <div className="relative flex items-center">
         <span
-          className={`absolute left-2.5 h-2 w-2 rounded-full pointer-events-none ${getStatusDot(
+          className={`absolute left-2 h-2 w-2 rounded-full pointer-events-none ${getStatusDot(
             vmStatus
           )}`}
         />
@@ -134,7 +134,7 @@ export function UnifiedVmController({
           value={activeVm?.target || "gpu0"}
           onChange={(e) => setSelectedTarget(e.target.value)}
           aria-label="Select VM Target"
-          className="h-7 pl-6 pr-6 rounded-md bg-zinc-950 border border-zinc-800 text-[11px] font-medium text-zinc-200 hover:border-zinc-700 focus:border-amber-500 focus:outline-none appearance-none cursor-pointer max-w-[140px] sm:max-w-[170px] truncate"
+          className="h-7 pl-5 pr-5 rounded-md bg-zinc-950 border border-zinc-800 text-[11px] font-medium text-zinc-200 hover:border-zinc-700 focus:border-amber-500 focus:outline-none appearance-none cursor-pointer max-w-[100px] sm:max-w-[130px] md:max-w-[160px] truncate"
         >
           {vms.length > 0 ? (
             vms.map((vm) => (
@@ -146,7 +146,7 @@ export function UnifiedVmController({
             <option value="gpu0">Kaggle GPU 0 (Dual-T4) · OFFLINE</option>
           )}
         </select>
-        <ChevronDown className="h-3 w-3 text-zinc-500 absolute right-1.5 pointer-events-none" />
+        <ChevronDown className="h-3 w-3 text-zinc-500 absolute right-1 pointer-events-none" />
       </div>
 
       {/* 2. Worker Profile / Model Selector */}
@@ -156,7 +156,7 @@ export function UnifiedVmController({
           onChange={(e) => handleProfileChange(e.target.value)}
           disabled={isStarting || isUpdatingProfile}
           aria-label="Select Model Profile"
-          className="h-7 pl-2 pr-6 rounded-md bg-zinc-950 border border-zinc-800 text-[11px] font-medium text-zinc-200 hover:border-zinc-700 focus:border-amber-500 focus:outline-none appearance-none cursor-pointer max-w-[130px] sm:max-w-[160px] truncate disabled:opacity-50"
+          className="h-7 pl-2 pr-5 rounded-md bg-zinc-950 border border-zinc-800 text-[11px] font-medium text-zinc-200 hover:border-zinc-700 focus:border-amber-500 focus:outline-none appearance-none cursor-pointer max-w-[95px] sm:max-w-[125px] md:max-w-[155px] truncate disabled:opacity-50"
         >
           {POPULAR_PROFILES.map((p) => (
             <option key={p.id} value={p.id}>
@@ -164,7 +164,7 @@ export function UnifiedVmController({
             </option>
           ))}
         </select>
-        <ChevronDown className="h-3 w-3 text-zinc-500 absolute right-1.5 pointer-events-none" />
+        <ChevronDown className="h-3 w-3 text-zinc-500 absolute right-1 pointer-events-none" />
       </div>
 
       {/* 3. Single Action Button: Boot / Starting / Kill */}
@@ -173,7 +173,7 @@ export function UnifiedVmController({
           type="button"
           onClick={handleToggleVm}
           disabled={isActionLoading}
-          className="flex h-7 items-center gap-1.5 rounded-md border border-rose-700/80 bg-rose-950/80 px-2.5 text-[11px] font-semibold text-rose-300 shadow-sm transition hover:bg-rose-900 active:scale-95 disabled:opacity-50 shrink-0"
+          className="flex h-7 items-center gap-1 rounded-md border border-rose-700/80 bg-rose-950/80 px-2 sm:px-2.5 text-[11px] font-semibold text-rose-300 shadow-sm transition hover:bg-rose-900 active:scale-95 disabled:opacity-50 shrink-0 whitespace-nowrap"
           title={`Click to kill ${selectedTarget.toUpperCase()} and release GPU quota`}
         >
           <Power className={`h-3 w-3 text-rose-400 ${isActionLoading ? "animate-spin" : ""}`} />
@@ -184,7 +184,7 @@ export function UnifiedVmController({
           type="button"
           onClick={handleToggleVm}
           disabled={isActionLoading}
-          className="flex h-7 items-center gap-1.5 rounded-md border border-amber-600/80 bg-amber-950/80 px-2.5 text-[11px] font-semibold text-amber-300 shadow-sm transition hover:bg-amber-900 active:scale-95 shrink-0"
+          className="flex h-7 items-center gap-1 rounded-md border border-amber-600/80 bg-amber-950/80 px-2 sm:px-2.5 text-[11px] font-semibold text-amber-300 shadow-sm transition hover:bg-amber-900 active:scale-95 shrink-0 whitespace-nowrap"
           title={`VM is booting step (${activeVm?.stepProgress || 1}/5). Click to cancel.`}
         >
           <Loader2 className="h-3 w-3 animate-spin text-amber-400" />
@@ -195,7 +195,7 @@ export function UnifiedVmController({
           type="button"
           onClick={handleToggleVm}
           disabled={isActionLoading}
-          className="flex h-7 items-center gap-1.5 rounded-md border border-amber-500 bg-amber-500 px-3 text-[11px] font-semibold text-zinc-950 shadow-sm transition hover:bg-amber-400 active:scale-95 disabled:opacity-50 shrink-0"
+          className="flex h-7 items-center gap-1 sm:gap-1.5 rounded-md border border-amber-500 bg-amber-500 px-2.5 sm:px-3 text-[11px] font-semibold text-zinc-950 shadow-sm transition hover:bg-amber-400 active:scale-95 disabled:opacity-50 shrink-0 whitespace-nowrap"
           title={`Click to boot ${selectedTarget.toUpperCase()} with selected profile`}
         >
           {isActionLoading ? (

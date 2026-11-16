@@ -393,15 +393,15 @@ export function Tab0Plumbing({ activeBookId, onRefreshBooks }: Tab0PlumbingProps
   };
 
   return (
-    <div className="flex flex-col gap-6 p-6 max-w-[1600px] mx-auto text-zinc-100">
+    <div className="flex flex-col gap-4 sm:gap-5 p-4 sm:p-5 md:p-6 max-w-[1600px] mx-auto text-zinc-100">
       {/* Header Banner */}
-      <div className="flex items-center justify-between border-b border-zinc-800 pb-4">
+      <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
         <div>
           <h1 className="text-xl font-bold tracking-tight text-zinc-100 flex items-center gap-2">
             <Wrench className="h-5 w-5 text-amber-400" />
             Checkpoint 0: Plumbing, Contracts & Storage Lake
           </h1>
-          <p className="text-sm text-zinc-400 mt-1">
+          <p className="text-sm text-zinc-400 mt-0.5">
             Test Cloudflare R2 bucket integrity, Supabase catalog sync, Pydantic v1.0 schema strictness (EC-0.1), and upload torture test novels.
           </p>
         </div>
@@ -411,9 +411,9 @@ export function Tab0Plumbing({ activeBookId, onRefreshBooks }: Tab0PlumbingProps
       <FastApiBridgeCard />
 
       {/* Grid: 2 Columns */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-5">
         {/* Left Column (5 cols): Upload + R2 Scoped Tree Explorer */}
-        <div className="lg:col-span-5 flex flex-col gap-6">
+        <div className="lg:col-span-5 flex flex-col gap-4 sm:gap-5">
           {/* Novel Uploader Box */}
           <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-5 shadow-sm">
             <h2 className="text-sm font-semibold text-zinc-200 flex items-center gap-2 mb-3">
@@ -621,7 +621,7 @@ export function Tab0Plumbing({ activeBookId, onRefreshBooks }: Tab0PlumbingProps
         </div>
 
         {/* Right Column (7 cols): Diagnostics + Fault Injector + Pytests */}
-        <div className="lg:col-span-7 flex flex-col gap-6">
+        <div className="lg:col-span-7 flex flex-col gap-4 sm:gap-5">
           {/* Cloud Diagnostics Grid */}
           <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-5 shadow-sm">
             <h2 className="text-sm font-semibold text-zinc-200 flex items-center gap-2 mb-3">
