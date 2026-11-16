@@ -15,6 +15,8 @@
     local_ws: "ws://127.0.0.1:8000/api/v1/flow-bridge/ws",
     custom_url: "",
     candidate_count: 4,
+    gemini_api_key: "",
+    tool_model: "gemini-3.5-flash-lite",
   };
 
   function toWsUrl(httpUrl) {
