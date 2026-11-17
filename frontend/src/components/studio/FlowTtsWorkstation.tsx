@@ -87,6 +87,9 @@ export function FlowTtsWorkstation() {
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [activeFrameIndex, setActiveFrameIndex] = useState<number>(1);
   const [selectedCandidates, setSelectedCandidates] = useState<Record<number, number>>({});
+  const [mediaType, setMediaType] = useState<"IMAGE" | "VIDEO">("IMAGE");
+  const [flowModelEngine, setFlowModelEngine] = useState<"NANO_BANANA" | "VEO_3_1">("NANO_BANANA");
+  const [capturedAssets, setCapturedAssets] = useState<Record<number, string[]>>({});
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   // Load books on mount
@@ -136,6 +139,43 @@ export function FlowTtsWorkstation() {
     }
     loadChapterProse();
   }, [selectedBookId, selectedChapterIdx]);
+
+  // Poll recent Flow media results to populate live candidates
+  useEffect(() => {
+    let timer: any;
+    async function pollRecentMedia() {
+      try {
+        const res = await fetch("/api/v1/flow-bridge/events/recent");
+        if (res.ok) {
+          const events = await res.json();
+          if (Array.isArray(events)) {
+            const nextMap: Record<number, string[]> = {};
+            events.forEach((ev: any) => {
+              const beatId = ev.beat_id || "";
+              const match = beatId.match(/beat_(\d+)/);
+              if (match) {
+                const frameIdx = parseInt(match[1], 10);
+                const urls = (ev.candidates || [])
+                  .map((c: any) => c.remote_url || (c.local_relative_path ? `/api/outputs/${c.local_relative_path}` : ""))
+                  .filter(Boolean);
+                if (urls.length > 0) {
+                  nextMap[frameIdx] = urls;
+                }
+              }
+            });
+            if (Object.keys(nextMap).length > 0) {
+              setCapturedAssets((prev) => ({ ...prev, ...nextMap }));
+            }
+          }
+        }
+      } catch {
+        // Non-fatal background poll
+      }
+    }
+    timer = setInterval(pollRecentMedia, 3500);
+    pollRecentMedia();
+    return () => clearInterval(timer);
+  }, []);
 
   // Flattened frames list for theater playback
   const allFlatFrames: SubSceneFrame[] = React.useMemo(() => {
@@ -432,9 +472,10 @@ export function FlowTtsWorkstation() {
         estimated_audio_duration_sec: Math.round(((storyboard.total_words || 2206) / 140) * 60),
         screenplay_transcript: script,
         narrator_voice: "Enzo",
-        model_engine: "NANO_BANANA",
+        media_type: mediaType,
+        model_engine: flowModelEngine,
         aspect_ratio: "16:9",
-        candidate_count: 4,
+        candidate_count: mediaType === "VIDEO" ? 1 : 4,
         total_frames: storyboard.total_frames || allFlatFrames.length,
         frames: allFlatFrames.map((f) => ({
           frame_index: f.frame_index,
@@ -712,6 +753,34 @@ export function FlowTtsWorkstation() {
                 </button>
               </div>
 
+              {/* Flow Modality Switcher */}
+              <div className="flex rounded-md border border-zinc-800 bg-zinc-950 p-0.5 text-xs">
+                <button
+                  onClick={() => {
+                    setMediaType("IMAGE");
+                    setFlowModelEngine("NANO_BANANA");
+                  }}
+                  className={`px-2.5 py-1 rounded font-medium flex items-center gap-1.5 transition ${
+                    mediaType === "IMAGE" ? "bg-amber-500/20 text-amber-300 border border-amber-500/40" : "text-zinc-400 hover:text-zinc-200"
+                  }`}
+                  title="Generate 4-Candidate Image Frames via Nano Banana / Imagen 3"
+                >
+                  <Camera className="h-3 w-3" /> Image (4x)
+                </button>
+                <button
+                  onClick={() => {
+                    setMediaType("VIDEO");
+                    setFlowModelEngine("VEO_3_1");
+                  }}
+                  className={`px-2.5 py-1 rounded font-medium flex items-center gap-1.5 transition ${
+                    mediaType === "VIDEO" ? "bg-purple-500/20 text-purple-300 border border-purple-500/40" : "text-zinc-400 hover:text-zinc-200"
+                  }`}
+                  title="Generate 5-Second Video Motion Clips via Veo 3.1"
+                >
+                  <Film className="h-3 w-3" /> Video (Veo)
+                </button>
+              </div>
+
               {/* Master 1-Click Launch Button */}
               <button
                 onClick={handleMasterChapterDispatch}
@@ -795,65 +864,103 @@ export function FlowTtsWorkstation() {
               />
 
               {/* Main Theater Display Canvas */}
-              <div className="relative aspect-video w-full rounded-lg border border-zinc-800 bg-zinc-900 overflow-hidden flex flex-col justify-between shadow-2xl">
-                {/* Visual Placeholder / Rendered Flow Asset */}
-                <div className="absolute inset-0 flex items-center justify-center bg-zinc-950">
-                  <div className="text-center p-6 max-w-lg space-y-3">
-                    <div className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-zinc-900 border border-zinc-800 text-amber-400 shadow-inner">
-                      <Camera className="h-6 w-6" />
+              {(() => {
+                const fIdx = activeTheaterFrame?.frame_index || 1;
+                const cands = capturedAssets[fIdx] || [];
+                const selIdx = selectedCandidates[fIdx] ?? 0;
+                const activeMediaUrl = cands[selIdx] || cands[0] || null;
+                const isVideo = activeMediaUrl
+                  ? activeMediaUrl.toLowerCase().includes(".mp4") || mediaType === "VIDEO"
+                  : false;
+
+                return (
+                  <div className="relative aspect-video w-full rounded-lg border border-zinc-800 bg-zinc-900 overflow-hidden flex flex-col justify-between shadow-2xl">
+                    {/* Visual Media or Placeholder */}
+                    {activeMediaUrl ? (
+                      isVideo ? (
+                        <video
+                          key={activeMediaUrl}
+                          src={activeMediaUrl}
+                          autoPlay
+                          loop
+                          muted
+                          playsInline
+                          className="absolute inset-0 w-full h-full object-contain bg-zinc-950"
+                        />
+                      ) : (
+                        <img
+                          key={activeMediaUrl}
+                          src={activeMediaUrl}
+                          alt={`Frame #${fIdx}`}
+                          className="absolute inset-0 w-full h-full object-contain bg-zinc-950"
+                        />
+                      )
+                    ) : (
+                      <div className="absolute inset-0 flex items-center justify-center bg-zinc-950">
+                        <div className="text-center p-6 max-w-lg space-y-3">
+                          <div className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-zinc-900 border border-zinc-800 text-amber-400 shadow-inner">
+                            {mediaType === "VIDEO" ? <Film className="h-6 w-6" /> : <Camera className="h-6 w-6" />}
+                          </div>
+                          <div>
+                            <div className="text-xs uppercase font-mono text-zinc-400 tracking-wider">
+                              {activeTheaterFrame?.shot_type} • {activeTheaterFrame?.lens}
+                            </div>
+                            <div className="text-sm font-medium text-zinc-200 mt-1 line-clamp-2">
+                              {activeTheaterFrame?.compiled_image_prompt}
+                            </div>
+                            <div className="text-[10px] text-amber-500/80 font-mono mt-2">
+                              ⚡ Awaiting Google Flow {mediaType === "VIDEO" ? "Veo 3.1 Video" : "Nano Banana"} Stream
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Top Overlay Badge */}
+                    <div className="relative z-10 flex items-center justify-between p-3 bg-gradient-to-b from-black/80 to-transparent">
+                      <div className="flex items-center gap-2">
+                        <span className="rounded bg-black/60 border border-zinc-700 px-2 py-0.5 text-xs font-mono font-semibold text-amber-400">
+                          Frame #{String(fIdx).padStart(2, "0")}
+                        </span>
+                        {/* 4-Candidate Switcher in Theater Mode */}
+                        <div className="flex items-center gap-1 bg-black/70 px-2 py-0.5 rounded border border-zinc-700">
+                          <span className="text-[10px] font-mono text-zinc-400 mr-0.5">Pick:</span>
+                          {[0, 1, 2, 3].map((candIdx) => {
+                            const isSel = (selectedCandidates[fIdx] ?? 0) === candIdx;
+                            const hasCand = cands.length > candIdx;
+                            return (
+                              <button
+                                key={candIdx}
+                                onClick={() => setSelectedCandidates((prev) => ({ ...prev, [fIdx]: candIdx }))}
+                                className={`px-1.5 py-0.2 rounded text-[10px] font-mono transition ${
+                                  isSel
+                                    ? "bg-amber-500 text-zinc-950 font-bold"
+                                    : hasCand
+                                    ? "bg-emerald-900/60 text-emerald-200 border border-emerald-600/40"
+                                    : "bg-zinc-800 text-zinc-400 hover:text-zinc-200"
+                                }`}
+                                title={`Select Flow Candidate #${candIdx + 1}${hasCand ? " (Ready)" : ""}`}
+                              >
+                                #{candIdx + 1}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      <span className="text-xs text-zinc-300 bg-black/60 px-2 py-0.5 rounded border border-zinc-800">
+                        {formatTime(activeTheaterFrame?.audio_start_sec || 0)} - {formatTime(activeTheaterFrame?.audio_end_sec || 0)}
+                      </span>
                     </div>
-                    <div>
-                      <div className="text-xs uppercase font-mono text-zinc-400 tracking-wider">
-                        {activeTheaterFrame?.shot_type} • {activeTheaterFrame?.lens}
-                      </div>
-                      <div className="text-sm font-medium text-zinc-200 mt-1 line-clamp-2">
-                        {activeTheaterFrame?.compiled_image_prompt}
-                      </div>
+
+                    {/* Bottom Subtitle / Sentence Anchor Bar */}
+                    <div className="relative z-10 p-4 bg-gradient-to-t from-black/95 via-black/80 to-transparent text-center">
+                      <p className="text-sm sm:text-base font-serif italic text-zinc-100 max-w-2xl mx-auto drop-shadow">
+                        &ldquo;{activeTheaterFrame?.sentence_span || "Call me Ishmael..."}&rdquo;
+                      </p>
                     </div>
                   </div>
-                </div>
-
-                {/* Top Overlay Badge */}
-                <div className="relative z-10 flex items-center justify-between p-3 bg-gradient-to-b from-black/80 to-transparent">
-                  <div className="flex items-center gap-2">
-                    <span className="rounded bg-black/60 border border-zinc-700 px-2 py-0.5 text-xs font-mono font-semibold text-amber-400">
-                      Frame #{String(activeTheaterFrame?.frame_index || 1).padStart(2, "0")}
-                    </span>
-                    {/* 4-Candidate Switcher in Theater Mode */}
-                    <div className="flex items-center gap-1 bg-black/70 px-2 py-0.5 rounded border border-zinc-700">
-                      <span className="text-[10px] font-mono text-zinc-400 mr-0.5">Pick:</span>
-                      {[0, 1, 2, 3].map((candIdx) => {
-                        const frameIdx = activeTheaterFrame?.frame_index || 1;
-                        const isSel = (selectedCandidates[frameIdx] ?? 0) === candIdx;
-                        return (
-                          <button
-                            key={candIdx}
-                            onClick={() => setSelectedCandidates((prev) => ({ ...prev, [frameIdx]: candIdx }))}
-                            className={`px-1.5 py-0.2 rounded text-[10px] font-mono transition ${
-                              isSel
-                                ? "bg-amber-500 text-zinc-950 font-bold"
-                                : "bg-zinc-800 text-zinc-400 hover:text-zinc-200"
-                            }`}
-                            title={`Select Flow Candidate #${candIdx + 1}`}
-                          >
-                            #{candIdx + 1}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                  <span className="text-xs text-zinc-300 bg-black/60 px-2 py-0.5 rounded border border-zinc-800">
-                    {formatTime(activeTheaterFrame?.audio_start_sec || 0)} - {formatTime(activeTheaterFrame?.audio_end_sec || 0)}
-                  </span>
-                </div>
-
-                {/* Bottom Subtitle / Sentence Anchor Bar */}
-                <div className="relative z-10 p-4 bg-gradient-to-t from-black/95 via-black/80 to-transparent text-center">
-                  <p className="text-sm sm:text-base font-serif italic text-zinc-100 max-w-2xl mx-auto drop-shadow">
-                    &ldquo;{activeTheaterFrame?.sentence_span || "Call me Ishmael..."}&rdquo;
-                  </p>
-                </div>
-              </div>
+                );
+              })()}
 
               {/* Master Audio Playback Controls */}
               <div className="rounded-lg border border-zinc-800/80 bg-zinc-900/60 p-3 flex flex-col gap-2">

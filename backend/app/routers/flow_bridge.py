@@ -19,6 +19,7 @@ from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconn
 from pydantic import BaseModel
 
 from app.schemas.flow_contracts import (
+    FlowAspectRatio,
     FlowAudioGenerateRequest,
     FlowAudioResultEvent,
     FlowCompanionStatus,
@@ -28,6 +29,7 @@ from app.schemas.flow_contracts import (
     FlowMediaCandidate,
     FlowMediaResultEvent,
     FlowMediaType,
+    FlowModelEngine,
     FlowQueueAction,
     FlowQueueActionType,
     FlowSavedAssetRecord,
@@ -631,11 +633,19 @@ class FlowBridgeOrchestrator:
                     if "16:9" in pkg.aspect_ratio
                     else FlowAspectRatio.SQUARE_1_1
                 )
+                pkg_media_type = getattr(pkg, "media_type", "IMAGE")
+                is_video = "video" in str(pkg_media_type).lower() or "veo" in str(pkg.model_engine).lower()
+                media_type = FlowMediaType.VIDEO if is_video else FlowMediaType.IMAGE
                 engine = (
-                    FlowModelEngine.NANO_BANANA
-                    if "banana" in pkg.model_engine.lower()
-                    else FlowModelEngine.IMAGEN_3
+                    FlowModelEngine.VEO_3_1_LITE
+                    if is_video
+                    else (
+                        FlowModelEngine.NANO_BANANA
+                        if "banana" in pkg.model_engine.lower()
+                        else FlowModelEngine.IMAGEN_3
+                    )
                 )
+                cand_count = 1 if is_video else pkg.candidate_count
                 for f in pkg.frames:
                     frame_idx = f.get("frame_index", 1)
                     prompt = f.get("compiled_image_prompt") or f.get("prompt", "")
@@ -645,8 +655,9 @@ class FlowBridgeOrchestrator:
                         beat_id=f"beat_{frame_idx:03d}",
                         prompt=prompt.strip(),
                         aspect_ratio=aspect,
+                        media_type=media_type,
                         model_engine=engine,
-                        candidate_count=pkg.candidate_count,
+                        candidate_count=cand_count,
                     )
                     self._pending_queue.append(task)
 
@@ -857,6 +868,7 @@ class ChapterPackagePayload(BaseModel):
     estimated_audio_duration_sec: float = 0.0
     screenplay_transcript: str = ""
     narrator_voice: str = "Enzo"
+    media_type: str = "IMAGE"
     model_engine: str = "NANO_BANANA"
     aspect_ratio: str = "16:9"
     candidate_count: int = 4

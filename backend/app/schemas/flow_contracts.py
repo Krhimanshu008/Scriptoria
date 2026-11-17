@@ -426,6 +426,7 @@ class FlowWsEnvelope(StrictModel):
         "DISPATCH_AUDIO_TASK",
         "AUDIO_PROGRESS",
         "AUDIO_RESULT",
+        "CHAPTER_PACKAGE_SYNC",
         "BRIDGE_ACK",
         "BRIDGE_ERROR",
     ]
