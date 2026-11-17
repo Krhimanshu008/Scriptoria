@@ -49,9 +49,9 @@ const STATE_CONFIG: Record<
     pulse: true,
   },
   CONNECTING: {
-    label: "Connecting Bridge…",
-    dotClass: "bg-blue-400",
-    badgeClass: "border-blue-500/30 bg-blue-950/60 text-blue-200",
+    label: "Waiting for Flow Tab…",
+    dotClass: "bg-sky-400",
+    badgeClass: "border-sky-500/40 bg-sky-950/70 text-sky-200 hover:border-sky-400/60",
     pulse: true,
   },
   PAUSED: {
@@ -253,6 +253,21 @@ export function FlowCompanionBadge({
           {status.last_error && (
             <div className="mt-3 rounded-lg border border-rose-500/30 bg-rose-950/40 p-2 text-[11px] text-rose-300">
               {status.last_error}
+            </div>
+          )}
+
+          {/* Extension Connected but Waiting for Flow Tab */}
+          {status.connection_state === "CONNECTING" && (
+            <div className="mt-3 rounded-lg border border-sky-500/30 bg-sky-950/40 p-2.5 text-center">
+              <p className="text-[11px] text-sky-200 mb-1.5 font-medium">Extension Online! Open a Google Flow tab to start generation.</p>
+              <a
+                href={flowUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-block w-full rounded bg-sky-500 py-1 text-xs font-bold text-zinc-950 hover:bg-sky-400 transition"
+              >
+                🌊 Open Google Flow Tab ↗
+              </a>
             </div>
           )}
 

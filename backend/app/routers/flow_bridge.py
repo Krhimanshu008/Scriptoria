@@ -163,10 +163,17 @@ class FlowBridgeOrchestrator:
                 self._bg_ws = websocket
                 logger.info("Chrome Background Daemon connected: session=%s", session_id)
 
-            # Re-verify flow connection state
+            # Re-verify flow connection state:
+            # If flow tab is not connected, but extension background daemon or another socket is alive,
+            # mark as CONNECTING (waiting for user to open Flow tab) instead of DISCONNECTED!
             if self._flow_ws is None:
+                new_state = (
+                    FlowConnectionState.CONNECTING
+                    if (self._bg_ws is not None or len(self._all_ws) > 0 or self._aistudio_ws is not None)
+                    else FlowConnectionState.DISCONNECTED
+                )
                 self._companion_status = self._companion_status.model_copy(
-                    update={"connection_state": FlowConnectionState.DISCONNECTED}
+                    update={"connection_state": new_state, "last_heartbeat_at": utc_now_iso()}
                 )
 
         # If a task was interrupted when the browser tab refreshed, re-queue it at the front
@@ -192,9 +199,14 @@ class FlowBridgeOrchestrator:
             self._all_ws.discard(websocket)
             if self._flow_ws is websocket:
                 self._flow_ws = None
+                new_state = (
+                    FlowConnectionState.CONNECTING
+                    if (self._bg_ws is not None or len(self._all_ws) > 0 or self._aistudio_ws is not None)
+                    else FlowConnectionState.DISCONNECTED
+                )
                 self._companion_status = self._companion_status.model_copy(
                     update={
-                        "connection_state": FlowConnectionState.DISCONNECTED,
+                        "connection_state": new_state,
                         "last_heartbeat_at": utc_now_iso(),
                     }
                 )
@@ -219,7 +231,11 @@ class FlowBridgeOrchestrator:
             if self._queue_paused:
                 merged["connection_state"] = FlowConnectionState.PAUSED
             elif self._flow_ws is None:
-                merged["connection_state"] = FlowConnectionState.DISCONNECTED
+                merged["connection_state"] = (
+                    FlowConnectionState.CONNECTING
+                    if (self._bg_ws is not None or len(self._all_ws) > 0 or self._aistudio_ws is not None)
+                    else FlowConnectionState.DISCONNECTED
+                )
             self._companion_status = FlowCompanionStatus.model_validate(merged)
             return self._companion_status
 
@@ -240,8 +256,13 @@ class FlowBridgeOrchestrator:
                 except ValueError:
                     pass
             elif self._flow_ws is None:
+                new_state = (
+                    FlowConnectionState.CONNECTING
+                    if (self._bg_ws is not None or len(self._all_ws) > 0 or self._aistudio_ws is not None)
+                    else FlowConnectionState.DISCONNECTED
+                )
                 self._companion_status = self._companion_status.model_copy(
-                    update={"connection_state": FlowConnectionState.DISCONNECTED}
+                    update={"connection_state": new_state}
                 )
 
             return self._companion_status.model_copy(

@@ -512,12 +512,18 @@ export function FlowTtsWorkstation() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Batch dispatch failed");
 
-      if (data.connected_clients === 0 || !data.flow_connected) {
+      if (data.connected_clients === 0) {
         toast.warning(
-          `Enqueued ${data.dispatched_count} frames, but Scriptoria Flow Companion tab is offline.`,
+          `Enqueued ${data.dispatched_count} frames, but Scriptoria Flow Companion is offline.`,
           { duration: 5000 }
         );
         setIsCompanionModalOpen(true);
+      } else if (!data.flow_connected) {
+        toast.info(
+          `Enqueued ${data.dispatched_count} frames! Extension online. Opening Google Flow tab...`,
+          { duration: 4000 }
+        );
+        window.open("https://flow.google.com", "_blank");
       } else {
         toast.success(
           `Dispatched ${data.dispatched_count} frames to Google Flow Bridge! Check Companion Extension tab.`
@@ -610,12 +616,18 @@ export function FlowTtsWorkstation() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Chapter Package sync failed");
 
-      if (data.connected_clients === 0 || !data.flow_connected) {
+      if (data.connected_clients === 0) {
         toast.warning(
           `Package staged (${payload.total_frames} frames), but Scriptoria Flow Companion is offline! Click to connect.`,
           { duration: 6000 }
         );
         setIsCompanionModalOpen(true);
+      } else if (!data.flow_connected) {
+        toast.info(
+          `🚀 Swarm Synced! Extension online. Opening Google Flow tab now to start generation...`,
+          { duration: 5000 }
+        );
+        window.open("https://flow.google.com", "_blank");
       } else {
         toast.success(
           `🚀 Swarm Synced! Dispatched ${payload.total_frames} frames & ${payload.total_words} words to Extension.`
