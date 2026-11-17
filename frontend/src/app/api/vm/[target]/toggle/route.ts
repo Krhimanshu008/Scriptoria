@@ -218,6 +218,28 @@ export async function POST(
         },
       });
 
+      // Pre-Push Ghost Session Cancellation: Cancel any lingering previous session to prevent Kaggle queue lockout
+      try {
+        const metaProvider = isTpu ? "kaggle-tpu-meta" : "kaggle-meta";
+        const kaggleMeta = await getDecryptedCredential(user.userId, metaProvider, vm.accountAlias);
+        const prevSessionId = Number(kaggleMeta?.secret || 0);
+        if (prevSessionId > 0 && kaggleCred?.username) {
+          console.info(
+            `[Kaggle Toggle] Auto-cancelling previous session ${prevSessionId} for ${vm.accountAlias} before new push...`
+          );
+          await KaggleOrchestrator.cancelKernelSession(
+            {
+              username: kaggleCred.username,
+              key: kaggleCred.secret,
+              authType: kaggleCred.authType === "bearer" ? "bearer" : "basic",
+            },
+            prevSessionId
+          );
+        }
+      } catch (cleanErr) {
+        console.warn(`[Kaggle Toggle] Pre-push cleanup skipped for ${vm.accountAlias}:`, cleanErr);
+      }
+
       try {
         const kernelSlug = isTpu
           ? `kaggle-tpu-runner-${vm.accountAlias}`

@@ -22,6 +22,7 @@ import {
   Zap,
   RefreshCw,
   ChevronRight,
+  Sparkles,
 } from "lucide-react";
 import type { PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
 import type { KaggleAccountSummary, ColabAccountSummary } from "@/app/api/vm/accounts/route";
@@ -102,6 +103,14 @@ export const AccountClusterCard: React.FC<AccountClusterCardProps> = ({
       : colabAccount?.accountAlias === "acc2"
       ? "gcgpu1"
       : "gcgpu");
+
+  const isTpu = primaryTarget.startsWith("tpu");
+  const kaggleSlug = isTpu
+    ? `kaggle-tpu-runner-${kaggleAccount?.accountAlias || "acc1"}`
+    : `kaggle-dual-gpu-runner-${kaggleAccount?.accountAlias || "acc1"}`;
+  const kaggleNotebookUrl = kaggleAccount?.username
+    ? `https://www.kaggle.com/code/${kaggleAccount.username}/${kaggleSlug}`
+    : null;
 
   const isOnline = vms.some((v) => v.status === "ONLINE" || v.status === "BUSY");
   const isStarting = !isOnline && vms.some((v) => v.status === "STARTING");
@@ -565,6 +574,24 @@ export const AccountClusterCard: React.FC<AccountClusterCardProps> = ({
                 {firstError}
               </p>
             )}
+
+            {kind === "kaggle" && kaggleNotebookUrl && maxStep === 1 && (
+              <div className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5">
+                <div className="flex items-center gap-1.5 text-[10px] text-amber-200">
+                  <Sparkles className="h-3.5 w-3.5 shrink-0 text-amber-400" />
+                  <span>Kaggle batch queue slow? Launch interactively for instant T4 GPU.</span>
+                </div>
+                <a
+                  href={kaggleNotebookUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex shrink-0 items-center gap-1 rounded bg-amber-500 px-2 py-0.5 text-[10px] font-bold text-zinc-950 transition hover:bg-amber-400"
+                >
+                  <ExternalLink className="h-3 w-3" />
+                  Open Kaggle ↗
+                </a>
+              </div>
+            )}
           </div>
         )}
 
@@ -677,6 +704,19 @@ export const AccountClusterCard: React.FC<AccountClusterCardProps> = ({
             <Terminal className="h-3 w-3 text-zinc-300" />
             Logs
           </button>
+
+          {kind === "kaggle" && kaggleNotebookUrl && (
+            <a
+              href={kaggleNotebookUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="glass-pill flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] text-amber-200 hover:bg-white/10"
+              title="Open notebook in Kaggle interactive editor"
+            >
+              <ExternalLink className="h-3 w-3 text-amber-400" />
+              Kaggle
+            </a>
+          )}
 
           {kind === "colab" && (
             <>
