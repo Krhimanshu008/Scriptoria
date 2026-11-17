@@ -119,13 +119,13 @@
       });
     }
 
-    document.getElementById("btn-run-tts")?.addEventListener("click", () => {
-      const genBtn = findGenerateButton();
-      if (genBtn) {
-        genBtn.click();
+    document.getElementById("btn-run-tts")?.addEventListener("click", async () => {
+      await ensureSpeechModelSelected();
+      const ran = await triggerRunInAIStudio();
+      if (ran) {
         updateDockStatus("Generating 3.8 TTS Speech in AI Studio...", "#3b82f6");
       } else {
-        updateDockStatus("Run button not found in active tab", "#ef4444");
+        updateDockStatus("Run button not found (press Ctrl+Enter)", "#ef4444");
       }
     });
 
@@ -144,6 +144,77 @@
   // ==========================================================================
   // 2. DOM Automation for Google AI Studio Playground Prompt Editor
   // ==========================================================================
+  async function ensureSpeechModelSelected() {
+    updateDockStatus("Configuring Audio / Speech Model...", "#f59e0b");
+
+    // 1. Look for Model Selector dropdown button
+    const modelButtons = Array.from(
+      document.querySelectorAll("button, ms-model-selector, [role='combobox']")
+    );
+    const modelBtn = modelButtons.find((b) => {
+      const txt = (b.innerText || b.getAttribute("aria-label") || "").toLowerCase();
+      return (
+        txt.includes("model") ||
+        txt.includes("gemini") ||
+        b.getAttribute("data-test-id") === "model-selector-button" ||
+        b.tagName.toLowerCase() === "ms-model-selector"
+      );
+    });
+
+    if (modelBtn) {
+      const curTxt = (modelBtn.innerText || "").toLowerCase();
+      if (!curTxt.includes("audio") && !curTxt.includes("2.0") && !curTxt.includes("speech")) {
+        console.info("[Scriptoria AI Studio] Switching to Gemini 2.0 Flash Audio model...");
+        modelBtn.click();
+        await sleep(350);
+
+        // Find speech/audio model option in popup menu
+        const options = Array.from(
+          document.querySelectorAll('[role="option"], [role="menuitem"], mat-option, button')
+        );
+        const audioOption = options.find((opt) => {
+          const optText = (opt.innerText || "").toLowerCase();
+          return (
+            optText.includes("gemini 2.0 flash") ||
+            optText.includes("speech") ||
+            optText.includes("audio")
+          );
+        });
+
+        if (audioOption) {
+          audioOption.click();
+          await sleep(350);
+          console.info("[Scriptoria AI Studio] Selected audio model:", audioOption.innerText);
+        } else {
+          // Close popup if no match found
+          document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        }
+      }
+    }
+
+    // 2. Look for Audio output modality toggle
+    const toggles = Array.from(
+      document.querySelectorAll(
+        'button, mat-button-toggle, [role="radio"], [role="tab"], [aria-label*="audio" i]'
+      )
+    );
+    const audioToggle = toggles.find((t) => {
+      const txt = (t.innerText || t.getAttribute("aria-label") || "").toLowerCase();
+      return txt === "audio" || txt.includes("speech");
+    });
+
+    if (
+      audioToggle &&
+      !audioToggle.classList.contains("selected") &&
+      audioToggle.getAttribute("aria-checked") !== "true"
+    ) {
+      audioToggle.click();
+      await sleep(250);
+    }
+
+    updateDockStatus("Ready to Run 3.8 Speech", "#22c55e");
+  }
+
   function findTranscriptEditor() {
     return (
       document.querySelector('textarea[aria-label*="prompt" i]') ||
@@ -156,17 +227,58 @@
   }
 
   function findGenerateButton() {
-    const buttons = Array.from(document.querySelectorAll("button"));
+    const buttons = Array.from(document.querySelectorAll("button, [role='button']"));
     return buttons.find((b) => {
-      const text = (b.innerText || b.getAttribute("aria-label") || "").toLowerCase();
+      const text = (b.innerText || b.getAttribute("aria-label") || "").toLowerCase().trim();
       return (
-        text.includes("run") ||
+        text === "run" ||
+        text.startsWith("run ") ||
         text.includes("generate") ||
         text.includes("play speech") ||
         b.getAttribute("data-test-id") === "generate-speech" ||
         b.getAttribute("aria-label")?.toLowerCase().includes("run")
       );
     });
+  }
+
+  async function triggerRunInAIStudio() {
+    const genBtn = findGenerateButton();
+    if (genBtn) {
+      console.info("[Scriptoria AI Studio] Clicking Run button:", genBtn);
+      genBtn.click();
+      return true;
+    }
+
+    // Fallback: Dispatch Ctrl+Enter on prompt editor
+    const editor = findTranscriptEditor();
+    if (editor) {
+      console.info("[Scriptoria AI Studio] Triggering Run via Ctrl+Enter shortcut...");
+      editor.focus();
+      editor.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          code: "Enter",
+          keyCode: 13,
+          which: 13,
+          ctrlKey: true,
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+      editor.dispatchEvent(
+        new KeyboardEvent("keyup", {
+          key: "Enter",
+          code: "Enter",
+          keyCode: 13,
+          which: 13,
+          ctrlKey: true,
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+      return true;
+    }
+    return false;
   }
 
   async function injectScreenplay(formattedText) {
@@ -317,13 +429,15 @@
         if (event_type === "DISPATCH_AUDIO_TASK") {
           lastDispatchedTask = payload;
           updateDockStatus(`Received 3.8 TTS task for ${payload.chapter_title || "Chapter"}`, "#eab308");
+          await ensureSpeechModelSelected();
           const success = await injectScreenplay(payload.raw_text || "");
           if (success) {
-            updateDockStatus("Screenplay Injected! Ready to Run.", "#22c55e");
-            const genBtn = findGenerateButton();
-            if (genBtn) {
-              updateDockStatus("Clicking Run in AI Studio...", "#3b82f6");
-              genBtn.click();
+            updateDockStatus("Screenplay Injected! Triggering Run...", "#22c55e");
+            const ran = await triggerRunInAIStudio();
+            if (ran) {
+              updateDockStatus("Speech Generating in AI Studio...", "#3b82f6");
+            } else {
+              updateDockStatus("Screenplay Ready! Click 'Run' or press Ctrl+Enter", "#f59e0b");
             }
           }
         }

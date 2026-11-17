@@ -607,6 +607,49 @@
     return null;
   }
 
+  async function ensureProjectCanvasOpen() {
+    let editor = findPromptEditor();
+    if (editor) return editor;
+
+    // If on lobby home page (e.g. flow.google.com/ or without /project/)
+    if (window.location.pathname === "/" || !window.location.pathname.includes("/project/")) {
+      console.info("[Scriptoria Companion] Currently on Flow lobby. Auto-opening project canvas...");
+      updateFloatingPill("BUSY_GENERATING");
+
+      // 1. Look for existing project card (prefer Scriptoria if available)
+      const projectCards = Array.from(
+        document.querySelectorAll('a[href*="/project/"], [data-project-id], [role="button"]')
+      );
+      const scriptoriaCard =
+        projectCards.find((c) => (c.textContent || "").toLowerCase().includes("scriptoria")) ||
+        projectCards.find((c) => (c.getAttribute("href") || "").includes("/project/"));
+
+      if (scriptoriaCard) {
+        scriptoriaCard.click();
+        for (let i = 0; i < 20; i++) {
+          await sleep(250);
+          editor = findPromptEditor();
+          if (editor) return editor;
+        }
+      }
+
+      // 2. Fall back to clicking "+ New project"
+      const newProjBtn = Array.from(
+        document.querySelectorAll('button, div, [role="button"], span')
+      ).find((el) => (el.textContent || "").toLowerCase().includes("new project"));
+      if (newProjBtn) {
+        newProjBtn.click();
+        for (let i = 0; i < 25; i++) {
+          await sleep(250);
+          editor = findPromptEditor();
+          if (editor) return editor;
+        }
+      }
+    }
+
+    return findPromptEditor();
+  }
+
   function findGenerateButton() {
     const explicitSelectors = [
       'flow-generate-icon-button button',
@@ -1241,10 +1284,13 @@
         await sleep(250);
       }
 
-      const editor = findPromptEditor();
+      let editor = findPromptEditor();
+      if (!editor) {
+        editor = await ensureProjectCanvasOpen();
+      }
       if (!editor) {
         throw new Error(
-          "Could not locate Google Flow prompt editor in DOM. Ensure project canvas is open."
+          "Could not locate Google Flow prompt editor in DOM. Please click on a project or '+ New project' in Google Flow to open the canvas."
         );
       }
 
@@ -1596,8 +1642,15 @@
       <span id="scriptoria-dock-dot" style="width: 8px; height: 8px; border-radius: 50%; background: #10b981; box-shadow: 0 0 8px #10b981;"></span>
       <span id="scriptoria-dock-text">Scriptoria Companion</span>
     `;
-    dock.title = "Click to toggle Scriptoria Quick Bar";
+    dock.title = "Click to enter Flow canvas or toggle Scriptoria Quick Bar";
     dock.addEventListener("click", () => {
+      const isOnLobby =
+        window.location.pathname === "/" || !window.location.pathname.includes("/project/");
+      if (isOnLobby) {
+        console.info("[Scriptoria Companion] User clicked dock on lobby. Auto-opening canvas...");
+        ensureProjectCanvasOpen();
+        return;
+      }
       const bar = document.getElementById("scriptoria-quick-bar");
       if (bar) bar.style.display = bar.style.display === "none" ? "flex" : "none";
     });
@@ -1649,10 +1702,15 @@
     const text = document.getElementById("scriptoria-dock-text");
     if (!dot || !text) return;
 
+    const isOnLobby =
+      window.location.pathname === "/" || !window.location.pathname.includes("/project/");
+
     if (state === "IDLE" || state === "CONNECTED") {
-      dot.style.background = "#10b981";
-      dot.style.boxShadow = "0 0 8px #10b981";
-      text.textContent = "Scriptoria (Connected)";
+      dot.style.background = isOnLobby ? "#f59e0b" : "#10b981";
+      dot.style.boxShadow = isOnLobby ? "0 0 8px #f59e0b" : "0 0 8px #10b981";
+      text.textContent = isOnLobby
+        ? "⚠️ Click a Project or '+ New' to Open Canvas"
+        : "Scriptoria (Connected & Ready)";
     } else if (state === "BUSY_GENERATING") {
       dot.style.background = "#3b82f6";
       dot.style.boxShadow = "0 0 10px #3b82f6";

@@ -1275,7 +1275,83 @@ export function FlowTtsWorkstation() {
 
           {/* FILMSTRIP GRID VIEW */}
           {viewMode === "grid" && (
-            <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+            <div>
+              {/* Live Flow Generation Progress & Status Tracker */}
+              {(() => {
+                const totalFramesCount = storyboard.total_frames || allFlatFrames.length || 90;
+                const generatedCount = Object.keys(capturedAssets).length;
+                const progressPercent = totalFramesCount > 0 ? Math.min(100, Math.round((generatedCount / totalFramesCount) * 100)) : 0;
+                const queuedCount = companionStatus?.queued_tasks_count || (isDispatchingFlow ? totalFramesCount : 0);
+
+                return (
+                  <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 p-4 shadow-lg backdrop-blur mb-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400">
+                          <Sparkles className="h-5 w-5 animate-pulse" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h3 className="text-sm font-bold text-zinc-100">
+                              Google Flow Image Generation Pipeline
+                            </h3>
+                            <span className="rounded-full bg-amber-500/20 px-2.5 py-0.5 font-mono text-[11px] font-semibold text-amber-300 border border-amber-500/30">
+                              {generatedCount} / {totalFramesCount} Frames ({progressPercent}%)
+                            </span>
+                          </div>
+                          <p className="text-xs text-zinc-400 mt-0.5">
+                            {companionStatus?.connection_state === "BUSY_GENERATING"
+                              ? "⚡ Companion actively generating candidates in Google Flow..."
+                              : generatedCount >= totalFramesCount && totalFramesCount > 0
+                              ? "🎉 All frames generated and synced to Cloudflare R2!"
+                              : queuedCount > 0
+                              ? `⏳ ${queuedCount} tasks queued in Flow Bridge`
+                              : "Ready for batch dispatch. Click 'Batch Dispatch' to feed Flow companion."}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Metric Counters & Direct Batch Trigger */}
+                      <div className="flex items-center gap-2">
+                        <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-center">
+                          <div className="text-[10px] uppercase font-mono text-zinc-400">Saved (R2)</div>
+                          <div className="font-mono text-sm font-bold text-emerald-400">{generatedCount}</div>
+                        </div>
+                        <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-center">
+                          <div className="text-[10px] uppercase font-mono text-zinc-400">Queued</div>
+                          <div className="font-mono text-sm font-bold text-amber-400">{queuedCount}</div>
+                        </div>
+                        <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-center">
+                          <div className="text-[10px] uppercase font-mono text-zinc-400">Failed</div>
+                          <div className="font-mono text-sm font-bold text-rose-400">
+                            {companionStatus?.failed_tasks_count || 0}
+                          </div>
+                        </div>
+                        <button
+                          onClick={handleBatchDispatchFlow}
+                          disabled={isDispatchingFlow}
+                          className="flex items-center gap-2 rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 px-4 py-2 text-xs font-bold text-zinc-950 hover:from-amber-400 hover:to-orange-400 shadow-md transition disabled:opacity-50"
+                        >
+                          <Rocket className="h-4 w-4" />
+                          {isDispatchingFlow ? "Dispatching..." : `Batch Dispatch (${totalFramesCount})`}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Progress Bar */}
+                    <div className="mt-3">
+                      <div className="h-2.5 w-full overflow-hidden rounded-full bg-zinc-900 border border-zinc-800">
+                        <div
+                          className="h-full bg-gradient-to-r from-amber-500 via-yellow-400 to-emerald-400 transition-all duration-500"
+                          style={{ width: `${progressPercent}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
               {/* Left Column: Macro Scene Selector */}
               <div className="lg:col-span-1 space-y-2">
                 <h4 className="text-xs font-semibold uppercase tracking-wider text-zinc-400 px-1">
@@ -1357,6 +1433,41 @@ export function FlowTtsWorkstation() {
                           {sub.compiled_image_prompt}
                         </div>
 
+                        {/* Generated Image Thumbnail Preview */}
+                        {(() => {
+                          const cands = capturedAssets[sub.frame_index] || [];
+                          const selIdx = selectedCandidates[sub.frame_index] ?? 0;
+                          const activeUrl = cands[selIdx] || cands[0];
+                          if (activeUrl) {
+                            return (
+                              <div className="relative aspect-video w-full rounded-md overflow-hidden border border-zinc-800 bg-black mt-2 shadow-inner group">
+                                <img
+                                  src={activeUrl}
+                                  alt={`Frame #${sub.frame_index}`}
+                                  className="h-full w-full object-cover group-hover:scale-105 transition duration-300"
+                                />
+                                <div className="absolute top-1.5 left-1.5 rounded bg-black/75 px-1.5 py-0.5 text-[9px] font-mono text-emerald-300 border border-emerald-500/40">
+                                  ✓ Ready
+                                </div>
+                                <div className="absolute bottom-1.5 right-1.5 rounded bg-black/75 px-1.5 py-0.5 text-[9px] font-mono text-zinc-300 border border-zinc-700">
+                                  Candidate #{selIdx + 1}
+                                </div>
+                              </div>
+                            );
+                          }
+                          return (
+                            <div className="relative aspect-video w-full rounded-md border border-dashed border-zinc-800 bg-zinc-950/60 flex flex-col items-center justify-center mt-2 text-[10px] text-zinc-500 font-mono p-2 text-center">
+                              {companionStatus?.connection_state === "BUSY_GENERATING" ? (
+                                <span className="flex items-center gap-1.5 text-amber-400 animate-pulse">
+                                  <Sparkles className="h-3.5 w-3.5" /> Rendering in Flow...
+                                </span>
+                              ) : (
+                                <span>Awaiting Flow Batch</span>
+                              )}
+                            </div>
+                          );
+                        })()}
+
                         {/* 4-Candidate Switcher Bar */}
                         <div className="mt-2 flex items-center justify-between rounded bg-zinc-950/70 px-2 py-1 border border-zinc-800/80">
                           <div className="flex items-center gap-1">
@@ -1403,7 +1514,8 @@ export function FlowTtsWorkstation() {
                 </div>
               </div>
             </div>
-          )}
+          </div>
+        )}
         </div>
       ) : (
         /* Empty State */
