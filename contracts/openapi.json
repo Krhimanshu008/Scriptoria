@@ -1873,6 +1873,18 @@
         "additionalProperties": false,
         "description": "Specification for assembling a novel chapter audio-visual storyboard.",
         "properties": {
+          "audio_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional path to master 24kHz audio WAV",
+            "title": "Audio Path"
+          },
           "chapter_id": {
             "maxLength": 128,
             "minLength": 1,
@@ -1885,12 +1897,26 @@
             "title": "Chapter Title",
             "type": "string"
           },
+          "enable_karaoke_subtitles": {
+            "default": true,
+            "description": "Whether to burn ASS centisecond karaoke subtitles",
+            "title": "Enable Karaoke Subtitles",
+            "type": "boolean"
+          },
           "fps": {
             "default": 30,
             "maximum": 60.0,
             "minimum": 24.0,
             "title": "Fps",
             "type": "integer"
+          },
+          "frame_sentence_spans": {
+            "description": "Sentence spans for sub-frame forced alignment",
+            "items": {
+              "type": "string"
+            },
+            "title": "Frame Sentence Spans",
+            "type": "array"
           },
           "narration_text": {
             "maxLength": 50000,
@@ -1949,7 +1975,7 @@
       },
       "FlowAVMuxResult": {
         "additionalProperties": false,
-        "description": "Result of audio synthesis and video muxing for a chapter.",
+        "description": "Result of audio synthesis, forced alignment and video muxing for a chapter.",
         "properties": {
           "chapter_id": {
             "title": "Chapter Id",
@@ -2020,6 +2046,17 @@
           "project_id": {
             "title": "Project Id",
             "type": "string"
+          },
+          "subtitles_ass_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subtitles Ass Path"
           },
           "visual_assets_count": {
             "title": "Visual Assets Count",
@@ -2430,6 +2467,92 @@
           "frames"
         ],
         "title": "FlowDispatchBatchRequest",
+        "type": "object"
+      },
+      "FlowForcedAlignmentRequest": {
+        "additionalProperties": false,
+        "description": "Request specification for aligning 80-100 visual beats to master audio.",
+        "properties": {
+          "chapter_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Chapter Id",
+            "type": "string"
+          },
+          "project_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "sentence_spans": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Sentence Spans",
+            "type": "array"
+          },
+          "total_audio_duration_sec": {
+            "exclusiveMinimum": 0.0,
+            "title": "Total Audio Duration Sec",
+            "type": "number"
+          }
+        },
+        "required": [
+          "project_id",
+          "chapter_id",
+          "total_audio_duration_sec",
+          "sentence_spans"
+        ],
+        "title": "FlowForcedAlignmentRequest",
+        "type": "object"
+      },
+      "FlowForcedAlignmentResult": {
+        "additionalProperties": false,
+        "description": "Result of sub-frame forced alignment with karaoke tokens and ASS subtitles.",
+        "properties": {
+          "ass_subtitles_text": {
+            "title": "Ass Subtitles Text",
+            "type": "string"
+          },
+          "chapter_id": {
+            "title": "Chapter Id",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "frames": {
+            "items": {
+              "$ref": "#/components/schemas/FrameAlignmentSpan"
+            },
+            "title": "Frames",
+            "type": "array"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "total_duration_sec": {
+            "title": "Total Duration Sec",
+            "type": "number"
+          },
+          "total_frames": {
+            "title": "Total Frames",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id",
+          "chapter_id",
+          "total_duration_sec",
+          "total_frames",
+          "frames",
+          "ass_subtitles_text"
+        ],
+        "title": "FlowForcedAlignmentResult",
         "type": "object"
       },
       "FlowGenerationTask-Input": {
@@ -3510,6 +3633,52 @@
         "title": "FormatScreenplayRequest",
         "type": "object"
       },
+      "FrameAlignmentSpan": {
+        "additionalProperties": false,
+        "description": "Sample-accurate alignment for a single visual frame against master audio.",
+        "properties": {
+          "audio_end_sec": {
+            "minimum": 0.0,
+            "title": "Audio End Sec",
+            "type": "number"
+          },
+          "audio_start_sec": {
+            "minimum": 0.0,
+            "title": "Audio Start Sec",
+            "type": "number"
+          },
+          "duration_sec": {
+            "minimum": 0.0,
+            "title": "Duration Sec",
+            "type": "number"
+          },
+          "frame_index": {
+            "minimum": 1.0,
+            "title": "Frame Index",
+            "type": "integer"
+          },
+          "karaoke_tokens": {
+            "items": {
+              "$ref": "#/components/schemas/KaraokeWordToken"
+            },
+            "title": "Karaoke Tokens",
+            "type": "array"
+          },
+          "sentence_span": {
+            "title": "Sentence Span",
+            "type": "string"
+          }
+        },
+        "required": [
+          "frame_index",
+          "sentence_span",
+          "audio_start_sec",
+          "audio_end_sec",
+          "duration_sec"
+        ],
+        "title": "FrameAlignmentSpan",
+        "type": "object"
+      },
       "GraphEdgeSummary": {
         "additionalProperties": false,
         "properties": {
@@ -3847,6 +4016,37 @@
           "rrf_score"
         ],
         "title": "HybridSearchResultItem",
+        "type": "object"
+      },
+      "KaraokeWordToken": {
+        "additionalProperties": false,
+        "description": "Word-level timing token for real-time subtitle highlight and ASS karaoke tags.",
+        "properties": {
+          "duration_cs": {
+            "description": "Duration in centiseconds (10ms) for ASS {\\k...} tags",
+            "title": "Duration Cs",
+            "type": "integer"
+          },
+          "end_ms": {
+            "title": "End Ms",
+            "type": "integer"
+          },
+          "start_ms": {
+            "title": "Start Ms",
+            "type": "integer"
+          },
+          "word": {
+            "title": "Word",
+            "type": "string"
+          }
+        },
+        "required": [
+          "word",
+          "start_ms",
+          "end_ms",
+          "duration_cs"
+        ],
+        "title": "KaraokeWordToken",
         "type": "object"
       },
       "LocationTreeResponse": {
@@ -6378,6 +6578,48 @@
           }
         },
         "summary": "Generate Chapter Audio",
+        "tags": [
+          "Google AI Flow Bridge"
+        ]
+      }
+    },
+    "/api/v1/flow-bridge/av/align": {
+      "post": {
+        "description": "Sub-frame forced alignment (Task T4.2):\nAligns 80-100 visual beats against 24kHz master audio with centisecond karaoke tokens.",
+        "operationId": "align_storyboard_audio_api_v1_flow_bridge_av_align_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FlowForcedAlignmentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FlowForcedAlignmentResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Align Storyboard Audio",
         "tags": [
           "Google AI Flow Bridge"
         ]

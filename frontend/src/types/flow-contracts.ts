@@ -220,6 +220,39 @@ export interface FlowAudioResultEvent {
   readonly created_at: string;
 }
 
+export interface KaraokeWordToken {
+  readonly word: string;
+  readonly start_ms: number;
+  readonly end_ms: number;
+  readonly duration_cs: number;
+}
+
+export interface FrameAlignmentSpan {
+  readonly frame_index: number;
+  readonly sentence_span: string;
+  readonly audio_start_sec: number;
+  readonly audio_end_sec: number;
+  readonly duration_sec: number;
+  readonly karaoke_tokens: readonly KaraokeWordToken[];
+}
+
+export interface FlowForcedAlignmentRequest {
+  readonly project_id: string;
+  readonly chapter_id: string;
+  readonly total_audio_duration_sec: number;
+  readonly sentence_spans: readonly string[];
+}
+
+export interface FlowForcedAlignmentResult {
+  readonly project_id: string;
+  readonly chapter_id: string;
+  readonly total_duration_sec: number;
+  readonly total_frames: number;
+  readonly frames: readonly FrameAlignmentSpan[];
+  readonly ass_subtitles_text: string;
+  readonly created_at: string;
+}
+
 export type FlowDispatchRequestBody =
   | {
       readonly kind: "GENERATION_TASK";

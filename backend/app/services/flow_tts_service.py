@@ -92,6 +92,65 @@ def format_screenplay_transcript(
     return "\n\n".join(blocks), notice
 
 
+def format_scene_batched_screenplay(
+    scenes_data: list[dict[str, Any]],
+    config: FlowAudioConfig,
+    chapter_title: str = "",
+) -> list[dict[str, Any]]:
+    """
+    T4.1: Scene-Batched Multi-Speaker Synthesis
+    Groups frames by macro scene (~200-250 words per pass) with structured speaker turns.
+    Prevents micro-frame prosody destruction while retaining continuous narrative cadence.
+    """
+    char_voices = config.character_voices or {}
+    narrator_voice = config.narrator_voice or "Enzo"
+    batches: list[dict[str, Any]] = []
+
+    for sc in scenes_data:
+        scene_id = sc.get("scene_id", "sc01")
+        heading = sc.get("scene_heading", "Scene")
+        sub_scenes = sc.get("sub_scenes", [])
+        
+        blocks: list[str] = [f"## Scene: {heading}\n"]
+        total_words = 0
+
+        for sub in sub_scenes:
+            sentence = (sub.get("sentence_span") or "").strip()
+            if not sentence:
+                continue
+            total_words += len(sentence.split())
+
+            # Detect character dialogue vs narrator prose
+            if (sentence.startswith('"') and sentence.endswith('"')) or (
+                sentence.startswith("“") and sentence.endswith("”")
+            ):
+                dialogue = sentence.strip('"“”').strip()
+                active_chars = sub.get("active_characters") or []
+                speaker = "Character"
+                if active_chars:
+                    raw_h = active_chars[0].get("handle", "")
+                    clean_h = raw_h.replace("@", "").strip()
+                    speaker = clean_h or speaker
+
+                assigned_voice = char_voices.get(speaker, char_voices.get(f"@{speaker}", "Puck"))
+                style = "intense, dramatic" if config.enable_emotion_tags else "standard"
+                blocks.append(f"[Speaker: {speaker} ({assigned_voice}), Style: {style}]\n{dialogue}")
+            else:
+                style = "atmospheric, measured" if config.enable_emotion_tags else "standard"
+                blocks.append(f"[Speaker: Narrator ({narrator_voice}), Style: {style}]\n{sentence}")
+
+        batch_transcript = "\n\n".join(blocks)
+        batches.append({
+            "scene_id": scene_id,
+            "scene_heading": heading,
+            "frame_count": len(sub_scenes),
+            "word_count": total_words,
+            "screenplay_transcript": batch_transcript,
+        })
+
+    return batches
+
+
 def _generate_synthetic_narration_wav(dest_path: Path, text: str, sample_rate: int = 24000) -> float:
     """Generates synthetic 24kHz PCM narration audio for synchronized theater playback when TTS API is unavailable."""
     import math

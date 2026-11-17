@@ -94,6 +94,8 @@ export function FlowTtsWorkstation() {
   const [flowModelEngine, setFlowModelEngine] = useState<"NANO_BANANA" | "VEO_3_1">("NANO_BANANA");
   const [capturedAssets, setCapturedAssets] = useState<Record<number, string[]>>({});
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [isMuxingMp4, setIsMuxingMp4] = useState(false);
+  const [renderedMp4Url, setRenderedMp4Url] = useState<string | null>(null);
 
   // Casting & Pre-Flight States
   const [isCastingModalOpen, setIsCastingModalOpen] = useState(false);
@@ -320,6 +322,87 @@ export function FlowTtsWorkstation() {
     if (allFlatFrames.length === 0) return null;
     return allFlatFrames.find((f) => f.frame_index === activeFrameIndex) || allFlatFrames[0];
   }, [allFlatFrames, activeFrameIndex]);
+
+  // Task T4.3: Real-time Word-Level Karaoke Token Calculator
+  const karaokeTokens = React.useMemo(() => {
+    if (!activeTheaterFrame || !activeTheaterFrame.sentence_span) return [];
+    const span = activeTheaterFrame.sentence_span.trim();
+    const words = span.split(/\s+/);
+    if (words.length === 0) return [];
+
+    const fStart = activeTheaterFrame.audio_start_sec ?? 0;
+    const fEnd = activeTheaterFrame.audio_end_sec ?? (fStart + 4);
+    const fDur = Math.max(0.6, fEnd - fStart);
+
+    const weights = words.map((w) => Math.max(1, w.length) + (/[.,!?;:]$/.test(w) ? 2.5 : 0));
+    const totalW = weights.reduce((acc, val) => acc + val, 0) || 1;
+    const timeScale = fDur / totalW;
+
+    let curr = fStart;
+    return words.map((w, idx) => {
+      const dur = weights[idx] * timeScale;
+      const wStart = curr;
+      const wEnd = curr + dur;
+      curr = wEnd;
+      return {
+        word: w,
+        startSec: wStart,
+        endSec: wEnd,
+      };
+    });
+  }, [activeTheaterFrame]);
+
+  // Task T4.4: Export 1080p MP4 Chapter Assembly
+  const handleExportMp4 = async () => {
+    if (!storyboard || allFlatFrames.length === 0) {
+      toast.error("Please decompose the chapter before exporting MP4.");
+      return;
+    }
+    setIsMuxingMp4(true);
+    const toastId = toast.loading("Assembling 1080p Chapter MP4 with FFmpeg & Forced Alignment...");
+
+    try {
+      const visualPaths: string[] = [];
+      allFlatFrames.forEach((f) => {
+        const cands = capturedAssets[f.frame_index] || [];
+        const selIdx = selectedCandidates[f.frame_index] ?? 0;
+        const url = cands[selIdx] || cands[0];
+        if (url) visualPaths.push(url);
+      });
+
+      const body = {
+        project_id: selectedBookId || "31d94e54-6308-488b-a6fc-1085ee418d7c",
+        chapter_id: `ch_${String(selectedChapterIdx).padStart(3, "0")}`,
+        chapter_title: chapterTitle || "Chapter 1",
+        narration_text: chapterText || allFlatFrames.map((f) => f.sentence_span).join(" "),
+        visual_asset_paths: visualPaths.length > 0 ? visualPaths : ["placeholder"],
+        frame_sentence_spans: allFlatFrames.map((f) => f.sentence_span),
+        enable_karaoke_subtitles: true,
+      };
+
+      const res = await fetch("/api/v1/flow-bridge/av/mux", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Muxing failed: HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      if (data.final_video_path) {
+        setRenderedMp4Url(data.final_video_path);
+        toast.success(`1080p Chapter MP4 Assembled Successfully! (${data.duration_seconds}s)`, { id: toastId });
+      } else {
+        toast.info(`Audio & forced alignment ready (${data.duration_seconds}s). ${data.error_message || ""}`, { id: toastId });
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Failed to assemble chapter MP4.", { id: toastId });
+    } finally {
+      setIsMuxingMp4(false);
+    }
+  };
 
   // Handle Decompose Chapter Execution
   const handleDecompose = async () => {
@@ -994,6 +1077,14 @@ export function FlowTtsWorkstation() {
                     <Upload className="h-3 w-3 text-amber-400" />
                     {audioUrl ? "Replace 3.8 Audio" : "Attach 3.8 Master Audio"}
                   </button>
+                  <button
+                    onClick={handleExportMp4}
+                    disabled={isMuxingMp4 || allFlatFrames.length === 0}
+                    className="h-6 px-2.5 rounded bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold text-[11px] flex items-center gap-1.5 transition disabled:opacity-50 shadow-sm"
+                  >
+                    <Film className="h-3 w-3" />
+                    {isMuxingMp4 ? "Muxing MP4..." : "Export 1080p MP4"}
+                  </button>
                 </div>
               </div>
 
@@ -1093,11 +1184,35 @@ export function FlowTtsWorkstation() {
                       </span>
                     </div>
 
-                    {/* Bottom Subtitle / Sentence Anchor Bar */}
-                    <div className="relative z-10 p-4 bg-gradient-to-t from-black/95 via-black/80 to-transparent text-center">
-                      <p className="text-sm sm:text-base font-serif italic text-zinc-100 max-w-2xl mx-auto drop-shadow">
-                        &ldquo;{activeTheaterFrame?.sentence_span || "Call me Ishmael..."}&rdquo;
-                      </p>
+                    {/* Bottom Subtitle / Word-Level Karaoke Bar (Task T4.3) */}
+                    <div className="relative z-10 p-4 bg-gradient-to-t from-black/95 via-black/85 to-transparent text-center">
+                      <div className="text-sm sm:text-base font-serif text-zinc-100 max-w-3xl mx-auto drop-shadow leading-relaxed">
+                        {karaokeTokens.length > 0 ? (
+                          karaokeTokens.map((tok, idx) => {
+                            const isCurrent =
+                              currentAudioTime >= tok.startSec && currentAudioTime < tok.endSec;
+                            const isPast = currentAudioTime >= tok.endSec;
+                            return (
+                              <span
+                                key={idx}
+                                className={`transition-all duration-100 mx-0.5 inline-block ${
+                                  isCurrent
+                                    ? "text-amber-300 font-bold bg-amber-500/25 px-1 py-0.2 rounded shadow-[0_0_10px_rgba(251,191,36,0.6)] border border-amber-400/50 scale-105"
+                                    : isPast
+                                    ? "text-zinc-100 font-normal"
+                                    : "text-zinc-500 opacity-80"
+                                }`}
+                              >
+                                {tok.word}
+                              </span>
+                            );
+                          })
+                        ) : (
+                          <span className="italic text-zinc-300">
+                            &ldquo;{activeTheaterFrame?.sentence_span || "Call me Ishmael..."}&rdquo;
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
                 );

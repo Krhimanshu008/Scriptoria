@@ -403,6 +403,47 @@ class FlowAudioResultEvent(StrictModel):
     created_at: str = Field(default_factory=utc_now_iso)
 
 
+class KaraokeWordToken(StrictModel):
+    """Word-level timing token for real-time subtitle highlight and ASS karaoke tags."""
+
+    word: str
+    start_ms: int
+    end_ms: int
+    duration_cs: int = Field(description="Duration in centiseconds (10ms) for ASS {\\k...} tags")
+
+
+class FrameAlignmentSpan(StrictModel):
+    """Sample-accurate alignment for a single visual frame against master audio."""
+
+    frame_index: int = Field(..., ge=1)
+    sentence_span: str
+    audio_start_sec: float = Field(..., ge=0.0)
+    audio_end_sec: float = Field(..., ge=0.0)
+    duration_sec: float = Field(..., ge=0.0)
+    karaoke_tokens: tuple[KaraokeWordToken, ...] = Field(default_factory=tuple)
+
+
+class FlowForcedAlignmentRequest(StrictModel):
+    """Request specification for aligning 80-100 visual beats to master audio."""
+
+    project_id: str = Field(..., min_length=1, max_length=128)
+    chapter_id: str = Field(..., min_length=1, max_length=128)
+    total_audio_duration_sec: float = Field(..., gt=0.0)
+    sentence_spans: tuple[str, ...] = Field(..., min_length=1)
+
+
+class FlowForcedAlignmentResult(StrictModel):
+    """Result of sub-frame forced alignment with karaoke tokens and ASS subtitles."""
+
+    project_id: str
+    chapter_id: str
+    total_duration_sec: float
+    total_frames: int
+    frames: tuple[FrameAlignmentSpan, ...]
+    ass_subtitles_text: str
+    created_at: str = Field(default_factory=utc_now_iso)
+
+
 class CharacterLookdevPose(StrictModel):
     """Single pose or turnaround angle for a character's reference lookdev."""
 

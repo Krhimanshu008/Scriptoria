@@ -354,4 +354,50 @@ def test_chapter_package_dispatch_telemetry(client):
     assert "aistudio_connected" in data
 
 
+def test_sub_frame_forced_alignment_and_karaoke():
+    from app.services.flow_av_pipeline import compute_sub_frame_forced_alignment
+
+    sentence_spans = [
+        "Call me Ishmael.",
+        "Some years ago—never mind how long precisely—having little or no money in my purse, and nothing particular to interest me on shore, I thought I would sail about a little and see the watery part of the world.",
+        "It is a way I have of driving off the spleen and regulating the circulation.",
+    ]
+    total_audio_sec = 24.5
+
+    aligned_frames, ass_subtitles = compute_sub_frame_forced_alignment(sentence_spans, total_audio_sec)
+
+    assert len(aligned_frames) == 3
+    assert aligned_frames[0].audio_start_sec == 0.0
+    assert aligned_frames[-1].audio_end_sec == total_audio_sec
+    assert aligned_frames[0].audio_end_sec == aligned_frames[1].audio_start_sec
+    assert aligned_frames[1].audio_end_sec == aligned_frames[2].audio_start_sec
+
+    # Verify karaoke tokens
+    assert len(aligned_frames[0].karaoke_tokens) == 3
+    assert "{\\k" in ass_subtitles
+    assert "[Script Info]" in ass_subtitles
+    assert "PlayResY: 1080" in ass_subtitles
+
+
+def test_align_endpoint(client):
+    headers = {"X-Bridge-Secret": "scriptoria-local-dev-secret"}
+    payload = {
+        "project_id": "test_moby",
+        "chapter_id": "ch_001",
+        "total_audio_duration_sec": 30.0,
+        "sentence_spans": [
+            "Call me Ishmael.",
+            "Some years ago, I thought I would sail about a little.",
+        ],
+    }
+    resp = client.post("/api/v1/flow-bridge/av/align", json=payload, headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_duration_sec"] == 30.0
+    assert data["total_frames"] == 2
+    assert len(data["frames"]) == 2
+    assert "{\\k" in data["ass_subtitles_text"]
+
+
+
 

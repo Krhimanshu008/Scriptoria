@@ -43,6 +43,8 @@ from app.schemas.flow_contracts import (
     FlowSavedAssetRecord,
     FlowTaskStatus,
     FlowWsEnvelope,
+    FlowForcedAlignmentRequest,
+    FlowForcedAlignmentResult,
     LookdevApproveRequest,
     LookdevGenerateRequest,
     PreFlightIngredientItem,
@@ -1160,6 +1162,28 @@ async def orchestrate_flow_scene(scene_payload: dict[str, Any]) -> dict[str, Any
 async def mux_chapter_storyboard(mux_req: FlowAVMuxRequest) -> FlowAVMuxResult:
     """Mux Flow visual assets with voiceover narration into a chapter video storyboard."""
     return await execute_chapter_av_assembly(mux_req)
+
+
+@router.post("/av/align", response_model=FlowForcedAlignmentResult)
+async def align_storyboard_audio(align_req: FlowForcedAlignmentRequest) -> FlowForcedAlignmentResult:
+    """
+    Sub-frame forced alignment (Task T4.2):
+    Aligns 80-100 visual beats against 24kHz master audio with centisecond karaoke tokens.
+    """
+    from app.services.flow_av_pipeline import compute_sub_frame_forced_alignment
+
+    aligned_frames, ass_subtitles = compute_sub_frame_forced_alignment(
+        sentence_spans=align_req.sentence_spans,
+        total_duration_sec=align_req.total_audio_duration_sec,
+    )
+    return FlowForcedAlignmentResult(
+        project_id=align_req.project_id,
+        chapter_id=align_req.chapter_id,
+        total_duration_sec=align_req.total_audio_duration_sec,
+        total_frames=len(aligned_frames),
+        frames=tuple(aligned_frames),
+        ass_subtitles_text=ass_subtitles,
+    )
 
 
 @router.post("/audio/generate", response_model=FlowAudioResultEvent)

@@ -2,10 +2,10 @@
   "artifacts": {
     "openapi": "openapi.json"
   },
-  "contract_hash": "77b72e4d6497c915efd0a2fc8b0be2a16909b579a4fc8f421c361a61a1bf018d",
+  "contract_hash": "1f380a6ec248d105711bcaf038409b2d3373004f51797a24961e958f68ea98ab",
   "hash_algorithm": "sha256",
   "openapi_version": "3.1.0",
-  "paths_count": 58,
+  "paths_count": 59,
   "schema_names": [
     "ApiErrorBody",
     "ApiErrorEnvelope",
@@ -60,6 +60,8 @@
     "FlowCompanionStatus",
     "FlowConnectionState",
     "FlowDispatchBatchRequest",
+    "FlowForcedAlignmentRequest",
+    "FlowForcedAlignmentResult",
     "FlowGenerationTask-Input",
     "FlowGenerationTask-Output",
     "FlowIngredientCategory",
@@ -77,6 +79,7 @@
     "FlowThinkingLevel",
     "FlowVideoMode",
     "FormatScreenplayRequest",
+    "FrameAlignmentSpan",
     "GraphEdgeSummary",
     "GraphTraversalEdge",
     "GraphTraversalNode",
@@ -85,6 +88,7 @@
     "HTTPValidationError",
     "HighDensityChapterStoryboard",
     "HybridSearchResultItem",
+    "KaraokeWordToken",
     "LocationTreeResponse",
     "LookdevApproveRequest",
     "LookdevGenerateRequest",
@@ -130,6 +134,6 @@
     "VramLockRequest"
   ],
   "schema_version": "1.0.0",
-  "schemas_count": 121,
+  "schemas_count": 125,
   "title": "Novel Visualiser & Storyboard Studio"
 }
