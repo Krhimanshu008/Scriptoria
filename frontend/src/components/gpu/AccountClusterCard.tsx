@@ -153,7 +153,8 @@ export const AccountClusterCard: React.FC<AccountClusterCardProps> = ({
       kind === "kaggle"
         ? `Kaggle ${kaggleAccount?.accountAlias}`
         : `Colab ${colabAccount?.accountAlias}`;
-    if (confirmKill && !confirm(`Trigger immediate Zero-Quota kill for ${label}?`)) {
+    const isKillAction = confirmKill || anyActive || isError;
+    if (confirmKill && !isError && !confirm(`Trigger immediate Zero-Quota kill for ${label}?`)) {
       return;
     }
 
@@ -161,16 +162,21 @@ export const AccountClusterCard: React.FC<AccountClusterCardProps> = ({
     try {
       const res = await fetch(`/api/vm/${encodeURIComponent(primaryTarget)}/toggle`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: isKillAction ? "kill" : "boot",
+          force: Boolean(confirmKill || isError),
+        }),
       });
       const data = await res.json();
       if (!res.ok) {
-        toast.error(data.error || `Failed to toggle ${label}`);
+        toast.error(data.error || `Failed to update ${label}`);
         return;
       }
       toast.success(data.message || `Updated ${label}`);
       onRefresh();
     } catch {
-      toast.error(`Network error toggling ${label}`);
+      toast.error(`Network error updating ${label}`);
     } finally {
       setActionLoading(false);
     }
@@ -425,6 +431,8 @@ export const AccountClusterCard: React.FC<AccountClusterCardProps> = ({
                 className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold transition disabled:opacity-40 whitespace-nowrap ${
                   anyActive
                     ? "border border-amber-400/35 bg-amber-500/20 text-amber-200 hover:bg-amber-500/30"
+                    : isError
+                    ? "border border-rose-400/40 bg-rose-500/20 text-rose-200 hover:bg-rose-500/30"
                     : "bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-md shadow-indigo-600/25 hover:from-indigo-500 hover:to-violet-500"
                 }`}
               >
@@ -433,7 +441,7 @@ export const AccountClusterCard: React.FC<AccountClusterCardProps> = ({
                 ) : (
                   <Power className="h-3.5 w-3.5" />
                 )}
-                {anyActive ? "Stop Dual-T4" : "Boot Dual-T4"}
+                {anyActive ? "Stop Dual-T4" : isError ? "Retry Boot Dual-T4" : "Boot Dual-T4"}
               </button>
 
               <button
@@ -471,9 +479,13 @@ export const AccountClusterCard: React.FC<AccountClusterCardProps> = ({
               <button
                 type="button"
                 onClick={() => handleBootOrKill(true)}
-                disabled={actionLoading || !anyActive}
-                title="Zero-Quota Panic Kill"
-                className="flex items-center justify-center gap-1 rounded-xl border border-rose-400/30 bg-rose-500/15 px-2.5 py-1.5 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/30 disabled:opacity-35"
+                disabled={actionLoading || (!anyActive && !isError)}
+                title={isError ? "Clear Error & Force Kill Ghost Sessions" : "Zero-Quota Panic Kill"}
+                className={`flex items-center justify-center gap-1 rounded-xl border px-2.5 py-1.5 text-xs font-semibold transition disabled:opacity-35 ${
+                  isError
+                    ? "border-rose-400/70 bg-rose-500/25 text-rose-200 hover:bg-rose-500/40 animate-pulse"
+                    : "border-rose-400/30 bg-rose-500/15 text-rose-300 hover:bg-rose-500/30"
+                }`}
               >
                 <Skull className="h-3.5 w-3.5" />
               </button>
@@ -493,8 +505,8 @@ export const AccountClusterCard: React.FC<AccountClusterCardProps> = ({
               <button
                 type="button"
                 onClick={() => handleBootOrKill(true)}
-                disabled={actionLoading || !anyActive}
-                title="Zero-Quota Panic Kill"
+                disabled={actionLoading || (!anyActive && !isError)}
+                title={isError ? "Clear Error & Reset Slot" : "Zero-Quota Panic Kill"}
                 className="flex items-center justify-center rounded-xl border border-rose-400/30 bg-rose-500/15 px-2.5 py-1.5 text-rose-300 transition hover:bg-rose-500/30 disabled:opacity-35"
               >
                 <Skull className="h-3.5 w-3.5" />
@@ -597,9 +609,21 @@ export const AccountClusterCard: React.FC<AccountClusterCardProps> = ({
 
         {/* Inline Error Notice */}
         {isError && firstError && (
-          <div className="mt-2.5 flex items-start gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/15 p-2 text-[10px] text-rose-200">
-            <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
-            <span className="line-clamp-2">{firstError}</span>
+          <div className="mt-2.5 flex items-center justify-between gap-2 rounded-lg border border-rose-500/30 bg-rose-500/15 p-2 text-[10px] text-rose-200">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-rose-400" />
+              <span className="line-clamp-2">{firstError}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => handleBootOrKill(true)}
+              disabled={actionLoading}
+              title="Force kill ghost sessions on Kaggle and reset card to OFFLINE"
+              className="flex shrink-0 items-center gap-1 rounded bg-rose-500/30 px-2 py-1 text-[10px] font-semibold text-rose-100 transition hover:bg-rose-500/50 border border-rose-400/40"
+            >
+              <Skull className="h-3 w-3 text-rose-300" />
+              Kill & Reset
+            </button>
           </div>
         )}
       </div>
@@ -711,7 +735,7 @@ export const AccountClusterCard: React.FC<AccountClusterCardProps> = ({
               target="_blank"
               rel="noreferrer"
               className="glass-pill flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] text-amber-200 hover:bg-white/10"
-              title="Open notebook in Kaggle interactive editor"
+              title={`Open ${kaggleSlug} in Kaggle editor (requires login as @${kaggleAccount?.username || "user"} in browser)`}
             >
               <ExternalLink className="h-3 w-3 text-amber-400" />
               Kaggle

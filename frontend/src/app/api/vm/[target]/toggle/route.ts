@@ -41,30 +41,67 @@ export async function POST(
     });
     const groupTargets = sortVmsByCanonicalTarget(groupVms).map((v) => v.target);
 
-    // TOGGLE OFF: Kill running or starting session across entire sessionGroup
-    if (vm.status === "ONLINE" || vm.status === "BUSY" || vm.status === "STARTING") {
+    const body = (await req.json().catch(() => ({}))) as { action?: string; force?: boolean };
+    const isKillRequested =
+      body.action === "kill" ||
+      body.action === "reset" ||
+      Boolean(body.force);
+
+    // TOGGLE OFF / FORCE KILL: Kill running, starting, or errored session across entire sessionGroup
+    if (
+      isKillRequested ||
+      vm.status === "ONLINE" ||
+      vm.status === "BUSY" ||
+      vm.status === "STARTING"
+    ) {
       if (vm.publicUrl) {
-        await VmGateway.killVm(vm);
+        await VmGateway.killVm(vm).catch(() => {});
       } else if (vm.provider === "kaggle") {
         try {
-          const metaProvider = vm.target.startsWith("tpu") ? "kaggle-tpu-meta" : "kaggle-meta";
+          const isTpu = vm.target.startsWith("tpu");
+          const metaProvider = isTpu ? "kaggle-tpu-meta" : "kaggle-meta";
           const [kaggleCred, kaggleMeta] = await Promise.all([
             getDecryptedCredential(user.userId, "kaggle", vm.accountAlias),
             getDecryptedCredential(user.userId, metaProvider, vm.accountAlias),
           ]);
           const sessionId = Number(kaggleMeta?.secret || 0);
-          if (kaggleCred?.username && sessionId > 0) {
-            await KaggleOrchestrator.cancelKernelSession(
+          if (kaggleCred?.username) {
+            // 1. Cancel exact active session if ID is known
+            if (sessionId > 0) {
+              await KaggleOrchestrator.cancelKernelSession(
+                {
+                  username: kaggleCred.username,
+                  key: kaggleCred.secret,
+                  authType: kaggleCred.authType === "bearer" ? "bearer" : "basic",
+                },
+                sessionId
+              );
+            }
+
+            // 2. Override runner notebook with CPU to release GPU allocation on Kaggle
+            const kernelSlug = isTpu
+              ? `kaggle-tpu-runner-${vm.accountAlias}`
+              : `kaggle-dual-gpu-runner-${vm.accountAlias}`;
+            await KaggleOrchestrator.releaseKernelGpu(
               {
                 username: kaggleCred.username,
                 key: kaggleCred.secret,
                 authType: kaggleCred.authType === "bearer" ? "bearer" : "basic",
               },
-              sessionId
+              kernelSlug
             );
+
+            // 3. Clear stored meta session ID back to 0
+            await saveUserCredential(user.userId, {
+              provider: metaProvider,
+              accountAlias: vm.accountAlias,
+              username: kaggleCred.username,
+              rawSecret: "0",
+              authType: "session_id",
+            });
           }
-        } catch {
-          // ignore best-effort session cancel
+        } catch (cleanErr) {
+          console.warn(`[Kaggle Kill] Cleanup error for ${vm.accountAlias}:`, cleanErr);
         }
       }
 
@@ -78,6 +115,7 @@ export async function POST(
           onlineSince: null,
           publicUrl: "",
           vmSecret: null,
+          lastError: null,
         },
       });
 
@@ -86,7 +124,7 @@ export async function POST(
         vmInstanceId: vm.id,
         category: "ACTION",
         level: "WARN",
-        message: `Shutdown triggered for ${vm.sessionGroup} (${groupTargets.join(", ")}).`,
+        message: `Shutdown & session release triggered for ${vm.sessionGroup} (${groupTargets.join(", ")}).`,
       });
 
       const refreshed = await prisma.vmInstance.findMany({
@@ -94,7 +132,7 @@ export async function POST(
       });
 
       return NextResponse.json({
-        message: "Termination triggered",
+        message: "Session terminated and slot reset to OFFLINE",
         vm: sanitizeVmForClient(refreshed.find((r) => r.target === target) || vm),
         groupVms: sortVmsByCanonicalTarget(refreshed).map(sanitizeVmForClient),
       });
