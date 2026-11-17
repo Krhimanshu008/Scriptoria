@@ -1229,23 +1229,11 @@ async def sync_all_preflight_ingredients_endpoint(
 @router.get("/extension/download-zip")
 async def download_extension_zip() -> StreamingResponse:
     """Package the Scriptoria Flow Companion Chrome extension into a downloadable ZIP."""
-    ext_dir = Path(__file__).resolve().parents[3] / "extension" / "scriptoria-flow-bridge"
-    if not ext_dir.exists():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Extension directory not found on server",
-        )
+    from app.routers.flow_extension_bundle import get_extension_zip_bytes
 
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for file_path in ext_dir.rglob("*"):
-            if file_path.is_file():
-                arcname = file_path.relative_to(ext_dir)
-                zf.write(file_path, arcname)
-
-    zip_buffer.seek(0)
+    zip_bytes = get_extension_zip_bytes()
     return StreamingResponse(
-        zip_buffer,
+        io.BytesIO(zip_bytes),
         media_type="application/zip",
         headers={
             "Content-Disposition": "attachment; filename=scriptoria-flow-companion.zip",

@@ -7,6 +7,7 @@ import type {
 } from "@/types/flow-contracts";
 
 const FASTAPI_BASE_URL =
+  process.env.SCRIPTORIA_FASTAPI_URL?.replace(/\/$/, "") ||
   process.env.SCRIPTORIA_BACKEND_URL?.replace(/\/$/, "") ||
   "http://127.0.0.1:8000";
 

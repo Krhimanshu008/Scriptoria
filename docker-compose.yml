@@ -21,6 +21,7 @@ services:
         required: false
     volumes:
       - scriptoria_api_data:/app/data
+      - ./extension:/app/extension:ro
     networks:
       - scriptoria-net
     healthcheck:
@@ -46,6 +47,7 @@ services:
       - NODE_ENV=production
       - DATABASE_URL=file:/app/data/scriptoria.db
       - SCRIPTORIA_FASTAPI_URL=http://scriptoria-api:8000
+      - SCRIPTORIA_BACKEND_URL=http://scriptoria-api:8000
       - NEXT_PUBLIC_APP_URL=https://scriptoria.krhimanshu.in
     env_file:
       - path: ./frontend/.env.production
@@ -54,6 +56,7 @@ services:
         required: false
     volumes:
       - scriptoria_web_data:/app/data
+      - ./extension:/app/extension:ro
     depends_on:
       scriptoria-api:
         condition: service_started
