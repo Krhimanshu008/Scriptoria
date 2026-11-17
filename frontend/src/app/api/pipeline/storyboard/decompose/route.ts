@@ -30,14 +30,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
       const acc1 = vms.find((v) => v.accountAlias === "acc1" && v.publicUrl);
       const acc2 = vms.find((v) => v.accountAlias === "acc2" && v.publicUrl);
+      const acc3 = vms.find((v) => v.accountAlias === "acc3" && v.publicUrl);
 
-      // Acc 2 (Qwen 27B Turbo) is primary Director Brain
-      if (acc2?.publicUrl) {
-        extraHeaders["X-Director-Tunnel-Url"] = acc2.publicUrl;
-        if (acc2.vmSecret) extraHeaders["X-Director-VM-Secret"] = acc2.vmSecret;
-      } else if (acc1?.publicUrl) {
-        extraHeaders["X-Director-Tunnel-Url"] = acc1.publicUrl;
-        if (acc1.vmSecret) extraHeaders["X-Director-VM-Secret"] = acc1.vmSecret;
+      // Acc 2 or Acc 3 (Qwen 27B Turbo) is primary Director Brain
+      const directorVm = acc2 || acc3 || acc1;
+      if (directorVm?.publicUrl) {
+        extraHeaders["X-Director-Tunnel-Url"] = directorVm.publicUrl;
+        if (directorVm.vmSecret) extraHeaders["X-Director-VM-Secret"] = directorVm.vmSecret;
       }
 
       // Acc 1 (5M-SWARM) is primary Cinematographer & QC Brain
