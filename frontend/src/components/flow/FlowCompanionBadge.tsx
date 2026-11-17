@@ -12,6 +12,8 @@ interface FlowCompanionBadgeProps {
   readonly projectId?: string;
   readonly pollIntervalMs?: number;
   readonly className?: string;
+  readonly onOpenSetup?: () => void;
+  readonly onStatusChange?: (status: FlowCompanionStatus) => void;
 }
 
 const DEFAULT_FLOW_PROJECT = "ea1ed436-e578-4327-9c9b-4f6b2e7e551d";
@@ -77,6 +79,8 @@ export function FlowCompanionBadge({
   projectId = "default-project",
   pollIntervalMs = 4000,
   className = "",
+  onOpenSetup,
+  onStatusChange,
 }: FlowCompanionBadgeProps) {
   const [status, setStatus] = useState<FlowCompanionStatus>({
     session_id: "init",
@@ -105,13 +109,16 @@ export function FlowCompanionBadge({
       if (!res.ok) return;
       const data = (await res.json()) as FlowCompanionStatus;
       setStatus(data);
+      onStatusChange?.(data);
     } catch (_err) {
-      setStatus((prev) => ({
-        ...prev,
+      const fallback: FlowCompanionStatus = {
+        ...status,
         connection_state: "DISCONNECTED",
-      }));
+      };
+      setStatus(fallback);
+      onStatusChange?.(fallback);
     }
-  }, []);
+  }, [onStatusChange, status]);
 
   useEffect(() => {
     fetchStatus();
@@ -246,6 +253,23 @@ export function FlowCompanionBadge({
           {status.last_error && (
             <div className="mt-3 rounded-lg border border-rose-500/30 bg-rose-950/40 p-2 text-[11px] text-rose-300">
               {status.last_error}
+            </div>
+          )}
+
+          {/* Quick Setup Modal Launcher when Disconnected */}
+          {status.connection_state === "DISCONNECTED" && onOpenSetup && (
+            <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-950/40 p-2.5 text-center">
+              <p className="text-[11px] text-amber-200 mb-1.5 font-medium">Extension offline or not installed.</p>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsDrawerOpen(false);
+                  onOpenSetup();
+                }}
+                className="w-full rounded bg-amber-500 py-1 text-xs font-bold text-zinc-950 hover:bg-amber-400 transition"
+              >
+                🔌 Install / Connect Companion
+              </button>
             </div>
           )}
 

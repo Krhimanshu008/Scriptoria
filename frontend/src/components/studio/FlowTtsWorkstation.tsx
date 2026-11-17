@@ -40,6 +40,9 @@ import type {
   MacroScene,
   SubSceneFrame,
 } from "@/types/testbench-contracts";
+import { FlowCompanionBadge } from "@/components/flow/FlowCompanionBadge";
+import { CompanionSetupModal } from "@/components/flow/CompanionSetupModal";
+import type { FlowCompanionStatus } from "@/types/flow-contracts";
 
 interface BookOption {
   id?: string;
@@ -91,6 +94,18 @@ export function FlowTtsWorkstation() {
   const [flowModelEngine, setFlowModelEngine] = useState<"NANO_BANANA" | "VEO_3_1">("NANO_BANANA");
   const [capturedAssets, setCapturedAssets] = useState<Record<number, string[]>>({});
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Casting & Pre-Flight States
+  const [isCastingModalOpen, setIsCastingModalOpen] = useState(false);
+  const [preflightStatus, setPreflightStatus] = useState<any>(null);
+  const [isLoadingPreflight, setIsLoadingPreflight] = useState(false);
+  const [isSyncingPreflight, setIsSyncingPreflight] = useState(false);
+  const [selectedCharacterLookdev, setSelectedCharacterLookdev] = useState<any>(null);
+  const [isGeneratingLookdev, setIsGeneratingLookdev] = useState(false);
+
+  // Companion Extension & Account Setup Modal
+  const [isCompanionModalOpen, setIsCompanionModalOpen] = useState(false);
+  const [companionStatus, setCompanionStatus] = useState<FlowCompanionStatus | null>(null);
 
   // Load books on mount
   useEffect(() => {
@@ -176,6 +191,79 @@ export function FlowTtsWorkstation() {
     pollRecentMedia();
     return () => clearInterval(timer);
   }, []);
+
+  // Fetch Pre-Flight Status
+  const loadPreflightStatus = React.useCallback(async () => {
+    setIsLoadingPreflight(true);
+    try {
+      const bookId = selectedBookId || "31d94e54-6308-488b-a6fc-1085ee418d7c";
+      const res = await fetch(`/api/v1/flow-bridge/preflight/status?book_id=${encodeURIComponent(bookId)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setPreflightStatus(data);
+      }
+    } catch {
+      // Non-fatal
+    } finally {
+      setIsLoadingPreflight(false);
+    }
+  }, [selectedBookId]);
+
+  useEffect(() => {
+    loadPreflightStatus();
+  }, [loadPreflightStatus]);
+
+  const handleSyncAllPreflight = async () => {
+    setIsSyncingPreflight(true);
+    try {
+      const bookId = selectedBookId || "31d94e54-6308-488b-a6fc-1085ee418d7c";
+      const res = await fetch(`/api/v1/flow-bridge/preflight/sync-all?book_id=${encodeURIComponent(bookId)}`, {
+        method: "POST",
+      });
+      if (res.ok) {
+        const data = await res.json();
+        toast.success(`Pre-flight sync dispatched for ${data.dispatched_count || "all"} ingredients in Flow.`);
+        await loadPreflightStatus();
+      } else {
+        toast.error("Failed to sync pre-flight ingredients to Flow.");
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Failed to trigger pre-flight sync.");
+    } finally {
+      setIsSyncingPreflight(false);
+    }
+  };
+
+  const handleGenerateLookdev = async (char: any) => {
+    setIsGeneratingLookdev(true);
+    try {
+      const bookId = selectedBookId || "31d94e54-6308-488b-a6fc-1085ee418d7c";
+      const res = await fetch("/api/v1/flow-bridge/lookdev/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          book_id: bookId,
+          character_id: char.ingredient_id || `char_${char.mention_handle.toLowerCase()}`,
+          canonical_name: char.name || char.mention_handle,
+          mention_handle: char.mention_handle,
+          visual_tier: char.visual_tier || "TIER_1_CORE",
+          physical_description: "weathered 19th-century maritime sailor, sharp features",
+          wardrobe_description: "authentic period wool sea pea coat and sailor cap",
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSelectedCharacterLookdev(data);
+        toast.success(`Generated 4-angle turnaround prompts for @${char.mention_handle}`);
+      } else {
+        toast.error("Failed to generate character lookdev.");
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Error generating lookdev.");
+    } finally {
+      setIsGeneratingLookdev(false);
+    }
+  };
 
   // Flattened frames list for theater playback
   const allFlatFrames: SubSceneFrame[] = React.useMemo(() => {
@@ -424,9 +512,17 @@ export function FlowTtsWorkstation() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Batch dispatch failed");
 
-      toast.success(
-        `Dispatched ${data.dispatched_count} frames to Google Flow Bridge! Check Companion Extension tab.`
-      );
+      if (data.connected_clients === 0 || !data.flow_connected) {
+        toast.warning(
+          `Enqueued ${data.dispatched_count} frames, but Scriptoria Flow Companion tab is offline.`,
+          { duration: 5000 }
+        );
+        setIsCompanionModalOpen(true);
+      } else {
+        toast.success(
+          `Dispatched ${data.dispatched_count} frames to Google Flow Bridge! Check Companion Extension tab.`
+        );
+      }
     } catch (err: any) {
       toast.error(`Flow Dispatch Error: ${err.message}`);
     } finally {
@@ -514,9 +610,17 @@ export function FlowTtsWorkstation() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Chapter Package sync failed");
 
-      toast.success(
-        `🚀 Swarm Synced! Dispatched ${payload.total_frames} frames & ${payload.total_words} words to Extension.`
-      );
+      if (data.connected_clients === 0 || !data.flow_connected) {
+        toast.warning(
+          `Package staged (${payload.total_frames} frames), but Scriptoria Flow Companion is offline! Click to connect.`,
+          { duration: 6000 }
+        );
+        setIsCompanionModalOpen(true);
+      } else {
+        toast.success(
+          `🚀 Swarm Synced! Dispatched ${payload.total_frames} frames & ${payload.total_words} words to Extension.`
+        );
+      }
     } catch (err: any) {
       toast.error(`Master Dispatch Error: ${err.message}`);
     } finally {
@@ -595,12 +699,18 @@ export function FlowTtsWorkstation() {
             </div>
           </div>
 
-          {/* Active Cluster Status Pill */}
-          <div className="flex items-center gap-2 rounded-lg border border-emerald-900/50 bg-emerald-950/30 px-3 py-1.5 text-xs text-emerald-300">
-            <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span className="font-semibold">Kaggle Swarm Online</span>
-            <span className="text-zinc-500">|</span>
-            <span className="text-[11px] text-zinc-300 font-mono">Acc 2 (27B) + Acc 1 (5M)</span>
+          {/* Companion Telemetry Badge & Active Cluster Status Pill */}
+          <div className="flex flex-wrap items-center gap-2">
+            <FlowCompanionBadge
+              onOpenSetup={() => setIsCompanionModalOpen(true)}
+              onStatusChange={setCompanionStatus}
+            />
+            <div className="flex items-center gap-2 rounded-lg border border-emerald-900/50 bg-emerald-950/30 px-3 py-1.5 text-xs text-emerald-300">
+              <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="font-semibold">Kaggle Swarm Online</span>
+              <span className="text-zinc-500">|</span>
+              <span className="text-[11px] text-zinc-300 font-mono">Acc 2 (27B) + Acc 1 (5M)</span>
+            </div>
           </div>
         </div>
 
@@ -780,6 +890,25 @@ export function FlowTtsWorkstation() {
                   <Film className="h-3 w-3" /> Video (Veo)
                 </button>
               </div>
+
+              {/* Casting & Lookdev Studio Pre-Flight Button */}
+              <button
+                onClick={() => setIsCastingModalOpen(true)}
+                className={`h-7 px-3 rounded text-xs font-semibold flex items-center gap-1.5 border transition ${
+                  preflightStatus?.is_ready_for_storyboard_dispatch
+                    ? "bg-emerald-950/60 border-emerald-500/40 text-emerald-300 hover:bg-emerald-900/60"
+                    : "bg-amber-950/60 border-amber-500/40 text-amber-300 hover:bg-amber-900/60"
+                }`}
+                title="Configure character lookdev turnarounds and sync ingredients to Google Flow before story generation"
+              >
+                <User className="h-3.5 w-3.5" />
+                🎭 Casting Studio
+                {preflightStatus && (
+                  <span className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] bg-zinc-900/80 border border-zinc-700">
+                    {preflightStatus.synced_ingredients}/{preflightStatus.total_required_ingredients}
+                  </span>
+                )}
+              </button>
 
               {/* Master 1-Click Launch Button */}
               <button
@@ -1220,6 +1349,180 @@ export function FlowTtsWorkstation() {
           </div>
         </div>
       )}
+
+      {/* CASTING & LOOKDEV STUDIO MODAL */}
+      {isCastingModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="w-full max-w-4xl max-h-[85vh] overflow-y-auto rounded-xl border border-zinc-700 bg-zinc-950 p-6 shadow-2xl space-y-5">
+            <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="h-7 w-7 rounded bg-amber-500/20 text-amber-400 flex items-center justify-center">
+                  <User className="h-4 w-4" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-zinc-100">
+                    Scriptoria Casting & Lookdev Studio
+                  </h3>
+                  <p className="text-xs text-zinc-400">
+                    Pre-Flight Character & Location Genesis for Google Flow (flow.google.com)
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsCastingModalOpen(false)}
+                className="text-zinc-400 hover:text-zinc-200 text-xs px-2 py-1 rounded bg-zinc-900 border border-zinc-800"
+              >
+                Close
+              </button>
+            </div>
+
+            {/* Pre-Flight Gate Status Banner */}
+            <div
+              className={`rounded-lg p-3.5 border flex items-center justify-between gap-3 text-xs ${
+                preflightStatus?.is_ready_for_storyboard_dispatch
+                  ? "bg-emerald-950/40 border-emerald-500/40 text-emerald-200"
+                  : "bg-amber-950/40 border-amber-500/40 text-amber-200"
+              }`}
+            >
+              <div className="flex items-center gap-2.5">
+                <Sparkles className="h-4 w-4 shrink-0 text-amber-400" />
+                <div>
+                  <span className="font-semibold">
+                    {preflightStatus?.is_ready_for_storyboard_dispatch
+                      ? "Pre-Flight Gate Passed:"
+                      : "Pre-Flight Status Incomplete:"}
+                  </span>{" "}
+                  {preflightStatus?.is_ready_for_storyboard_dispatch
+                    ? "All required character and location ingredients are locked in Google Flow. Visual conditioning active."
+                    : `${preflightStatus?.missing_ingredients?.length || 0} required ingredients are not yet locked in Google Flow. Storyboard generation may result in face drift.`}
+                </div>
+              </div>
+              <button
+                onClick={handleSyncAllPreflight}
+                disabled={isSyncingPreflight}
+                className="px-3 py-1.5 rounded bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold shrink-0 flex items-center gap-1.5 transition disabled:opacity-50"
+              >
+                {isSyncingPreflight ? (
+                  <RefreshCw className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Rocket className="h-3 w-3" />
+                )}
+                🚀 Sync All to Flow
+              </button>
+            </div>
+
+            {/* Ingredients Grid */}
+            <div className="space-y-3">
+              <h4 className="text-xs font-semibold text-zinc-300 uppercase tracking-wider">
+                Required Chapter Ingredients & Handles
+              </h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {(preflightStatus?.ingredients || []).map((item: any, idx: number) => {
+                  const isLocked = item.status === "LOCKED";
+                  return (
+                    <div
+                      key={item.ingredient_id || idx}
+                      className="rounded-lg border border-zinc-800/80 bg-zinc-900/60 p-3.5 space-y-2.5"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-sm text-zinc-200">
+                            {item.name}
+                          </span>
+                          <span className="font-mono text-xs text-amber-400">
+                            @{item.mention_handle}
+                          </span>
+                        </div>
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-semibold flex items-center gap-1 ${
+                            isLocked
+                              ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                              : "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                          }`}
+                        >
+                          {isLocked ? "LOCKED ✅" : "PENDING SYNC ⏳"}
+                        </span>
+                      </div>
+
+                      <div className="flex flex-wrap items-center justify-between text-xs text-zinc-400 gap-2">
+                        <span className="flex items-center gap-1">
+                          Category: <span className="text-zinc-300">{item.category}</span>
+                        </span>
+                        {item.tts_voice && (
+                          <span className="flex items-center gap-1">
+                            Voice: <span className="text-rose-300">{item.tts_voice} (24kHz)</span>
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-end gap-2 pt-1 border-t border-zinc-800">
+                        {item.category === "CHARACTER" && (
+                          <button
+                            onClick={() => handleGenerateLookdev(item)}
+                            disabled={isGeneratingLookdev}
+                            className="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs flex items-center gap-1 transition"
+                          >
+                            <Layers className="h-3 w-3 text-amber-400" />
+                            Turnaround Prompts
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Selected Character Lookdev Turnaround Sheet Preview */}
+            {selectedCharacterLookdev && (
+              <div className="rounded-lg border border-zinc-800 bg-zinc-900/80 p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-bold text-amber-300 flex items-center gap-1.5">
+                    <Sparkles className="h-3.5 w-3.5" />
+                    Turnaround Master Prompts: @{selectedCharacterLookdev.mention_handle}
+                  </h4>
+                  <span className="text-[11px] text-zinc-400">
+                    Voice Assigned: <span className="text-rose-400 font-medium">{selectedCharacterLookdev.tts_voice_id}</span>
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                  {(selectedCharacterLookdev.lookdev_poses || []).map((pose: any, pIdx: number) => (
+                    <div key={pIdx} className="p-2.5 rounded bg-zinc-950 border border-zinc-800 space-y-1">
+                      <div className="font-semibold text-zinc-300 uppercase text-[10px]">
+                        {pose.pose_name.replace(/_/g, " ")}
+                      </div>
+                      <p className="text-[11px] text-zinc-400 line-clamp-3 font-mono">
+                        {pose.prompt}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center justify-between pt-3 border-t border-zinc-800 text-xs">
+              <span className="text-zinc-500">
+                Ingredients are automatically checked in Flow project: <span className="font-mono text-zinc-400">{preflightStatus?.flow_project_id || "ea1ed436"}</span>
+              </span>
+              <button
+                onClick={loadPreflightStatus}
+                disabled={isLoadingPreflight}
+                className="px-3 py-1.5 rounded border border-zinc-700 hover:bg-zinc-800 text-zinc-300 flex items-center gap-1.5 transition"
+              >
+                <RefreshCw className={`h-3 w-3 ${isLoadingPreflight ? "animate-spin" : ""}`} />
+                Re-check Flow Drawer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Scriptoria Flow Companion Setup & Account Connector Modal */}
+      <CompanionSetupModal
+        isOpen={isCompanionModalOpen}
+        onClose={() => setIsCompanionModalOpen(false)}
+        status={companionStatus}
+      />
     </div>
   );
 }

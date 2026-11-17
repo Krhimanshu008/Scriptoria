@@ -2,10 +2,10 @@
   "artifacts": {
     "openapi": "openapi.json"
   },
-  "contract_hash": "742bce03ad843ad750a1680f2c841f76138a5b04f97f9c8ade4fc6c60d10db2c",
+  "contract_hash": "77b72e4d6497c915efd0a2fc8b0be2a16909b579a4fc8f421c361a61a1bf018d",
   "hash_algorithm": "sha256",
   "openapi_version": "3.1.0",
-  "paths_count": 50,
+  "paths_count": 58,
   "schema_names": [
     "ApiErrorBody",
     "ApiErrorEnvelope",
@@ -16,7 +16,10 @@
     "CameraLens",
     "ChapterExtractionRequest",
     "ChapterExtractionResponse",
+    "ChapterPackagePayload",
     "CharacterFrameState",
+    "CharacterLookdevPackage",
+    "CharacterLookdevPose",
     "CharacterPresence",
     "CharacterRegistryResponse",
     "CompileBookRequest",
@@ -57,7 +60,8 @@
     "FlowCompanionStatus",
     "FlowConnectionState",
     "FlowDispatchBatchRequest",
-    "FlowGenerationTask",
+    "FlowGenerationTask-Input",
+    "FlowGenerationTask-Output",
     "FlowIngredientCategory",
     "FlowIngredientRef",
     "FlowIngredientSync",
@@ -82,6 +86,8 @@
     "HighDensityChapterStoryboard",
     "HybridSearchResultItem",
     "LocationTreeResponse",
+    "LookdevApproveRequest",
+    "LookdevGenerateRequest",
     "MacroScene",
     "PackageRAGRequest",
     "PackageRAGResponse",
@@ -92,6 +98,8 @@
     "ParserPresetsResponse",
     "ParserProfile",
     "PipelineStageStatus",
+    "PreFlightIngredientItem",
+    "PreFlightSyncStatusResponse",
     "QuoteAnchorMatch",
     "QuoteMatchStats",
     "RagHybridSearchRequest",
@@ -122,6 +130,6 @@
     "VramLockRequest"
   ],
   "schema_version": "1.0.0",
-  "schemas_count": 113,
+  "schemas_count": 121,
   "title": "Novel Visualiser & Storyboard Studio"
 }

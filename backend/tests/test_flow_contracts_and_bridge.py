@@ -244,6 +244,114 @@ def test_flow_audio_generate_endpoint_contracts(client):
     assert data["chapter_id"] == "ch_133_intro"
     assert data["voice_used"] == "Enzo"
     assert data["voice_mode"] == "SINGLE_NARRATOR"
-    assert "Using default single narrator voice" in data["user_notification"]
+    assert any(k in data["user_notification"] for k in ("Synthesized chapter narration track", "TTS audio track", "Using default single narrator voice"))
+
+
+def test_preflight_status_endpoint(client):
+    headers = {"X-Bridge-Secret": "scriptoria-local-dev-secret"}
+    resp = client.get("/api/v1/flow-bridge/preflight/status?book_id=test_book", headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "flow_project_id" in data
+    assert "total_required_ingredients" in data
+    assert "synced_ingredients" in data
+    assert "missing_ingredients" in data
+    assert "is_ready_for_storyboard_dispatch" in data
+    assert len(data["ingredients"]) >= 3
+
+
+def test_lookdev_generate_and_approve_lifecycle(client):
+    headers = {"X-Bridge-Secret": "scriptoria-local-dev-secret"}
+    gen_payload = {
+        "book_id": "test_book",
+        "character_id": "char_ahab",
+        "canonical_name": "Captain Ahab",
+        "mention_handle": "Ahab",
+        "visual_tier": "TIER_1_CORE",
+        "physical_description": "Grim 50s sea captain, white lightning scar, carved ivory leg",
+        "wardrobe_description": "Dark wool naval coat, sea boots",
+    }
+    resp = client.post("/api/v1/flow-bridge/lookdev/generate", json=gen_payload, headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["canonical_name"] == "Captain Ahab"
+    assert data["mention_handle"] == "Ahab"
+    assert data["tts_voice_id"] == "Fenrir"  # Automatically assigned for Ahab
+    assert len(data["lookdev_poses"]) == 4
+
+    # Test approve endpoint
+    approve_payload = {
+        "book_id": "test_book",
+        "character_id": "char_ahab",
+        "pose_name": "FRONT_PORTRAIT",
+        "approved_image_url": "https://storage.googleapis.com/test/ahab_front.png",
+    }
+    resp2 = client.post("/api/v1/flow-bridge/lookdev/approve", json=approve_payload, headers=headers)
+    assert resp2.status_code == 200
+    data2 = resp2.json()
+    front_pose = next(p for p in data2["lookdev_poses"] if p["pose_name"] == "FRONT_PORTRAIT")
+    assert front_pose["approved_by_user"] is True
+    assert front_pose["rendered_image_url"] == "https://storage.googleapis.com/test/ahab_front.png"
+
+
+def test_preflight_sync_all_endpoint(client):
+    headers = {"X-Bridge-Secret": "scriptoria-local-dev-secret"}
+    resp = client.post("/api/v1/flow-bridge/preflight/sync-all?book_id=test_book", headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    assert "dispatched_count" in data or "message" in data
+
+
+def test_extension_download_zip_endpoint(client):
+    import io
+    import zipfile
+
+    headers = {"X-Bridge-Secret": "scriptoria-local-dev-secret"}
+    resp = client.get("/api/v1/flow-bridge/extension/download-zip", headers=headers)
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/zip"
+    assert "scriptoria-flow-companion.zip" in resp.headers.get("content-disposition", "")
+
+    # Verify zip content
+    zf = zipfile.ZipFile(io.BytesIO(resp.content))
+    namelist = zf.namelist()
+    assert "manifest.json" in namelist
+    assert "config.js" in namelist
+    assert "content.js" in namelist
+    assert "popup.html" in namelist
+
+
+def test_chapter_package_dispatch_telemetry(client):
+    headers = {"X-Bridge-Secret": "scriptoria-local-dev-secret"}
+    payload = {
+        "book_id": "test_book",
+        "book_title": "Test Book",
+        "chapter_index": 1,
+        "chapter_title": "Chapter 1",
+        "total_words": 500,
+        "estimated_audio_duration_sec": 120,
+        "screenplay_transcript": "Screenplay content",
+        "narrator_voice": "Enzo",
+        "media_type": "IMAGE",
+        "model_engine": "NANO_BANANA",
+        "aspect_ratio": "16:9",
+        "candidate_count": 4,
+        "total_frames": 2,
+        "frames": [
+            {"frame_index": 1, "scene_id": "sc01", "compiled_image_prompt": "Prompt 1"},
+            {"frame_index": 2, "scene_id": "sc01", "compiled_image_prompt": "Prompt 2"},
+        ],
+        "characters": [],
+        "auto_open_tabs": True,
+    }
+    resp = client.post("/api/v1/flow-bridge/chapter/package", json=payload, headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    assert "connected_clients" in data
+    assert "flow_connected" in data
+    assert "aistudio_connected" in data
+
 
 

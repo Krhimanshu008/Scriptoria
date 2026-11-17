@@ -4,10 +4,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import io
 import json
 import logging
 import mimetypes
 import re
+import zipfile
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,16 +18,22 @@ from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.schemas.flow_contracts import (
+    CharacterLookdevPackage,
+    CharacterLookdevPose,
     FlowAspectRatio,
     FlowAudioGenerateRequest,
     FlowAudioResultEvent,
     FlowCompanionStatus,
     FlowConnectionState,
     FlowGenerationTask,
+    FlowIngredientCategory,
+    FlowIngredientRef,
     FlowIngredientSync,
+    FlowIngredientSyncItem,
     FlowMediaCandidate,
     FlowMediaResultEvent,
     FlowMediaType,
@@ -35,6 +43,10 @@ from app.schemas.flow_contracts import (
     FlowSavedAssetRecord,
     FlowTaskStatus,
     FlowWsEnvelope,
+    LookdevApproveRequest,
+    LookdevGenerateRequest,
+    PreFlightIngredientItem,
+    PreFlightSyncStatusResponse,
     utc_now_iso,
 )
 from app.services.flow_av_pipeline import (
@@ -101,6 +113,8 @@ class FlowBridgeOrchestrator:
         self._failed_tasks: dict[str, FlowGenerationTask] = {}
         self._recent_events: deque[FlowMediaResultEvent] = deque(maxlen=100)
         self._cached_chapter_package: dict[str, Any] = {}
+        self._lookdev_packages: dict[str, CharacterLookdevPackage] = {}
+        self._locked_ingredients: dict[str, str] = {}
 
     # ==========================================================================
     # WebSocket Connection Lifecycle & Reconnection Recovery
@@ -682,11 +696,276 @@ class FlowBridgeOrchestrator:
             "chapter_title": pkg.chapter_title,
             "total_words": pkg.total_words,
             "auto_open_tabs": pkg.auto_open_tabs,
+            "connected_clients": len(sockets_to_notify),
+            "flow_connected": self._flow_ws is not None,
+            "aistudio_connected": self._aistudio_ws is not None,
         }
 
     async def get_chapter_package(self) -> dict[str, Any]:
         async with self._lock:
             return self._cached_chapter_package
+
+    async def generate_character_lookdev(
+        self, req: LookdevGenerateRequest
+    ) -> CharacterLookdevPackage:
+        async with self._lock:
+            handle = req.mention_handle.lstrip("@").strip()
+            phys = req.physical_description or "athletic build, weathered cinematic lighting"
+            wardrobe = req.wardrobe_description or "period-accurate historical costume"
+            style = req.art_style_prompt
+
+            # Assign voice based on character archetype
+            lower_name = req.canonical_name.lower()
+            if "ahab" in lower_name or "captain" in lower_name:
+                tts_voice = "Fenrir"
+            elif "queequeg" in lower_name or "harpoon" in lower_name:
+                tts_voice = "Puck"
+            elif any(w in lower_name for w in ["mary", "sarah", "rachel", "woman", "lady", "queen"]):
+                tts_voice = "Kore"
+            else:
+                tts_voice = "Enzo"
+
+            poses = (
+                CharacterLookdevPose(
+                    pose_name="FRONT_PORTRAIT",
+                    prompt=(
+                        f"85mm medium portrait of @{handle}, {req.canonical_name}, {phys}, "
+                        f"{wardrobe}, front-facing camera gaze, eye level, neutral studio gray background, {style}"
+                    ),
+                    approved_by_user=False,
+                ),
+                CharacterLookdevPose(
+                    pose_name="THREE_QUARTER_VIEW",
+                    prompt=(
+                        f"Cinematic 3/4 angle portrait of @{handle}, {req.canonical_name}, {phys}, "
+                        f"{wardrobe}, rim lighting, atmospheric volumetric depth, {style}"
+                    ),
+                    approved_by_user=False,
+                ),
+                CharacterLookdevPose(
+                    pose_name="PROFILE_TURNAROUND",
+                    prompt=(
+                        f"Side profile studio turnaround of @{handle}, {req.canonical_name}, {phys}, "
+                        f"{wardrobe}, clean facial contour, dramatic fill lighting, {style}"
+                    ),
+                    approved_by_user=False,
+                ),
+                CharacterLookdevPose(
+                    pose_name="FULL_BODY_COSTUME",
+                    prompt=(
+                        f"Full-length wide costume reference plate of @{handle}, {req.canonical_name}, {phys}, "
+                        f"full body visible from head to boots, standing grounded posture, {style}"
+                    ),
+                    approved_by_user=False,
+                ),
+            )
+
+            pkg = CharacterLookdevPackage(
+                character_id=req.character_id,
+                canonical_name=req.canonical_name,
+                mention_handle=handle,
+                visual_tier=req.visual_tier,
+                physical_description=phys,
+                wardrobe_description=wardrobe,
+                distinctive_features=tuple(f.strip() for f in phys.split(",") if f.strip()),
+                tts_voice_id=tts_voice,
+                lookdev_poses=poses,
+                is_synced_to_flow=handle.lower() in self._locked_ingredients,
+            )
+
+            cache_key = f"{req.book_id}:{req.character_id}"
+            self._lookdev_packages[cache_key] = pkg
+            self._lookdev_packages[handle.lower()] = pkg
+            return pkg
+
+    async def approve_character_lookdev(
+        self, req: LookdevApproveRequest
+    ) -> CharacterLookdevPackage:
+        async with self._lock:
+            cache_key = f"{req.book_id}:{req.character_id}"
+            pkg = self._lookdev_packages.get(cache_key)
+            if not pkg:
+                for p in self._lookdev_packages.values():
+                    if p.character_id == req.character_id:
+                        pkg = p
+                        break
+            if not pkg:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Lookdev package not found for character {req.character_id}",
+                )
+
+            updated_poses = []
+            for pose in pkg.lookdev_poses:
+                if pose.pose_name == req.pose_name:
+                    updated_poses.append(
+                        pose.model_copy(
+                            update={
+                                "rendered_image_url": req.approved_image_url,
+                                "approved_by_user": True,
+                            }
+                        )
+                    )
+                else:
+                    updated_poses.append(pose)
+
+            updated_pkg = pkg.model_copy(update={"lookdev_poses": tuple(updated_poses)})
+            self._lookdev_packages[cache_key] = updated_pkg
+            self._lookdev_packages[pkg.mention_handle.lower()] = updated_pkg
+            return updated_pkg
+
+    async def get_preflight_status(
+        self, book_id: str, flow_project_id: str | None = None
+    ) -> PreFlightSyncStatusResponse:
+        async with self._lock:
+            proj_id = flow_project_id or self._companion_status.flow_project_id
+            avail_set = {
+                handle.lower().lstrip("@")
+                for handle in self._companion_status.available_ingredients
+            }
+            avail_set.update(k.lower() for k in self._locked_ingredients.keys())
+
+            items: list[PreFlightIngredientItem] = []
+            seen_handles: set[str] = set()
+
+            raw_chars = self._cached_chapter_package.get("characters", [])
+            if not raw_chars:
+                raw_chars = [
+                    {
+                        "character_id": "char_ishmael",
+                        "canonical_name": "Ishmael",
+                        "mention_handle": "Ishmael",
+                        "visual_tier": "TIER_1_CORE",
+                        "tts_voice": "Enzo",
+                    },
+                    {
+                        "character_id": "char_ahab",
+                        "canonical_name": "Captain Ahab",
+                        "mention_handle": "Ahab",
+                        "visual_tier": "TIER_1_CORE",
+                        "tts_voice": "Fenrir",
+                    },
+                    {
+                        "character_id": "char_queequeg",
+                        "canonical_name": "Queequeg",
+                        "mention_handle": "Queequeg",
+                        "visual_tier": "TIER_2",
+                        "tts_voice": "Puck",
+                    },
+                ]
+
+            for c in raw_chars:
+                handle = str(c.get("mention_handle") or c.get("canonical_name", "Hero")).lstrip("@").strip()
+                handle_key = handle.lower()
+                if handle_key in seen_handles:
+                    continue
+                seen_handles.add(handle_key)
+
+                is_locked = handle_key in avail_set
+                items.append(
+                    PreFlightIngredientItem(
+                        ingredient_id=str(c.get("character_id", f"char_{handle_key}")),
+                        name=str(c.get("canonical_name", handle)),
+                        mention_handle=handle,
+                        category=FlowIngredientCategory.CHARACTER,
+                        visual_tier=c.get("visual_tier", "TIER_1_CORE"),
+                        status="LOCKED" if is_locked else "PENDING_SYNC",
+                        flow_internal_tag_id=self._locked_ingredients.get(handle_key),
+                        tts_voice=c.get("tts_voice", "Enzo"),
+                    )
+                )
+
+            loc_candidates = [
+                ("loc_spouter", "The Spouter-Inn", "The_Spouter_Inn"),
+                ("loc_pequod", "The Pequod Main Deck", "Pequod_Main_Deck"),
+            ]
+            for loc_id, loc_name, loc_handle in loc_candidates:
+                handle_key = loc_handle.lower()
+                if handle_key in seen_handles:
+                    continue
+                seen_handles.add(handle_key)
+                is_locked = handle_key in avail_set
+                items.append(
+                    PreFlightIngredientItem(
+                        ingredient_id=loc_id,
+                        name=loc_name,
+                        mention_handle=loc_handle,
+                        category=FlowIngredientCategory.LOCATION,
+                        visual_tier="TIER_1_CORE",
+                        status="LOCKED" if is_locked else "PENDING_SYNC",
+                        flow_internal_tag_id=self._locked_ingredients.get(handle_key),
+                    )
+                )
+
+            missing = [item.mention_handle for item in items if item.status != "LOCKED"]
+            synced_count = len(items) - len(missing)
+
+            return PreFlightSyncStatusResponse(
+                flow_project_id=proj_id,
+                total_required_ingredients=len(items),
+                synced_ingredients=synced_count,
+                missing_ingredients=tuple(missing),
+                is_ready_for_storyboard_dispatch=len(missing) == 0,
+                ingredients=tuple(items),
+            )
+
+    async def sync_all_preflight_ingredients(
+        self, book_id: str, flow_project_id: str | None = None
+    ) -> dict[str, Any]:
+        status_resp = await self.get_preflight_status(book_id, flow_project_id)
+        if not status_resp.missing_ingredients:
+            return {
+                "ok": True,
+                "message": "All required ingredients are already locked in Google Flow.",
+                "status": status_resp.model_dump(),
+            }
+
+        sync_items = []
+        for item in status_resp.ingredients:
+            if item.status != "LOCKED":
+                sync_items.append(
+                    FlowIngredientSyncItem(
+                        ingredient_id=item.ingredient_id,
+                        project_id=book_id,
+                        flow_project_id=status_resp.flow_project_id,
+                        name=item.name,
+                        mention_handle=item.mention_handle,
+                        category=item.category,
+                        visual_prompt=(
+                            f"85mm reference portrait of @{item.mention_handle}, {item.name}, "
+                            "cinematic chiaroscuro, 35mm film grain, neutral studio gray background"
+                        ),
+                    )
+                )
+
+        sync_req = FlowIngredientSync(
+            project_id=book_id,
+            flow_project_id=status_resp.flow_project_id,
+            direction="PUSH_TO_FLOW",
+            ingredients=tuple(sync_items),
+            auto_create_missing=True,
+        )
+
+        async with self._lock:
+            for item in sync_items:
+                self._locked_ingredients[item.mention_handle.lower()] = f"flow_tag_{item.ingredient_id}"
+
+            ws_available = self._flow_ws is not None
+
+        if ws_available:
+            dispatch_res = await self.sync_ingredients(sync_req)
+        else:
+            dispatch_res = {
+                "status": "STAGED_LOCAL",
+                "reason": "Companion currently offline; ingredients staged in local cache.",
+            }
+
+        return {
+            "ok": True,
+            "dispatched_count": len(sync_items),
+            "flow_project_id": status_resp.flow_project_id,
+            "sync_details": dispatch_res,
+        }
 
 
 # Singleton orchestrator instance
@@ -749,7 +1028,24 @@ async def flow_companion_websocket(
                     )
                     await websocket.send_json(ack.model_dump())
 
-                elif envelope.event_type in {"TASK_PROGRESS", "INGREDIENT_SYNC_ACK"}:
+                elif envelope.event_type in {
+                    "TASK_PROGRESS",
+                    "INGREDIENT_SYNC_ACK",
+                    "CHARACTER_SYNC_RESULT",
+                }:
+                    if envelope.event_type == "CHARACTER_SYNC_RESULT":
+                        handle = envelope.payload.get("mention_handle")
+                        tag_id = (
+                            envelope.payload.get("flow_internal_tag_id")
+                            or envelope.payload.get("tag_id")
+                            or "locked"
+                        )
+                        if handle:
+                            async with flow_orchestrator._lock:
+                                flow_orchestrator._locked_ingredients[
+                                    str(handle).lower().lstrip("@")
+                                ] = str(tag_id)
+
                     ack = FlowWsEnvelope(
                         event_type="BRIDGE_ACK",
                         correlation_id=envelope.correlation_id or envelope.envelope_id,
@@ -888,4 +1184,73 @@ async def dispatch_chapter_package(payload: ChapterPackagePayload) -> dict[str, 
 async def get_active_chapter_package() -> dict[str, Any]:
     """Fetch the currently active chapter package and metadata."""
     return await flow_orchestrator.get_chapter_package()
+
+
+@router.get("/preflight/status", response_model=PreFlightSyncStatusResponse)
+@router.get("/ingredients/preflight-check", response_model=PreFlightSyncStatusResponse)
+async def check_preflight_status(
+    book_id: str = Query(default="31d94e54-6308-488b-a6fc-1085ee418d7c"),
+    flow_project_id: str | None = Query(default=None),
+) -> PreFlightSyncStatusResponse:
+    """Check readiness of all required character and location ingredients in Google Flow."""
+    return await flow_orchestrator.get_preflight_status(
+        book_id=book_id, flow_project_id=flow_project_id
+    )
+
+
+@router.post("/lookdev/generate", response_model=CharacterLookdevPackage)
+async def generate_character_lookdev_endpoint(
+    req: LookdevGenerateRequest,
+) -> CharacterLookdevPackage:
+    """Generate 3-angle turnaround master prompts and lookdev package for a character."""
+    return await flow_orchestrator.generate_character_lookdev(req)
+
+
+@router.post("/lookdev/approve", response_model=CharacterLookdevPackage)
+async def approve_character_lookdev_endpoint(
+    req: LookdevApproveRequest,
+) -> CharacterLookdevPackage:
+    """Approve candidate image for a character's reference lookdev pose."""
+    return await flow_orchestrator.approve_character_lookdev(req)
+
+
+@router.post("/preflight/sync-all")
+@router.post("/ingredients/sync-all")
+async def sync_all_preflight_ingredients_endpoint(
+    book_id: str = Query(default="31d94e54-6308-488b-a6fc-1085ee418d7c"),
+    flow_project_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    """Instruct the companion extension to create and lock all missing ingredients in Flow."""
+    return await flow_orchestrator.sync_all_preflight_ingredients(
+        book_id=book_id, flow_project_id=flow_project_id
+    )
+
+
+@router.get("/extension/download-zip")
+async def download_extension_zip() -> StreamingResponse:
+    """Package the Scriptoria Flow Companion Chrome extension into a downloadable ZIP."""
+    ext_dir = Path(__file__).resolve().parents[3] / "extension" / "scriptoria-flow-bridge"
+    if not ext_dir.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Extension directory not found on server",
+        )
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for file_path in ext_dir.rglob("*"):
+            if file_path.is_file():
+                arcname = file_path.relative_to(ext_dir)
+                zf.write(file_path, arcname)
+
+    zip_buffer.seek(0)
+    return StreamingResponse(
+        zip_buffer,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": "attachment; filename=scriptoria-flow-companion.zip",
+            "Cache-Control": "no-cache",
+        },
+    )
+
 

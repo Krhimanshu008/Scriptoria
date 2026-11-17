@@ -1071,7 +1071,41 @@
 
   async function handleIngredientSync(syncPayload) {
     sendEnvelope("COMPANION_STATUS", buildStatusPayload("SYNCING_INGREDIENTS"));
-    const detectedHandles = scanAvailableIngredientsInDom();
+    let detectedHandles = scanAvailableIngredientsInDom();
+    const ingredients = syncPayload.ingredients || [];
+    const missing = [];
+
+    for (const item of ingredients) {
+      const handle = (item.mention_handle || item.name || "")
+        .replace(/^@/, "")
+        .trim()
+        .toLowerCase();
+      const isPresent = detectedHandles.some((h) => h.toLowerCase() === handle);
+      if (!isPresent) {
+        missing.push(item);
+      }
+    }
+
+    if (syncPayload.auto_create_missing && missing.length > 0) {
+      console.log(
+        `[Scriptoria Companion] Auto-creating ${missing.length} missing ingredients in Flow...`
+      );
+      for (const missingItem of missing) {
+        try {
+          const res = await syncCharacterProfile({
+            flow_project_id: detectFlowProjectId(),
+            mention_handle: missingItem.mention_handle,
+            visual_prompt: missingItem.visual_prompt,
+            generate_portrait: true,
+          });
+          sendEnvelope("CHARACTER_SYNC_RESULT", res);
+          await sleep(600);
+        } catch (err) {
+          console.warn("[Scriptoria Companion] Failed auto-creating ingredient:", missingItem, err);
+        }
+      }
+      detectedHandles = scanAvailableIngredientsInDom();
+    }
 
     sendEnvelope(
       "INGREDIENT_SYNC_ACK",
@@ -1080,7 +1114,7 @@
         project_id: syncPayload.project_id,
         flow_project_id: detectFlowProjectId(),
         detected_handles: detectedHandles,
-        synced_count: (syncPayload.ingredients || []).length,
+        synced_count: ingredients.length,
         synced_at: new Date().toISOString(),
       },
       syncPayload.sync_id

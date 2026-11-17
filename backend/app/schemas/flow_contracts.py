@@ -403,6 +403,90 @@ class FlowAudioResultEvent(StrictModel):
     created_at: str = Field(default_factory=utc_now_iso)
 
 
+class CharacterLookdevPose(StrictModel):
+    """Single pose or turnaround angle for a character's reference lookdev."""
+
+    pose_name: Literal[
+        "FRONT_PORTRAIT",
+        "THREE_QUARTER_VIEW",
+        "PROFILE_TURNAROUND",
+        "FULL_BODY_COSTUME",
+    ]
+    prompt: str
+    rendered_image_url: str | None = None
+    approved_by_user: bool = False
+
+
+class CharacterLookdevPackage(StrictModel):
+    """Complete casting & lookdev package for a character before scene rendering."""
+
+    character_id: str = Field(..., min_length=1, max_length=128)
+    canonical_name: str = Field(..., min_length=1, max_length=120)
+    mention_handle: str = Field(..., min_length=1, max_length=80)
+    visual_tier: Literal["TIER_1_CORE", "TIER_2", "TIER_3"] = Field(default="TIER_1_CORE")
+    physical_description: str = Field(default="", max_length=2000)
+    wardrobe_description: str = Field(default="", max_length=2000)
+    distinctive_features: tuple[str, ...] = Field(default_factory=tuple)
+    tts_voice_id: str = Field(default="Enzo", max_length=64)
+    lookdev_poses: tuple[CharacterLookdevPose, ...] = Field(default_factory=tuple)
+    flow_internal_tag_id: str | None = Field(default=None, max_length=128)
+    is_synced_to_flow: bool = Field(default=False)
+
+
+class PreFlightIngredientItem(StrictModel):
+    """Single ingredient tracked in the Pre-Flight Validation Gate."""
+
+    ingredient_id: str = Field(..., min_length=1, max_length=128)
+    name: str = Field(..., min_length=1, max_length=120)
+    mention_handle: str = Field(..., min_length=1, max_length=80)
+    category: FlowIngredientCategory = Field(default=FlowIngredientCategory.CHARACTER)
+    visual_tier: Literal["TIER_1_CORE", "TIER_2", "TIER_3"] = Field(default="TIER_1_CORE")
+    status: Literal["LOCKED", "PENDING_SYNC", "NOT_CONFIGURED"] = Field(default="PENDING_SYNC")
+    flow_internal_tag_id: str | None = None
+    preview_url: str | None = None
+    tts_voice: str | None = None
+
+
+class PreFlightSyncStatusResponse(StrictModel):
+    """Overall project readiness status before story image generation."""
+
+    flow_project_id: str = Field(default="ea1ed436-e578-4327-9c9b-4f6b2e7e551d")
+    total_required_ingredients: int = Field(default=0, ge=0)
+    synced_ingredients: int = Field(default=0, ge=0)
+    missing_ingredients: tuple[str, ...] = Field(default_factory=tuple)
+    is_ready_for_storyboard_dispatch: bool = Field(default=False)
+    ingredients: tuple[PreFlightIngredientItem, ...] = Field(default_factory=tuple)
+
+
+class LookdevGenerateRequest(StrictModel):
+    """Request to synthesize multi-angle lookdev turnaround prompts."""
+
+    book_id: str = Field(..., min_length=1)
+    character_id: str = Field(..., min_length=1)
+    canonical_name: str = Field(..., min_length=1)
+    mention_handle: str = Field(..., min_length=1)
+    visual_tier: Literal["TIER_1_CORE", "TIER_2", "TIER_3"] = "TIER_1_CORE"
+    physical_description: str = ""
+    wardrobe_description: str = ""
+    art_style_prompt: str = (
+        "cinematic chiaroscuro, 35mm film grain, 85mm portrait lens, neutral studio gray background"
+    )
+
+
+class LookdevApproveRequest(StrictModel):
+    """Request to approve a candidate reference portrait for a character."""
+
+    book_id: str = Field(..., min_length=1)
+    character_id: str = Field(..., min_length=1)
+    pose_name: Literal[
+        "FRONT_PORTRAIT",
+        "THREE_QUARTER_VIEW",
+        "PROFILE_TURNAROUND",
+        "FULL_BODY_COSTUME",
+    ]
+    approved_image_url: str
+
+
 class FlowWsEnvelope(StrictModel):
     """Wire-level WebSocket frame envelope for all Companion <-> FastAPI communications."""
 
@@ -427,6 +511,9 @@ class FlowWsEnvelope(StrictModel):
         "AUDIO_PROGRESS",
         "AUDIO_RESULT",
         "CHAPTER_PACKAGE_SYNC",
+        "LOOKDEV_SYNC",
+        "LOOKDEV_SYNC_ACK",
+        "PREFLIGHT_STATUS",
         "BRIDGE_ACK",
         "BRIDGE_ERROR",
     ]

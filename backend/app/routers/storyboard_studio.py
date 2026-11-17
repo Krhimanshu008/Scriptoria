@@ -527,6 +527,8 @@ async def dispatch_storyboard_to_flow(req: FlowDispatchBatchRequest) -> Any:
         "book_id": req.book_id,
         "chapter_index": req.chapter_index,
         "first_ten_task_ids": dispatched_ids[:10],
+        "connected_clients": len(flow_orchestrator._all_ws),
+        "flow_connected": flow_orchestrator._flow_ws is not None,
     }
 
 

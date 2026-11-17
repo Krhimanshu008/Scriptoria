@@ -205,6 +205,7 @@ def execute_gemini_tts_synthesis(
                 duration_sec = round(w.getnframes() / float(w.getframerate()), 2)
         except Exception:
             duration_sec = max(2.5, round(len(request.raw_text.split()) / 2.33, 2))
+        notice = f"Successfully generated TTS audio track ({duration_sec}s) via Gemini."
 
     return FlowAudioResultEvent(
         task_id=task_id,

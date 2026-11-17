@@ -24,6 +24,17 @@ export default async function DashboardHomePage({
     redirect(`/vms?colabError=${encodeURIComponent(colabError)}`);
   }
 
-  const settings = await getOrCreateWorkspaceSettings(user.userId);
-  redirect(settings.defaultDashboard === "studio" ? "/studio" : "/vms");
+  let target = "/vms";
+  try {
+    const settings = await getOrCreateWorkspaceSettings(user.userId);
+    target = settings.defaultDashboard === "studio" ? "/studio" : "/vms";
+  } catch (err) {
+    console.warn(
+      "[DashboardHomePage] Failed to fetch workspace settings, defaulting to /vms:",
+      err
+    );
+    target = "/vms";
+  }
+
+  redirect(target);
 }

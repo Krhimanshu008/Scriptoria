@@ -349,6 +349,102 @@
         "title": "ChapterExtractionResponse",
         "type": "object"
       },
+      "ChapterPackagePayload": {
+        "properties": {
+          "aspect_ratio": {
+            "default": "16:9",
+            "title": "Aspect Ratio",
+            "type": "string"
+          },
+          "auto_open_tabs": {
+            "default": true,
+            "title": "Auto Open Tabs",
+            "type": "boolean"
+          },
+          "book_id": {
+            "title": "Book Id",
+            "type": "string"
+          },
+          "book_title": {
+            "default": "Active Novel",
+            "title": "Book Title",
+            "type": "string"
+          },
+          "candidate_count": {
+            "default": 4,
+            "title": "Candidate Count",
+            "type": "integer"
+          },
+          "chapter_index": {
+            "default": 1,
+            "title": "Chapter Index",
+            "type": "integer"
+          },
+          "chapter_title": {
+            "default": "Chapter 1",
+            "title": "Chapter Title",
+            "type": "string"
+          },
+          "characters": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Characters",
+            "type": "array"
+          },
+          "estimated_audio_duration_sec": {
+            "default": 0.0,
+            "title": "Estimated Audio Duration Sec",
+            "type": "number"
+          },
+          "frames": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Frames",
+            "type": "array"
+          },
+          "media_type": {
+            "default": "IMAGE",
+            "title": "Media Type",
+            "type": "string"
+          },
+          "model_engine": {
+            "default": "NANO_BANANA",
+            "title": "Model Engine",
+            "type": "string"
+          },
+          "narrator_voice": {
+            "default": "Enzo",
+            "title": "Narrator Voice",
+            "type": "string"
+          },
+          "screenplay_transcript": {
+            "default": "",
+            "title": "Screenplay Transcript",
+            "type": "string"
+          },
+          "total_frames": {
+            "default": 0,
+            "title": "Total Frames",
+            "type": "integer"
+          },
+          "total_words": {
+            "default": 0,
+            "title": "Total Words",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "book_id"
+        ],
+        "title": "ChapterPackagePayload",
+        "type": "object"
+      },
       "CharacterFrameState": {
         "additionalProperties": false,
         "properties": {
@@ -394,6 +490,138 @@
           "wardrobe_state"
         ],
         "title": "CharacterFrameState",
+        "type": "object"
+      },
+      "CharacterLookdevPackage": {
+        "additionalProperties": false,
+        "description": "Complete casting & lookdev package for a character before scene rendering.",
+        "properties": {
+          "canonical_name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Canonical Name",
+            "type": "string"
+          },
+          "character_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Character Id",
+            "type": "string"
+          },
+          "distinctive_features": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Distinctive Features",
+            "type": "array"
+          },
+          "flow_internal_tag_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Flow Internal Tag Id"
+          },
+          "is_synced_to_flow": {
+            "default": false,
+            "title": "Is Synced To Flow",
+            "type": "boolean"
+          },
+          "lookdev_poses": {
+            "items": {
+              "$ref": "#/components/schemas/CharacterLookdevPose"
+            },
+            "title": "Lookdev Poses",
+            "type": "array"
+          },
+          "mention_handle": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Mention Handle",
+            "type": "string"
+          },
+          "physical_description": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Physical Description",
+            "type": "string"
+          },
+          "tts_voice_id": {
+            "default": "Enzo",
+            "maxLength": 64,
+            "title": "Tts Voice Id",
+            "type": "string"
+          },
+          "visual_tier": {
+            "default": "TIER_1_CORE",
+            "enum": [
+              "TIER_1_CORE",
+              "TIER_2",
+              "TIER_3"
+            ],
+            "title": "Visual Tier",
+            "type": "string"
+          },
+          "wardrobe_description": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Wardrobe Description",
+            "type": "string"
+          }
+        },
+        "required": [
+          "character_id",
+          "canonical_name",
+          "mention_handle"
+        ],
+        "title": "CharacterLookdevPackage",
+        "type": "object"
+      },
+      "CharacterLookdevPose": {
+        "additionalProperties": false,
+        "description": "Single pose or turnaround angle for a character's reference lookdev.",
+        "properties": {
+          "approved_by_user": {
+            "default": false,
+            "title": "Approved By User",
+            "type": "boolean"
+          },
+          "pose_name": {
+            "enum": [
+              "FRONT_PORTRAIT",
+              "THREE_QUARTER_VIEW",
+              "PROFILE_TURNAROUND",
+              "FULL_BODY_COSTUME"
+            ],
+            "title": "Pose Name",
+            "type": "string"
+          },
+          "prompt": {
+            "title": "Prompt",
+            "type": "string"
+          },
+          "rendered_image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rendered Image Url"
+          }
+        },
+        "required": [
+          "pose_name",
+          "prompt"
+        ],
+        "title": "CharacterLookdevPose",
         "type": "object"
       },
       "CharacterPresence": {
@@ -950,7 +1178,8 @@
             "type": "string"
           },
           "raw_text": {
-            "description": "Raw markdown/text of the chapter (~2000 words)",
+            "default": "",
+            "description": "Raw markdown/text of the chapter (~2000 words); if empty, auto-loads from R2 lake",
             "title": "Raw Text",
             "type": "string"
           },
@@ -964,8 +1193,7 @@
           }
         },
         "required": [
-          "book_id",
-          "raw_text"
+          "book_id"
         ],
         "title": "DecomposeChapterRequest",
         "type": "object"
@@ -2204,7 +2432,183 @@
         "title": "FlowDispatchBatchRequest",
         "type": "object"
       },
-      "FlowGenerationTask": {
+      "FlowGenerationTask-Input": {
+        "additionalProperties": false,
+        "description": "Canonical task dispatched to the Chrome Companion to generate an image or video in Flow.",
+        "properties": {
+          "aspect_ratio": {
+            "$ref": "#/components/schemas/FlowAspectRatio",
+            "default": "16:9"
+          },
+          "beat_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Beat Id"
+          },
+          "candidate_count": {
+            "default": 1,
+            "maximum": 4.0,
+            "minimum": 1.0,
+            "title": "Candidate Count",
+            "type": "integer"
+          },
+          "character_profile_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Character Profile Id"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "flow_project_id": {
+            "default": "ea1ed436-e578-4327-9c9b-4f6b2e7e551d",
+            "maxLength": 128,
+            "minLength": 8,
+            "title": "Flow Project Id",
+            "type": "string"
+          },
+          "ingredient_refs": {
+            "items": {
+              "$ref": "#/components/schemas/FlowIngredientRef"
+            },
+            "title": "Ingredient Refs",
+            "type": "array"
+          },
+          "media_type": {
+            "$ref": "#/components/schemas/FlowMediaType",
+            "default": "IMAGE"
+          },
+          "model_engine": {
+            "$ref": "#/components/schemas/FlowModelEngine",
+            "default": "NANO_BANANA_2_1"
+          },
+          "negative_prompt": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Negative Prompt"
+          },
+          "priority": {
+            "default": 5,
+            "description": "1 = highest priority, 10 = lowest",
+            "maximum": 10.0,
+            "minimum": 1.0,
+            "title": "Priority",
+            "type": "integer"
+          },
+          "project_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "prompt": {
+            "description": "Full prompt text; may contain @mention tokens matching ingredient_refs.",
+            "maxLength": 8000,
+            "minLength": 3,
+            "title": "Prompt",
+            "type": "string"
+          },
+          "retry_count": {
+            "default": 0,
+            "maximum": 5.0,
+            "minimum": 0.0,
+            "title": "Retry Count",
+            "type": "integer"
+          },
+          "scene_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scene Id"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed"
+          },
+          "status": {
+            "$ref": "#/components/schemas/FlowTaskStatus",
+            "default": "QUEUED"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "thinking_level": {
+            "$ref": "#/components/schemas/FlowThinkingLevel",
+            "default": "HIGH"
+          },
+          "timeout_seconds": {
+            "default": 180,
+            "maximum": 600.0,
+            "minimum": 15.0,
+            "title": "Timeout Seconds",
+            "type": "integer"
+          },
+          "video_duration_seconds": {
+            "default": 5,
+            "maximum": 15.0,
+            "minimum": 3.0,
+            "title": "Video Duration Seconds",
+            "type": "integer"
+          },
+          "video_mode": {
+            "$ref": "#/components/schemas/FlowVideoMode",
+            "default": "INGREDIENTS"
+          },
+          "video_resolution": {
+            "default": "720p",
+            "enum": [
+              "360p",
+              "720p"
+            ],
+            "title": "Video Resolution",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "prompt"
+        ],
+        "title": "FlowGenerationTask",
+        "type": "object"
+      },
+      "FlowGenerationTask-Output": {
         "additionalProperties": false,
         "description": "Canonical task dispatched to the Chrome Companion to generate an image or video in Flow.",
         "properties": {
@@ -3030,8 +3434,16 @@
       "FormatScreenplayRequest": {
         "properties": {
           "book_id": {
-            "title": "Book Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "31d94e54-6308-488b-a6fc-1085ee418d7c",
+            "title": "Book Id"
           },
           "chapter_index": {
             "default": 1,
@@ -3054,8 +3466,40 @@
             "type": "string"
           },
           "raw_text": {
-            "title": "Raw Text",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "",
+            "title": "Raw Text"
+          },
+          "screenplay_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "",
+            "title": "Screenplay Text"
+          },
+          "storyboard": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Storyboard"
           },
           "voice_mode": {
             "default": "SINGLE_NARRATOR",
@@ -3063,10 +3507,6 @@
             "type": "string"
           }
         },
-        "required": [
-          "book_id",
-          "raw_text"
-        ],
         "title": "FormatScreenplayRequest",
         "type": "object"
       },
@@ -3453,6 +3893,103 @@
           "root_locations"
         ],
         "title": "LocationTreeResponse",
+        "type": "object"
+      },
+      "LookdevApproveRequest": {
+        "additionalProperties": false,
+        "description": "Request to approve a candidate reference portrait for a character.",
+        "properties": {
+          "approved_image_url": {
+            "title": "Approved Image Url",
+            "type": "string"
+          },
+          "book_id": {
+            "minLength": 1,
+            "title": "Book Id",
+            "type": "string"
+          },
+          "character_id": {
+            "minLength": 1,
+            "title": "Character Id",
+            "type": "string"
+          },
+          "pose_name": {
+            "enum": [
+              "FRONT_PORTRAIT",
+              "THREE_QUARTER_VIEW",
+              "PROFILE_TURNAROUND",
+              "FULL_BODY_COSTUME"
+            ],
+            "title": "Pose Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "book_id",
+          "character_id",
+          "pose_name",
+          "approved_image_url"
+        ],
+        "title": "LookdevApproveRequest",
+        "type": "object"
+      },
+      "LookdevGenerateRequest": {
+        "additionalProperties": false,
+        "description": "Request to synthesize multi-angle lookdev turnaround prompts.",
+        "properties": {
+          "art_style_prompt": {
+            "default": "cinematic chiaroscuro, 35mm film grain, 85mm portrait lens, neutral studio gray background",
+            "title": "Art Style Prompt",
+            "type": "string"
+          },
+          "book_id": {
+            "minLength": 1,
+            "title": "Book Id",
+            "type": "string"
+          },
+          "canonical_name": {
+            "minLength": 1,
+            "title": "Canonical Name",
+            "type": "string"
+          },
+          "character_id": {
+            "minLength": 1,
+            "title": "Character Id",
+            "type": "string"
+          },
+          "mention_handle": {
+            "minLength": 1,
+            "title": "Mention Handle",
+            "type": "string"
+          },
+          "physical_description": {
+            "default": "",
+            "title": "Physical Description",
+            "type": "string"
+          },
+          "visual_tier": {
+            "default": "TIER_1_CORE",
+            "enum": [
+              "TIER_1_CORE",
+              "TIER_2",
+              "TIER_3"
+            ],
+            "title": "Visual Tier",
+            "type": "string"
+          },
+          "wardrobe_description": {
+            "default": "",
+            "title": "Wardrobe Description",
+            "type": "string"
+          }
+        },
+        "required": [
+          "book_id",
+          "character_id",
+          "canonical_name",
+          "mention_handle"
+        ],
+        "title": "LookdevGenerateRequest",
         "type": "object"
       },
       "MacroScene": {
@@ -4004,6 +4541,138 @@
           "duration_ms"
         ],
         "title": "PipelineStageStatus",
+        "type": "object"
+      },
+      "PreFlightIngredientItem": {
+        "additionalProperties": false,
+        "description": "Single ingredient tracked in the Pre-Flight Validation Gate.",
+        "properties": {
+          "category": {
+            "$ref": "#/components/schemas/FlowIngredientCategory",
+            "default": "CHARACTER"
+          },
+          "flow_internal_tag_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Flow Internal Tag Id"
+          },
+          "ingredient_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Ingredient Id",
+            "type": "string"
+          },
+          "mention_handle": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Mention Handle",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "preview_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preview Url"
+          },
+          "status": {
+            "default": "PENDING_SYNC",
+            "enum": [
+              "LOCKED",
+              "PENDING_SYNC",
+              "NOT_CONFIGURED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "tts_voice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tts Voice"
+          },
+          "visual_tier": {
+            "default": "TIER_1_CORE",
+            "enum": [
+              "TIER_1_CORE",
+              "TIER_2",
+              "TIER_3"
+            ],
+            "title": "Visual Tier",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ingredient_id",
+          "name",
+          "mention_handle"
+        ],
+        "title": "PreFlightIngredientItem",
+        "type": "object"
+      },
+      "PreFlightSyncStatusResponse": {
+        "additionalProperties": false,
+        "description": "Overall project readiness status before story image generation.",
+        "properties": {
+          "flow_project_id": {
+            "default": "ea1ed436-e578-4327-9c9b-4f6b2e7e551d",
+            "title": "Flow Project Id",
+            "type": "string"
+          },
+          "ingredients": {
+            "items": {
+              "$ref": "#/components/schemas/PreFlightIngredientItem"
+            },
+            "title": "Ingredients",
+            "type": "array"
+          },
+          "is_ready_for_storyboard_dispatch": {
+            "default": false,
+            "title": "Is Ready For Storyboard Dispatch",
+            "type": "boolean"
+          },
+          "missing_ingredients": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing Ingredients",
+            "type": "array"
+          },
+          "synced_ingredients": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Synced Ingredients",
+            "type": "integer"
+          },
+          "total_required_ingredients": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Total Required Ingredients",
+            "type": "integer"
+          }
+        },
+        "title": "PreFlightSyncStatusResponse",
         "type": "object"
       },
       "QuoteAnchorMatch": {
@@ -5756,6 +6425,72 @@
         ]
       }
     },
+    "/api/v1/flow-bridge/chapter/package": {
+      "get": {
+        "description": "Fetch the currently active chapter package and metadata.",
+        "operationId": "get_active_chapter_package_api_v1_flow_bridge_chapter_package_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Active Chapter Package Api V1 Flow Bridge Chapter Package Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Active Chapter Package",
+        "tags": [
+          "Google AI Flow Bridge"
+        ]
+      },
+      "post": {
+        "description": "Sync an entire chapter's audio screenplay and visual storyboard package to the companion.",
+        "operationId": "dispatch_chapter_package_api_v1_flow_bridge_chapter_package_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChapterPackagePayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Dispatch Chapter Package Api V1 Flow Bridge Chapter Package Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Dispatch Chapter Package",
+        "tags": [
+          "Google AI Flow Bridge"
+        ]
+      }
+    },
     "/api/v1/flow-bridge/character/sync": {
       "post": {
         "description": "Instruct the companion to register a character in Flow's Character Studio.",
@@ -5874,6 +6609,86 @@
         ]
       }
     },
+    "/api/v1/flow-bridge/extension/download-zip": {
+      "get": {
+        "description": "Package the Scriptoria Flow Companion Chrome extension into a downloadable ZIP.",
+        "operationId": "download_extension_zip_api_v1_flow_bridge_extension_download_zip_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Download Extension Zip",
+        "tags": [
+          "Google AI Flow Bridge"
+        ]
+      }
+    },
+    "/api/v1/flow-bridge/ingredients/preflight-check": {
+      "get": {
+        "description": "Check readiness of all required character and location ingredients in Google Flow.",
+        "operationId": "check_preflight_status_api_v1_flow_bridge_ingredients_preflight_check_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "book_id",
+            "required": false,
+            "schema": {
+              "default": "31d94e54-6308-488b-a6fc-1085ee418d7c",
+              "title": "Book Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "flow_project_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Flow Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreFlightSyncStatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Check Preflight Status",
+        "tags": [
+          "Google AI Flow Bridge"
+        ]
+      }
+    },
     "/api/v1/flow-bridge/ingredients/sync": {
       "post": {
         "description": "Push or reconcile @ingredient handles with the active Google Flow browser session.",
@@ -5913,6 +6728,274 @@
           }
         },
         "summary": "Sync Project Ingredients",
+        "tags": [
+          "Google AI Flow Bridge"
+        ]
+      }
+    },
+    "/api/v1/flow-bridge/ingredients/sync-all": {
+      "post": {
+        "description": "Instruct the companion extension to create and lock all missing ingredients in Flow.",
+        "operationId": "sync_all_preflight_ingredients_endpoint_api_v1_flow_bridge_ingredients_sync_all_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "book_id",
+            "required": false,
+            "schema": {
+              "default": "31d94e54-6308-488b-a6fc-1085ee418d7c",
+              "title": "Book Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "flow_project_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Flow Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Sync All Preflight Ingredients Endpoint Api V1 Flow Bridge Ingredients Sync All Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sync All Preflight Ingredients Endpoint",
+        "tags": [
+          "Google AI Flow Bridge"
+        ]
+      }
+    },
+    "/api/v1/flow-bridge/lookdev/approve": {
+      "post": {
+        "description": "Approve candidate image for a character's reference lookdev pose.",
+        "operationId": "approve_character_lookdev_endpoint_api_v1_flow_bridge_lookdev_approve_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LookdevApproveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CharacterLookdevPackage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve Character Lookdev Endpoint",
+        "tags": [
+          "Google AI Flow Bridge"
+        ]
+      }
+    },
+    "/api/v1/flow-bridge/lookdev/generate": {
+      "post": {
+        "description": "Generate 3-angle turnaround master prompts and lookdev package for a character.",
+        "operationId": "generate_character_lookdev_endpoint_api_v1_flow_bridge_lookdev_generate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LookdevGenerateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CharacterLookdevPackage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Generate Character Lookdev Endpoint",
+        "tags": [
+          "Google AI Flow Bridge"
+        ]
+      }
+    },
+    "/api/v1/flow-bridge/preflight/status": {
+      "get": {
+        "description": "Check readiness of all required character and location ingredients in Google Flow.",
+        "operationId": "check_preflight_status_api_v1_flow_bridge_preflight_status_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "book_id",
+            "required": false,
+            "schema": {
+              "default": "31d94e54-6308-488b-a6fc-1085ee418d7c",
+              "title": "Book Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "flow_project_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Flow Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreFlightSyncStatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Check Preflight Status",
+        "tags": [
+          "Google AI Flow Bridge"
+        ]
+      }
+    },
+    "/api/v1/flow-bridge/preflight/sync-all": {
+      "post": {
+        "description": "Instruct the companion extension to create and lock all missing ingredients in Flow.",
+        "operationId": "sync_all_preflight_ingredients_endpoint_api_v1_flow_bridge_preflight_sync_all_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "book_id",
+            "required": false,
+            "schema": {
+              "default": "31d94e54-6308-488b-a6fc-1085ee418d7c",
+              "title": "Book Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "flow_project_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Flow Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Sync All Preflight Ingredients Endpoint Api V1 Flow Bridge Preflight Sync All Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sync All Preflight Ingredients Endpoint",
         "tags": [
           "Google AI Flow Bridge"
         ]
@@ -6036,7 +7119,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/FlowGenerationTask"
+                "$ref": "#/components/schemas/FlowGenerationTask-Input"
               }
             }
           },
@@ -6047,7 +7130,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FlowGenerationTask"
+                  "$ref": "#/components/schemas/FlowGenerationTask-Output"
                 }
               }
             },
