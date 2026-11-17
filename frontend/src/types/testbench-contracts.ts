@@ -1,5 +1,5 @@
 export const EXPECTED_CONTRACT_HASH =
-  "742bce03ad843ad750a1680f2c841f76138a5b04f97f9c8ade4fc6c60d10db2c" as const;
+  "77b72e4d6497c915efd0a2fc8b0be2a16909b579a4fc8f421c361a61a1bf018d" as const;
 
 export type ErrorCode =
   | "VALIDATION_ERROR"
