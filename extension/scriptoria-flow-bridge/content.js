@@ -652,6 +652,9 @@
 
   function findGenerateButton() {
     const explicitSelectors = [
+      'button[aria-label="Start generation"]',
+      'flow-generate-icon-button button.generate-icon-button',
+      'flow-generate-icon-button button[type="submit"]',
       'flow-generate-icon-button button',
       'button[aria-label*="Start generation" i]',
       'button[aria-label*="generation" i]',
@@ -661,8 +664,10 @@
       'button[type="submit"]',
     ];
     for (const sel of explicitSelectors) {
-      const btn = document.querySelector(sel);
-      if (btn) return btn;
+      try {
+        const btn = document.querySelector(sel);
+        if (btn) return btn;
+      } catch (_e) {}
     }
 
     const allButtons = Array.from(document.querySelectorAll("button"));
@@ -671,11 +676,13 @@
         const text = (btn.textContent || "").trim().toLowerCase();
         const aria = (btn.getAttribute("aria-label") || "").toLowerCase();
         return (
+          aria === "start generation" ||
+          aria.includes("start generation") ||
+          text.includes("arrow_forward") ||
           text === "generate" ||
           text === "create" ||
           text.includes("generate") ||
           aria.includes("generate") ||
-          aria.includes("start generation") ||
           aria.includes("send prompt")
         );
       }) || null
@@ -1087,6 +1094,9 @@
           const src = el.currentSrc || el.src;
           if (!src || seenDomMediaSrcs.has(src)) continue;
           if (
+            src.includes("flow.google.com/asb/") ||
+            src.includes("/asb/") ||
+            el.closest("flow-image-tile") !== null ||
             src.includes("googleusercontent.com") ||
             src.includes("flow-content.google") ||
             src.includes("storage.googleapis.com")
@@ -1304,37 +1314,28 @@
 
       const generateBtn = findGenerateButton();
       if (generateBtn) {
-        if (generateBtn.disabled) {
-          generateBtn.removeAttribute("disabled");
-        }
+        generateBtn.removeAttribute("disabled");
+        generateBtn.focus();
         generateBtn.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
         generateBtn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
         generateBtn.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true }));
         generateBtn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
         generateBtn.click();
+        console.info("[Scriptoria Companion] Successfully activated 'Start generation' button!");
+      } else {
+        console.warn("[Scriptoria Companion] Start generation button not found, falling back to Ctrl+Enter...");
+        editor.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Enter",
+            code: "Enter",
+            keyCode: 13,
+            which: 13,
+            ctrlKey: true,
+            bubbles: true,
+            cancelable: true,
+          })
+        );
       }
-
-      // Also trigger Enter keydown/keyup on prompt editor
-      editor.dispatchEvent(
-        new KeyboardEvent("keydown", {
-          key: "Enter",
-          code: "Enter",
-          keyCode: 13,
-          which: 13,
-          bubbles: true,
-          cancelable: true,
-        })
-      );
-      editor.dispatchEvent(
-        new KeyboardEvent("keyup", {
-          key: "Enter",
-          code: "Enter",
-          keyCode: 13,
-          which: 13,
-          bubbles: true,
-          cancelable: true,
-        })
-      );
 
       sendEnvelope(
         "TASK_PROGRESS",
@@ -1642,15 +1643,8 @@
       <span id="scriptoria-dock-dot" style="width: 8px; height: 8px; border-radius: 50%; background: #10b981; box-shadow: 0 0 8px #10b981;"></span>
       <span id="scriptoria-dock-text">Scriptoria Companion</span>
     `;
-    dock.title = "Click to enter Flow canvas or toggle Scriptoria Quick Bar";
+    dock.title = "Click to toggle Scriptoria Quick Bar";
     dock.addEventListener("click", () => {
-      const isOnLobby =
-        window.location.pathname === "/" || !window.location.pathname.includes("/project/");
-      if (isOnLobby) {
-        console.info("[Scriptoria Companion] User clicked dock on lobby. Auto-opening canvas...");
-        ensureProjectCanvasOpen();
-        return;
-      }
       const bar = document.getElementById("scriptoria-quick-bar");
       if (bar) bar.style.display = bar.style.display === "none" ? "flex" : "none";
     });
