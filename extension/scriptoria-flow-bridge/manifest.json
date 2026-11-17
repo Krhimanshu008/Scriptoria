@@ -23,7 +23,8 @@
     "activeTab",
     "scripting",
     "tabs",
-    "notifications"
+    "notifications",
+    "debugger"
   ],
   "background": {
     "service_worker": "background.js"

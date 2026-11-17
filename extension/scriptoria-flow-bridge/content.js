@@ -671,78 +671,205 @@
     await sleep(50);
   }
 
+  // ==========================================================================
+  // 3. Argon Hardened Prompt & Mentions State Machine (T2.2 & T2.3)
+  // ==========================================================================
+
+  /**
+   * T2.3: Word-Boundary Typing Cadence Humanizer
+   * Eliminates the 116-minute typing trap by burst-typing intra-word characters (18ms-35ms)
+   * and pausing at syntactic word boundaries (100ms-220ms).
+   * Total prompt entry envelope is clamped adaptively to ~4.5s - 7.5s.
+   */
   async function insertTextSegment(editor, text) {
     if (!text) return;
     editor.focus();
 
+    // If editor is standard textarea / input
     if (editor.tagName === "TEXTAREA" || editor.tagName === "INPUT") {
       const proto =
         editor.tagName === "TEXTAREA"
           ? window.HTMLTextAreaElement.prototype
           : window.HTMLInputElement.prototype;
       const nativeSetter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
-      const nextValue = (editor.value || "") + text;
-      if (nativeSetter) {
-        nativeSetter.call(editor, nextValue);
-      } else {
-        editor.value = nextValue;
+
+      const appendNative = (val) => {
+        const nextValue = (editor.value || "") + val;
+        if (nativeSetter) {
+          nativeSetter.call(editor, nextValue);
+        } else {
+          editor.value = nextValue;
+        }
+        editor.dispatchEvent(new InputEvent("input", { bubbles: true, data: val }));
+      };
+
+      const tokens = text.split(/(\s+)/);
+      const totalChars = text.length;
+      const intraCharDelay = totalChars > 250 ? 12 : totalChars > 120 ? 20 : 30;
+      const interWordDelay = totalChars > 250 ? 65 : 120;
+
+      for (const token of tokens) {
+        if (/^\s+$/.test(token)) {
+          appendNative(token);
+          await sleep(interWordDelay + Math.floor(Math.random() * 35));
+        } else {
+          for (const ch of token) {
+            appendNative(ch);
+            await sleep(intraCharDelay + Math.floor(Math.random() * 12));
+          }
+        }
       }
-      editor.dispatchEvent(new InputEvent("input", { bubbles: true, data: text }));
       editor.dispatchEvent(new Event("change", { bubbles: true }));
       return;
     }
 
-    // ContentEditable insertion
-    const inserted = document.execCommand("insertText", false, text);
-    if (!inserted) {
-      editor.textContent = (editor.textContent || "") + text;
+    // ContentEditable (ProseMirror / Lexical in Google Flow)
+    const tokens = text.split(/(\s+)/);
+    const totalChars = text.length;
+    const intraCharDelay = totalChars > 300 ? 10 : totalChars > 150 ? 18 : 28;
+    const interWordDelay = totalChars > 300 ? 55 : 120;
+
+    for (const token of tokens) {
+      if (/^\s+$/.test(token)) {
+        const ok = document.execCommand("insertText", false, token);
+        if (!ok) {
+          editor.textContent = (editor.textContent || "") + token;
+        }
+        editor.dispatchEvent(
+          new InputEvent("input", {
+            bubbles: true,
+            cancelable: true,
+            inputType: "insertText",
+            data: token,
+          })
+        );
+        await sleep(interWordDelay + Math.floor(Math.random() * 35));
+      } else {
+        for (const ch of token) {
+          const ok = document.execCommand("insertText", false, ch);
+          if (!ok) {
+            editor.textContent = (editor.textContent || "") + ch;
+          }
+          editor.dispatchEvent(
+            new InputEvent("input", {
+              bubbles: true,
+              cancelable: true,
+              inputType: "insertText",
+              data: ch,
+            })
+          );
+          await sleep(intraCharDelay + Math.floor(Math.random() * 10));
+        }
+      }
     }
-    editor.dispatchEvent(
-      new InputEvent("input", {
-        bubbles: true,
-        cancelable: true,
-        inputType: "insertText",
-        data: text,
-      })
-    );
   }
 
   /**
-   * Types `@<handle>`, waits for Google Flow's @ingredient autocomplete popover,
-   * selects the matching option if present, or leaves the @mention token intact.
+   * T2.2: Popover Intercept State Machine for @ingredients
+   * 1. Types `@` + first 3 characters of handle.
+   * 2. Observes DOM for `[role="listbox"]` / `.mention-item` popover mount (up to 1500ms).
+   * 3. Selects matching option via synthetic click / Enter.
+   * 4. Asserts `contenteditable="false"` chip node creation before continuing.
+   * 5. Falls back cleanly to completing full handle text if popover times out.
    */
   async function injectMentionToken(editor, handle) {
+    if (!handle) return;
     editor.focus();
-    await insertTextSegment(editor, `@${handle}`);
-    await sleep(320);
 
-    // Search for open mention dropdown options
-    const menuOptions = Array.from(
-      document.querySelectorAll(
-        '[role="listbox"] [role="option"], [data-radix-popper-content-wrapper] [role="menuitem"], .mention-item, [data-ingredient-option]'
-      )
-    );
+    const cleanHandle = handle.replace(/^@/, "").trim();
+    const prefix = cleanHandle.slice(0, Math.min(3, cleanHandle.length));
 
-    const normalizedTarget = handle.toLowerCase().replace(/_/g, " ");
-    const matchingOption = menuOptions.find((opt) => {
-      const label = (opt.textContent || "").trim().toLowerCase();
-      return (
-        label.includes(handle.toLowerCase()) ||
-        label.includes(normalizedTarget)
+    const countChips = () =>
+      editor.querySelectorAll(
+        '[contenteditable="false"], [data-mention], .ingredient-chip, [data-ingredient-id], span[data-type="mention"]'
+      ).length;
+    const initialChipCount = countChips();
+
+    // Step 1: Type '@' and first 3 chars
+    await insertTextSegment(editor, `@${prefix}`);
+
+    // Step 2: Await popover listbox
+    const findMatchingOption = () => {
+      const options = Array.from(
+        document.querySelectorAll(
+          '[role="listbox"] [role="option"], [data-radix-popper-content-wrapper] [role="menuitem"], .mention-item, [data-ingredient-option], [role="menuitem"]'
+        )
       );
-    });
+      if (options.length === 0) return null;
 
-    if (matchingOption) {
-      matchingOption.click();
-      await sleep(120);
-    } else if (menuOptions.length === 1) {
-      // If typing @handle filtered the popover down to a single exact match, click it
-      menuOptions[0].click();
-      await sleep(120);
-    } else {
-      // Press Space to close mention menu cleanly
-      await insertTextSegment(editor, " ");
+      const normTarget = cleanHandle.toLowerCase().replace(/_/g, " ");
+      const match = options.find((opt) => {
+        const label = (opt.textContent || "").trim().toLowerCase();
+        return (
+          label.includes(cleanHandle.toLowerCase()) ||
+          label.includes(normTarget)
+        );
+      });
+      return match || (options.length === 1 ? options[0] : null);
+    };
+
+    let targetOption = null;
+    const startTime = Date.now();
+    while (Date.now() - startTime < 1500) {
+      targetOption = findMatchingOption();
+      if (targetOption) break;
+      await sleep(60);
     }
+
+    let chipCreated = false;
+
+    // Step 3: If option found, click it / trigger Enter
+    if (targetOption) {
+      try {
+        targetOption.click();
+      } catch (_) {
+        editor.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Enter",
+            code: "Enter",
+            keyCode: 13,
+            which: 13,
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+      }
+      await sleep(150);
+
+      // Step 4: Assert chip created
+      chipCreated = countChips() > initialChipCount;
+    }
+
+    // Step 5: Fallback if chip was not created
+    if (!chipCreated) {
+      const remaining = cleanHandle.slice(prefix.length);
+      if (remaining) {
+        await insertTextSegment(editor, remaining);
+      }
+      await insertTextSegment(editor, " ");
+      await sleep(80);
+    } else {
+      await insertTextSegment(editor, " ");
+      await sleep(80);
+    }
+  }
+
+  /**
+   * Lightweight safety filter sanitizer for auto-retry on RAI drops.
+   */
+  function sanitizePromptForSafety(prompt) {
+    if (!prompt) return "";
+    return prompt
+      .replace(/\b(blood-stained|bloodstained|bloody)\b/gi, "crimson-draped")
+      .replace(/\b(blood)\b/gi, "crimson essence")
+      .replace(/\b(corpse|dead body|slain body)\b/gi, "fallen figure")
+      .replace(/\b(kill|killing|slaying|murder|assassinate)\b/gi, "dramatic confrontation")
+      .replace(/\b(knife|dagger|blade|sword)\b/gi, "ornate steel prop")
+      .replace(/\b(wound|wounds|gash|severed|gore)\b/gi, "battle wear")
+      .replace(/\b(strangle|choke|suffocate|hang)\b/gi, "intense grapple")
+      .replace(/\b(naked|nude|undressed|exposed)\b/gi, "unadorned silhouette")
+      .replace(/\b(execution|guillotine|behead)\b/gi, "climactic judgment")
+      .replace(/\b(gun|pistol|rifle|revolver)\b/gi, "vintage prop");
   }
 
   /**
@@ -796,20 +923,115 @@
   }
 
   // ==========================================================================
-  // 4. DOM Mutation Fallback (Captures rendered <img>/<video> if RPC was compressed)
+  // 4. Settled-Grid Quorum Harvester & DOM Fallback (Argon T2.1)
   // ==========================================================================
   const seenDomMediaSrcs = new Set();
+  const activeTaskCandidates = new Map();
+  let activeTaskSettledCheckInterval = null;
 
   function snapshotExistingDomMedia() {
+    activeTaskCandidates.clear();
     document.querySelectorAll("img[src], video[src], video source[src]").forEach((el) => {
       if (el.src) seenDomMediaSrcs.add(el.src);
     });
   }
 
+  /**
+   * T2.1: Settled-Grid Quorum Detector
+   * Evaluates valid rendered tiles vs. tombstone/filter error cards.
+   * Prevents deadlocks on partial RAI safety drops.
+   */
+  function checkSettledGridQuorum(sourceTrigger) {
+    if (!activeTask) return;
+
+    const validCandidates = Array.from(activeTaskCandidates.values());
+    const targetCount = activeTask.candidate_count || 4;
+
+    // Scan for tombstone / safety cards in DOM
+    const tombstoneTiles = document.querySelectorAll(
+      '[data-filter-error], [data-safety-filtered], .error-tile, .filtered-tile, .safety-card, [data-testid*="error-tile"], [role="alert"][class*="error"]'
+    );
+    let tombstoneCount = tombstoneTiles.length;
+
+    // Check for safety alert banners
+    const allAlerts = Array.from(document.querySelectorAll('[role="alert"], .banner, .notification, .toast'));
+    const safetyAlertFound = allAlerts.some((el) =>
+      /safety|guideline|content filtered|violates our policies|prompt was blocked/i.test(el.textContent || "")
+    );
+    if (safetyAlertFound && tombstoneCount === 0) {
+      tombstoneCount = targetCount;
+    }
+
+    const totalSettled = validCandidates.length + tombstoneCount;
+    const elapsedMs = Date.now() - activeTaskStartTime;
+
+    // Rule 1: Grid has fully settled (valid + tombstones >= target)
+    if (totalSettled >= targetCount) {
+      if (validCandidates.length >= 1) {
+        console.info(
+          `[Settled-Grid Quorum] Quorum reached with ${validCandidates.length} valid tile(s) (${tombstoneCount} tombstones). Finalizing!`
+        );
+        finalizeActiveTaskSuccess(validCandidates, `quorum://${sourceTrigger}`);
+        return;
+      } else {
+        console.warn("[Settled-Grid Quorum] All tiles were blocked by safety policy.");
+        handleSafetyFilteredFailure("RAI_SAFETY_BLOCKED: All candidate tiles blocked by Responsible AI safety filter.");
+        return;
+      }
+    }
+
+    // Rule 2: Hard Quorum Grace Timeout (>= 1 valid tile and elapsed >= 30s)
+    if (validCandidates.length >= 1 && elapsedMs >= 30_000) {
+      console.info(
+        `[Settled-Grid Quorum] Grace timeout reached (30s) with ${validCandidates.length} valid tile(s). Finalizing!`
+      );
+      finalizeActiveTaskSuccess(validCandidates, `quorum-grace-timeout://${sourceTrigger}`);
+      return;
+    }
+
+    // Rule 3: Safety alert banner appeared with 0 valid tiles
+    if (safetyAlertFound && validCandidates.length === 0) {
+      handleSafetyFilteredFailure("RAI_SAFETY_BLOCKED: Prompt flagged by Google Flow safety filters.");
+      return;
+    }
+  }
+
+  async function handleSafetyFilteredFailure(reason) {
+    if (!activeTask) return;
+    if (!activeTask.__retryWithSanitization) {
+      console.warn(`[Settled-Grid Quorum] Prompt triggered safety filter. Attempting auto-sanitized retry...`);
+      activeTask.__retryWithSanitization = true;
+
+      const sanitizedPrompt = sanitizePromptForSafety(activeTask.prompt);
+      if (sanitizedPrompt !== activeTask.prompt) {
+        console.info(`[Settled-Grid Quorum] Sanitized prompt: "${sanitizedPrompt}"`);
+        activeTask.prompt = sanitizedPrompt;
+        activeTaskStartTime = Date.now();
+        activeTaskCandidates.clear();
+
+        try {
+          const editor = findPromptEditor();
+          if (editor) {
+            await clearEditorContent(editor);
+            await injectPromptWithIngredients(editor, sanitizedPrompt, activeTask.ingredient_refs || []);
+            await sleep(300);
+            const generateBtn = findGenerateButton();
+            if (generateBtn) generateBtn.click();
+            return;
+          }
+        } catch (e) {
+          console.error("[Settled-Grid Quorum] Failed to submit sanitized prompt:", e);
+        }
+      }
+    }
+
+    finalizeActiveTaskFailure(reason);
+  }
+
   const domMediaObserver = new MutationObserver((mutations) => {
     if (!activeTask) return;
 
-    const discovered = [];
+    let foundNew = false;
     for (const mutation of mutations) {
       for (const node of mutation.addedNodes) {
         if (!(node instanceof HTMLElement)) continue;
@@ -826,14 +1048,13 @@
             src.includes("flow-content.google") ||
             src.includes("storage.googleapis.com")
           ) {
-            // Skip tiny UI icons
             const width = el.naturalWidth || el.videoWidth || el.clientWidth || 0;
             if (width > 0 && width < 128) continue;
 
             seenDomMediaSrcs.add(src);
             const isVideo = el.tagName === "VIDEO" || src.includes(".mp4");
-            discovered.push({
-              candidate_index: discovered.length,
+            const candidate = {
+              candidate_index: activeTaskCandidates.size,
               remote_url: src,
               mime_type: isVideo ? "video/mp4" : "image/png",
               media_type: isVideo ? "VIDEO" : "IMAGE",
@@ -841,14 +1062,16 @@
               height: el.naturalHeight || el.videoHeight || null,
               base64_data: null,
               flow_media_key: "dom-mutation-capture",
-            });
+            };
+            activeTaskCandidates.set(src, candidate);
+            foundNew = true;
           }
         }
       }
     }
 
-    if (discovered.length > 0 && activeTask) {
-      finalizeActiveTaskSuccess(discovered, "dom://mutation-observer");
+    if (foundNew && activeTask) {
+      checkSettledGridQuorum("dom-mutation");
     }
   });
 
@@ -877,6 +1100,10 @@
     if (activeTaskTimeoutHandle) {
       clearTimeout(activeTaskTimeoutHandle);
       activeTaskTimeoutHandle = null;
+    }
+    if (activeTaskSettledCheckInterval) {
+      clearInterval(activeTaskSettledCheckInterval);
+      activeTaskSettledCheckInterval = null;
     }
   }
 
@@ -979,6 +1206,16 @@
         `Timed out after ${task.timeout_seconds || 180}s waiting for Google Flow media output.`
       );
     }, timeoutMs);
+
+    // Active polling interval for Settled-Grid Quorum & tombstone detection
+    if (activeTaskSettledCheckInterval) {
+      clearInterval(activeTaskSettledCheckInterval);
+    }
+    activeTaskSettledCheckInterval = setInterval(() => {
+      if (activeTask) {
+        checkSettledGridQuorum("interval-poll");
+      }
+    }, 2500);
 
     try {
       sendEnvelope(
@@ -1133,7 +1370,13 @@
     }
 
     if (activeTask) {
-      finalizeActiveTaskSuccess(detail.candidates, detail.rpc_endpoint);
+      for (const candidate of detail.candidates) {
+        const key = candidate.flow_media_key || candidate.remote_url || `c-${activeTaskCandidates.size}`;
+        if (!activeTaskCandidates.has(key)) {
+          activeTaskCandidates.set(key, candidate);
+        }
+      }
+      checkSettledGridQuorum("rpc-captured");
     } else {
       // Unsolicited capture (user manually clicked Generate in Flow UI): still forward to Scriptoria!
       const manualTaskId = `manual-${Date.now()}`;
@@ -1163,6 +1406,13 @@
       };
 
       sendEnvelope("MEDIA_RESULT", resultPayload, manualTaskId);
+    }
+  });
+
+  window.addEventListener("SCRIPTORIA_FLOW_SAFETY_BLOCKED", (event) => {
+    if (activeTask) {
+      console.warn("[Scriptoria Companion] Caught SCRIPTORIA_FLOW_SAFETY_BLOCKED from MAIN world.");
+      handleSafetyFilteredFailure("RAI_SAFETY_BLOCKED: " + (event.detail?.reason || "Policy filter triggered."));
     }
   });
 

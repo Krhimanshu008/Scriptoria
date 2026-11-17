@@ -258,7 +258,24 @@
 
     pruneSeenCache();
     const bucket = extractCandidatesFromStructure(rawText);
-    if (bucket.size === 0) return;
+    if (bucket.size === 0) {
+      if (
+        /SAFETY_BLOCK|CONTENT_FILTERED|PROMPT_FILTERED|POLICY_VIOLATION|IMAGE_SAFETY|HARM_CATEGORY/i.test(
+          rawText
+        )
+      ) {
+        window.dispatchEvent(
+          new CustomEvent("SCRIPTORIA_FLOW_SAFETY_BLOCKED", {
+            detail: {
+              rpc_endpoint: endpointUrl,
+              captured_at: new Date().toISOString(),
+              reason: "RPC response flagged by Responsible AI policy filter.",
+            },
+          })
+        );
+      }
+      return;
+    }
 
     const freshCandidates = [];
     let index = 0;

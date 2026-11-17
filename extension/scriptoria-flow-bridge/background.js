@@ -24,22 +24,51 @@ async function resolveWsEndpoint() {
 }
 
 // ==============================================================================
-// 1. Smart Tab Opener / Focus Manager
+// 1. Smart Tab Opener / Focus Manager & Lifecycle Lock (Argon T2.4)
 // ==============================================================================
+async function lockTabLifecycle(tabId) {
+  if (!chrome.debugger || !tabId) return;
+  const target = { tabId };
+  try {
+    await chrome.debugger.attach(target, "1.3");
+    await chrome.debugger.sendCommand(target, "Page.enable");
+    await chrome.debugger.sendCommand(target, "Page.setWebLifecycleState", { state: "active" });
+    await chrome.debugger.sendCommand(target, "Emulation.setFocusEmulationEnabled", { enabled: true });
+    console.info(`[Background] Lifecycle locked for tab ${tabId} via Chrome Debugger (1Hz throttle defeated).`);
+  } catch (e) {
+    // Graceful degradation: Debugger already attached or policy restriction
+    console.warn(`[Background] Lifecycle lock skipped for tab ${tabId}:`, e && e.message ? e.message : e);
+  }
+}
+
 async function ensureTabOpen(urlPattern, targetUrl) {
   try {
     const tabs = await chrome.tabs.query({});
     const existing = tabs.find((t) => t.url && t.url.includes(urlPattern));
     if (existing && existing.id) {
-      // Bring tab to front
+      // Bring tab to front and restore un-minimized normal window state
       await chrome.tabs.update(existing.id, { active: true });
       if (existing.windowId) {
-        await chrome.windows.update(existing.windowId, { focused: true });
+        await chrome.windows.update(existing.windowId, { state: "normal", focused: true });
       }
+      lockTabLifecycle(existing.id);
       return existing;
     } else {
-      // Open new tab
-      return await chrome.tabs.create({ url: targetUrl, active: true });
+      // Open in separate un-minimized utility window to defeat 1Hz background throttling
+      const win = await chrome.windows.create({
+        url: targetUrl,
+        type: "normal",
+        state: "normal",
+        focused: true,
+        width: 1440,
+        height: 900,
+      });
+      const newTab = win && win.tabs && win.tabs[0];
+      if (newTab && newTab.id) {
+        // Wait briefly for tab initialization before locking
+        setTimeout(() => lockTabLifecycle(newTab.id), 1200);
+      }
+      return newTab;
     }
   } catch (err) {
     console.error("[Background] Failed to open/focus tab:", err);
