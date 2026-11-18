@@ -157,6 +157,69 @@ export function FlowTtsWorkstation() {
     loadChapterProse();
   }, [selectedBookId, selectedChapterIdx]);
 
+  // Restore storyboard & assets from localStorage or backend on mount / chapter change
+  useEffect(() => {
+    const bookId = selectedBookId || "31d94e54-6308-488b-a6fc-1085ee418d7c";
+    const cacheKey = `scriptoria_storyboard_${bookId}_ch${selectedChapterIdx}`;
+    const assetsKey = `scriptoria_assets_${bookId}_ch${selectedChapterIdx}`;
+
+    // 1. Instant 0ms recovery from localStorage
+    try {
+      const cached = localStorage.getItem(cacheKey);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed && Array.isArray(parsed.scenes) && parsed.scenes.length > 0) {
+          setStoryboard(parsed);
+          setSelectedSceneId(parsed.scenes[0].scene_id);
+          const cachedAssets = localStorage.getItem(assetsKey);
+          if (cachedAssets) {
+            try {
+              setCapturedAssets((prev) => ({ ...prev, ...JSON.parse(cachedAssets) }));
+            } catch {}
+          }
+          return;
+        }
+      }
+    } catch (e) {
+      console.warn("Failed reading storyboard from localStorage", e);
+    }
+
+    // 2. Fallback to server persistence
+    async function loadServerStoryboard() {
+      try {
+        const res = await fetch(
+          `/api/pipeline/storyboard/get?book_id=${encodeURIComponent(bookId)}&chapter_index=${selectedChapterIdx}`
+        );
+        if (res.ok) {
+          const data = await res.json();
+          if (data.found && data.storyboard && Array.isArray(data.storyboard.scenes)) {
+            setStoryboard(data.storyboard);
+            if (data.storyboard.scenes.length > 0) {
+              setSelectedSceneId(data.storyboard.scenes[0].scene_id);
+            }
+            try {
+              localStorage.setItem(cacheKey, JSON.stringify(data.storyboard));
+            } catch {}
+          }
+        }
+      } catch (err) {
+        // Non-fatal
+      }
+    }
+    loadServerStoryboard();
+  }, [selectedBookId, selectedChapterIdx]);
+
+  // Persist capturedAssets to localStorage whenever updated
+  useEffect(() => {
+    if (Object.keys(capturedAssets).length > 0) {
+      try {
+        const bookId = selectedBookId || "31d94e54-6308-488b-a6fc-1085ee418d7c";
+        const assetsKey = `scriptoria_assets_${bookId}_ch${selectedChapterIdx}`;
+        localStorage.setItem(assetsKey, JSON.stringify(capturedAssets));
+      } catch {}
+    }
+  }, [capturedAssets, selectedBookId, selectedChapterIdx]);
+
   // Poll recent Flow media results to populate live candidates
   useEffect(() => {
     let timer: any;
@@ -432,6 +495,12 @@ export function FlowTtsWorkstation() {
       setStoryboard(data);
       if (data.scenes && data.scenes.length > 0) {
         setSelectedSceneId(data.scenes[0].scene_id);
+      }
+      try {
+        const cacheKey = `scriptoria_storyboard_${bookIdToSend}_ch${selectedChapterIdx}`;
+        localStorage.setItem(cacheKey, JSON.stringify(data));
+      } catch (err) {
+        console.warn("Failed caching storyboard to localStorage", err);
       }
 
       // Calculate total duration from last frame

@@ -8,7 +8,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
@@ -490,7 +490,37 @@ async def decompose_chapter_to_storyboard(req: DecomposeChapterRequest, request:
         total_actual_frames,
     )
 
+    # Persist storyboard to disk for zero-loss page switches and reload recovery
+    try:
+        from app.routers.flow_bridge import _sanitize_path_segment
+        safe_book = _sanitize_path_segment(req.book_id)
+        sb_dir = Path("output/storyboards") / safe_book
+        sb_dir.mkdir(parents=True, exist_ok=True)
+        sb_path = sb_dir / f"ch_{req.chapter_index:03d}.json"
+        sb_path.write_text(storyboard.model_dump_json(indent=2), encoding="utf-8")
+        logger.info("Persisted storyboard to disk: %s", sb_path)
+    except Exception as e:
+        logger.warning("Failed to persist storyboard to disk: %s", e)
+
     return storyboard
+
+
+@router.get("/get")
+async def get_chapter_storyboard(
+    book_id: str = Query(...),
+    chapter_index: int = Query(1),
+) -> Any:
+    """Retrieves previously decomposed high-density storyboard for a chapter."""
+    try:
+        from app.routers.flow_bridge import _sanitize_path_segment
+        safe_book = _sanitize_path_segment(book_id)
+        sb_path = Path("output/storyboards") / safe_book / f"ch_{chapter_index:03d}.json"
+        if sb_path.exists():
+            data = json.loads(sb_path.read_text(encoding="utf-8"))
+            return {"found": True, "storyboard": data}
+    except Exception as e:
+        logger.warning("Error fetching storyboard for %s ch_%s: %s", book_id, chapter_index, e)
+    return {"found": False, "storyboard": None}
 
 
 @router.post("/flow/dispatch")

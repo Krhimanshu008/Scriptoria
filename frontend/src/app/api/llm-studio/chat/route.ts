@@ -19,6 +19,7 @@ interface ChatRequestBody {
   maxTokens?: number;
   fallbackToVault?: boolean;
   targetService?: "qc" | "extract" | "tag" | "rag" | "default";
+  targetVm?: string;
 }
 
 function splitThinkBlock(raw: string): { thinking: string | null; answer: string } {
@@ -61,16 +62,29 @@ export async function POST(req: NextRequest) {
       systemPrompt = `${systemPrompt}${schemaNote}`;
     }
 
-    const onlineVm = await prisma.vmInstance.findFirst({
-      where: {
-        userId: user.userId,
-        workerProfile: {
-          in: ["LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B", "LLM_LIGHTWEIGHT_SWARM", "TPU_QWEN27B_V5E"],
+    let onlineVm = null;
+    if (body.targetVm && body.targetVm !== "auto") {
+      onlineVm = await prisma.vmInstance.findFirst({
+        where: {
+          userId: user.userId,
+          target: body.targetVm,
+          status: "ONLINE",
         },
-        status: "ONLINE",
-      },
-      orderBy: { lastHeartbeat: "desc" },
-    });
+      });
+    }
+
+    if (!onlineVm) {
+      onlineVm = await prisma.vmInstance.findFirst({
+        where: {
+          userId: user.userId,
+          workerProfile: {
+            in: ["LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B", "LLM_LIGHTWEIGHT_SWARM", "TPU_QWEN27B_V5E"],
+          },
+          status: "ONLINE",
+        },
+        orderBy: { lastHeartbeat: "desc" },
+      });
+    }
 
     if (onlineVm?.publicUrl) {
       const base = onlineVm.publicUrl.replace(/\/$/, "");
@@ -185,7 +199,7 @@ export async function POST(req: NextRequest) {
           : null;
 
       return NextResponse.json({
-        source: "kaggle_qwen_vlm",
+        source: onlineVm.accountAlias ? `${onlineVm.accountAlias.toUpperCase()} (${onlineVm.workerProfile})` : "kaggle_qwen_vlm",
         target: onlineVm.target,
         model: respModel,
         answer: split.answer || rawContent,

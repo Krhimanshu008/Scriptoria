@@ -38,6 +38,21 @@ interface SessionItem {
   _count?: { messages: number };
 }
 
+export interface OnlineVmOption {
+  target: string;
+  accountAlias: string;
+  workerProfile: string;
+  profileLabel: string;
+  loadedModel: string;
+  publicUrl: string | null;
+  gpuName: string | null;
+  vramTotalGb: number;
+  vramUsedGb: number;
+  reachable: boolean;
+  probeLatencyMs: number | null;
+  probeError: string | null;
+}
+
 interface LlmStudioHealth {
   vmStatus: string;
   target: string | null;
@@ -56,6 +71,7 @@ interface LlmStudioHealth {
     status: string;
   } | null;
   vaultFallbackCount: number;
+  onlineVms?: OnlineVmOption[];
 }
 
 interface TurnMessage {
@@ -138,6 +154,14 @@ export function LlmStudioTab() {
   );
   const [jsonSchema, setJsonSchema] = useState(DEFAULT_JSON_SCHEMA);
   const [selectedService, setSelectedService] = useState<"default" | "extract" | "tag" | "qc" | "rag">("default");
+  const [selectedTargetVm, setSelectedTargetVm] = useState<string>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        return localStorage.getItem("scriptoria_llm_selected_vm") || "auto";
+      } catch {}
+    }
+    return "auto";
+  });
   const [promptInput, setPromptInput] = useState("");
   const [attachedImages, setAttachedImages] = useState<string[]>([]);
   const [turns, setTurns] = useState<TurnMessage[]>(() => {
@@ -573,6 +597,7 @@ export function LlmStudioTab() {
           maxTokens,
           fallbackToVault,
           targetService: selectedService,
+          targetVm: selectedTargetVm,
         }),
       });
 
@@ -588,7 +613,7 @@ export function LlmStudioTab() {
         content: String(data.answer || ""),
         thinking: data.thinking || null,
         meta: {
-          source: data.source,
+          source: data.target ? `${data.target} · ${data.source}` : data.source,
           model: data.model,
           latencyMs: data.latencyMs,
           tokPerSec: data.tokPerSec ?? null,
@@ -631,6 +656,11 @@ export function LlmStudioTab() {
     }
   }
 
+  const selectedVmOption =
+    health?.onlineVms?.find((v) => v.target === selectedTargetVm) ||
+    health?.onlineVms?.[0] ||
+    null;
+
   return (
     <div className="space-y-3">
       {/* Top Health & Wrong-Profile Guidance Strip */}
@@ -656,6 +686,31 @@ export function LlmStudioTab() {
             />
             QWEN-LLM: {health?.reachable ? "ONLINE" : health?.vmStatus || "OFFLINE"}
           </span>
+
+          {/* Model / VM Selector Dropdown in Top Strip */}
+          <div className="flex items-center gap-1.5 rounded border border-zinc-800 bg-zinc-950 px-2 py-0.5 text-xs">
+            <Bot className="h-3.5 w-3.5 text-indigo-400 shrink-0" />
+            <span className="text-zinc-400 text-[10px] font-medium uppercase tracking-wide">Model / VM:</span>
+            <select
+              value={selectedTargetVm}
+              onChange={(e) => {
+                setSelectedTargetVm(e.target.value);
+                try {
+                  localStorage.setItem("scriptoria_llm_selected_vm", e.target.value);
+                } catch {}
+              }}
+              className="bg-transparent font-mono text-[11px] font-medium text-zinc-100 focus:outline-none cursor-pointer"
+            >
+              <option value="auto" className="bg-zinc-900 text-zinc-200">
+                ⚡ Auto ({health?.target || "Fastest Online"})
+              </option>
+              {health?.onlineVms?.map((vm) => (
+                <option key={vm.target} value={vm.target} className="bg-zinc-900 text-zinc-200">
+                  {vm.accountAlias.toUpperCase()} ({vm.target}): {vm.loadedModel} {vm.reachable ? "●" : "○"}
+                </option>
+              ))}
+            </select>
+          </div>
 
           {health?.loadedModel && (
             <span className="inline-flex items-center gap-1 font-mono text-[11px] text-zinc-200">
@@ -839,6 +894,52 @@ export function LlmStudioTab() {
             </div>
           ) : (
             <>
+
+          {/* Active Model / Worker VM Selector Card */}
+          <div className="space-y-1.5 rounded-lg border border-zinc-800 bg-zinc-950 p-2.5">
+            <div className="flex items-center justify-between text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+              <span className="flex items-center gap-1.5 text-zinc-300">
+                <Cpu className="h-3.5 w-3.5 text-indigo-400" />
+                Target Model / Worker VM
+              </span>
+              <span
+                className={`font-mono text-[10px] ${
+                  (selectedTargetVm === "auto" ? health?.reachable : selectedVmOption?.reachable)
+                    ? "text-emerald-400"
+                    : "text-zinc-500"
+                }`}
+              >
+                {(selectedTargetVm === "auto" ? health?.reachable : selectedVmOption?.reachable)
+                  ? "● ONLINE"
+                  : "○ OFFLINE"}
+              </span>
+            </div>
+            <select
+              value={selectedTargetVm}
+              onChange={(e) => {
+                setSelectedTargetVm(e.target.value);
+                try {
+                  localStorage.setItem("scriptoria_llm_selected_vm", e.target.value);
+                } catch {}
+              }}
+              className="h-8 w-full rounded border border-zinc-800 bg-[#111114] px-2 font-mono text-[11px] text-zinc-100 focus:border-indigo-500"
+            >
+              <option value="auto">
+                ⚡ Auto-Route ({health?.loadedModel ? `${health.loadedModel} on ${health.target}` : "Fastest Online"})
+              </option>
+              {health?.onlineVms?.map((vm) => (
+                <option key={vm.target} value={vm.target}>
+                  [{vm.accountAlias.toUpperCase()}] {vm.loadedModel} ({vm.target})
+                </option>
+              ))}
+            </select>
+            {selectedVmOption && selectedTargetVm !== "auto" ? (
+              <div className="flex items-center justify-between text-[10px] font-mono text-zinc-400 pt-0.5">
+                <span>{selectedVmOption.gpuName || "Tesla T4 x2"}</span>
+                <span>{selectedVmOption.probeLatencyMs ?? "--"}ms latency</span>
+              </div>
+            ) : null}
+          </div>
 
           {/* Mode Tabs */}
           <div className="grid grid-cols-4 gap-1 rounded-md border border-zinc-800 bg-zinc-950 p-1 text-[11px]">

@@ -56,7 +56,10 @@
       (document.head || document.documentElement).appendChild(script);
       script.onload = () => script.remove();
     } catch (err) {
-      console.error("[Scriptoria Companion] Failed to inject MAIN world script:", err);
+      console.error(
+        "[Scriptoria Companion] Failed to inject MAIN world script:",
+        err,
+      );
     }
   }
 
@@ -71,7 +74,7 @@
 
   function detectFlowProjectId() {
     const match = window.location.pathname.match(
-      /\/project\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/
+      /\/project\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/,
     );
     return match ? match[1] : DEFAULT_FLOW_PROJECT_ID;
   }
@@ -79,7 +82,7 @@
   function scanAvailableIngredientsInDom() {
     const handles = new Set();
     const pills = document.querySelectorAll(
-      '[data-ingredient-name], [data-mention], [aria-label*="ingredient" i], .ingredient-chip, [role="option"]'
+      '[data-ingredient-name], [data-mention], [aria-label*="ingredient" i], .ingredient-chip, [role="option"]',
     );
     pills.forEach((el) => {
       const attr =
@@ -116,7 +119,9 @@
       return false;
     }
     const envelope = {
-      envelope_id: crypto.randomUUID ? crypto.randomUUID() : `env-${Date.now()}`,
+      envelope_id: crypto.randomUUID
+        ? crypto.randomUUID()
+        : `env-${Date.now()}`,
       event_type: eventType,
       correlation_id: correlationId,
       timestamp: new Date().toISOString(),
@@ -158,18 +163,28 @@
           (b.innerText &&
             (b.innerText.includes("Nano Banana") ||
               b.innerText.includes("Omni") ||
-              b.innerText.includes("Veo")))
+              b.innerText.includes("Veo"))),
       )
     );
   }
 
   function findRadioByText(textPattern) {
     const radios = Array.from(
-      document.querySelectorAll('[role="radio"], input[type="radio"]')
+      document.querySelectorAll('[role="radio"], input[type="radio"]'),
     );
     return radios.find((r) => {
-      const text = (r.innerText || r.getAttribute("aria-label") || r.value || "").trim().toLowerCase();
-      return text === textPattern.toLowerCase() || text.startsWith(textPattern.toLowerCase());
+      const text = (
+        r.innerText ||
+        r.getAttribute("aria-label") ||
+        r.value ||
+        ""
+      )
+        .trim()
+        .toLowerCase();
+      return (
+        text === textPattern.toLowerCase() ||
+        text.startsWith(textPattern.toLowerCase())
+      );
     });
   }
 
@@ -201,11 +216,13 @@
     const modelFamilyBtn = Array.from(document.querySelectorAll("button")).find(
       (b) =>
         b.getAttribute("aria-label") === "Select model family" ||
-        (b.innerText && b.innerText.includes("Select model family"))
+        (b.innerText && b.innerText.includes("Select model family")),
     );
 
     if (!modelFamilyBtn) {
-      console.warn("[FlowDeckController] Select model family button not found.");
+      console.warn(
+        "[FlowDeckController] Select model family button not found.",
+      );
       return false;
     }
 
@@ -213,11 +230,15 @@
     await sleep(250);
 
     const menuItems = Array.from(
-      document.querySelectorAll('[role="menuitem"], [role="option"]')
+      document.querySelectorAll('[role="menuitem"], [role="option"]'),
     );
 
     const match = menuItems.find((item) => {
-      const text = (item.innerText || item.getAttribute("aria-label") || "").toLowerCase();
+      const text = (
+        item.innerText ||
+        item.getAttribute("aria-label") ||
+        ""
+      ).toLowerCase();
       return text.includes(targetModelText.toLowerCase());
     });
 
@@ -226,7 +247,9 @@
       await sleep(200);
       return true;
     } else {
-      console.warn(`[FlowDeckController] Model "${targetModelText}" not found in menu.`);
+      console.warn(
+        `[FlowDeckController] Model "${targetModelText}" not found in menu.`,
+      );
       return false;
     }
   }
@@ -245,9 +268,14 @@
 
       // 1. Modality (Image vs Video)
       if (mediaType) {
-        const modalityTarget = mediaType.toUpperCase() === "VIDEO" ? "Video" : "Image";
+        const modalityTarget =
+          mediaType.toUpperCase() === "VIDEO" ? "Video" : "Image";
         const radio = findRadioByText(modalityTarget);
-        if (radio && !radio.checked && radio.getAttribute("aria-checked") !== "true") {
+        if (
+          radio &&
+          !radio.checked &&
+          radio.getAttribute("aria-checked") !== "true"
+        ) {
           radio.click();
           await sleep(200);
         }
@@ -308,7 +336,11 @@
   function findCharacterButton(labelSubstring) {
     const btns = Array.from(document.querySelectorAll("button"));
     return btns.find((b) => {
-      const text = (b.innerText || b.getAttribute("aria-label") || "").toLowerCase();
+      const text = (
+        b.innerText ||
+        b.getAttribute("aria-label") ||
+        ""
+      ).toLowerCase();
       return text.includes(labelSubstring.toLowerCase());
     });
   }
@@ -346,7 +378,9 @@
       document.execCommand("selectAll", false, null);
       document.execCommand("delete", false, null);
       document.execCommand("insertText", false, promptText);
-      editor.dispatchEvent(new InputEvent("input", { bubbles: true, data: promptText }));
+      editor.dispatchEvent(
+        new InputEvent("input", { bubbles: true, data: promptText }),
+      );
     }
     await sleep(200);
     return true;
@@ -355,7 +389,9 @@
   async function triggerCharacterGeneration() {
     const genBtn = findCharacterButton("Start generation");
     if (!genBtn) {
-      console.warn("[FlowCharacterSync] Start generation button not found in Character Studio.");
+      console.warn(
+        "[FlowCharacterSync] Start generation button not found in Character Studio.",
+      );
       return false;
     }
     genBtn.removeAttribute("disabled");
@@ -374,7 +410,9 @@
     await sleep(400);
 
     const candidates = Array.from(
-      document.querySelectorAll('img[src*="flow-content.google"], img[src*="flow.google.com/asb/"]')
+      document.querySelectorAll(
+        'img[src*="flow-content.google"], img[src*="flow.google.com/asb/"]',
+      ),
     );
     if (candidates.length > imageIndex) {
       candidates[imageIndex].click();
@@ -387,7 +425,9 @@
   async function finalizeCharacter(characterHandle) {
     const doneBtn = findCharacterButton("Done");
     if (!doneBtn) {
-      console.warn("[FlowCharacterSync] Done button not found in Character Studio.");
+      console.warn(
+        "[FlowCharacterSync] Done button not found in Character Studio.",
+      );
       return false;
     }
     doneBtn.click();
@@ -397,20 +437,29 @@
 
   async function syncCharacterProfile(characterPayload) {
     console.log("[FlowCharacterSync] Syncing character:", characterPayload);
-    const flowProjectId = characterPayload.flow_project_id || detectFlowProjectId();
-    
+    const flowProjectId =
+      characterPayload.flow_project_id || detectFlowProjectId();
+
     await openCharacterStudio(flowProjectId);
     await sleep(500);
 
-    const visualPrompt = characterPayload.visual_prompt || characterPayload.visualPrompt;
+    const visualPrompt =
+      characterPayload.visual_prompt || characterPayload.visualPrompt;
     if (visualPrompt) {
       await injectCharacterPrompt(visualPrompt);
     }
 
-    const useCanvas = characterPayload.use_canvas_candidate || characterPayload.useCanvasCandidate;
-    const genPortrait = characterPayload.generate_portrait || characterPayload.generatePortrait;
-    const candIndex = characterPayload.candidate_index || characterPayload.candidateIndex || 0;
-    const handle = characterPayload.mention_handle || characterPayload.mentionHandle || "Character";
+    const useCanvas =
+      characterPayload.use_canvas_candidate ||
+      characterPayload.useCanvasCandidate;
+    const genPortrait =
+      characterPayload.generate_portrait || characterPayload.generatePortrait;
+    const candIndex =
+      characterPayload.candidate_index || characterPayload.candidateIndex || 0;
+    const handle =
+      characterPayload.mention_handle ||
+      characterPayload.mentionHandle ||
+      "Character";
 
     if (useCanvas) {
       await selectCandidateFromProject(candIndex);
@@ -429,9 +478,15 @@
   }
 
   function findButtonByTextOrAria(textPattern) {
-    const btns = Array.from(document.querySelectorAll("button, [role=\"button\"], [role=\"menuitem\"]"));
+    const btns = Array.from(
+      document.querySelectorAll('button, [role="button"], [role="menuitem"]'),
+    );
     return btns.find((b) => {
-      const text = (b.innerText || b.getAttribute("aria-label") || "").toLowerCase();
+      const text = (
+        b.innerText ||
+        b.getAttribute("aria-label") ||
+        ""
+      ).toLowerCase();
       return text.includes(textPattern.toLowerCase());
     });
   }
@@ -504,7 +559,9 @@
     document.execCommand("selectAll", false, null);
     document.execCommand("delete", false, null);
     document.execCommand("insertText", false, promptText);
-    clipEditor.dispatchEvent(new InputEvent("input", { bubbles: true, data: promptText }));
+    clipEditor.dispatchEvent(
+      new InputEvent("input", { bubbles: true, data: promptText }),
+    );
     await sleep(200);
     return true;
   }
@@ -512,7 +569,7 @@
   async function triggerClipGeneration() {
     const genBtn =
       document.querySelector('button[aria-label="Start generation"]') ||
-      document.querySelector('flow-generate-icon-button button');
+      document.querySelector("flow-generate-icon-button button");
 
     if (genBtn) {
       genBtn.removeAttribute("disabled");
@@ -542,7 +599,8 @@
     await createNewScene();
     await sleep(800);
 
-    const chapterTitle = scenePayload.chapter_title || scenePayload.chapterTitle;
+    const chapterTitle =
+      scenePayload.chapter_title || scenePayload.chapterTitle;
     if (chapterTitle) {
       await setSceneTitle(chapterTitle);
     }
@@ -568,7 +626,11 @@
   }
 
   // Bind to globalThis for external access as well
-  globalThis.FlowDeckController = { configureFlowDeck, openSettingsPopup, closeSettingsPopup };
+  globalThis.FlowDeckController = {
+    configureFlowDeck,
+    openSettingsPopup,
+    closeSettingsPopup,
+  };
   globalThis.FlowCharacterSync = { syncCharacterProfile, openCharacterStudio };
   globalThis.FlowSceneSync = { orchestrateChapterScene, createNewScene };
 
@@ -579,8 +641,12 @@
     // 1. Exact Google Flow ProseMirror editor selectors
     const exactMatch =
       document.querySelector('div.ProseMirror[contenteditable="true"]') ||
-      document.querySelector('div[aria-label="What do you want to create?"][contenteditable="true"]') ||
-      document.querySelector('div.prosemirror-editor div[contenteditable="true"]');
+      document.querySelector(
+        'div[aria-label="What do you want to create?"][contenteditable="true"]',
+      ) ||
+      document.querySelector(
+        'div.prosemirror-editor div[contenteditable="true"]',
+      );
     if (exactMatch) return exactMatch;
 
     const selectors = [
@@ -612,17 +678,28 @@
     if (editor) return editor;
 
     // If on lobby home page (e.g. flow.google.com/ or without /project/)
-    if (window.location.pathname === "/" || !window.location.pathname.includes("/project/")) {
-      console.info("[Scriptoria Companion] Currently on Flow lobby. Auto-opening project canvas...");
+    if (
+      window.location.pathname === "/" ||
+      !window.location.pathname.includes("/project/")
+    ) {
+      console.info(
+        "[Scriptoria Companion] Currently on Flow lobby. Auto-opening project canvas...",
+      );
       updateFloatingPill("BUSY_GENERATING");
 
       // 1. Look for existing project card (prefer Scriptoria if available)
       const projectCards = Array.from(
-        document.querySelectorAll('a[href*="/project/"], [data-project-id], [role="button"]')
+        document.querySelectorAll(
+          'a[href*="/project/"], [data-project-id], [role="button"]',
+        ),
       );
       const scriptoriaCard =
-        projectCards.find((c) => (c.textContent || "").toLowerCase().includes("scriptoria")) ||
-        projectCards.find((c) => (c.getAttribute("href") || "").includes("/project/"));
+        projectCards.find((c) =>
+          (c.textContent || "").toLowerCase().includes("scriptoria"),
+        ) ||
+        projectCards.find((c) =>
+          (c.getAttribute("href") || "").includes("/project/"),
+        );
 
       if (scriptoriaCard) {
         scriptoriaCard.click();
@@ -635,8 +712,10 @@
 
       // 2. Fall back to clicking "+ New project"
       const newProjBtn = Array.from(
-        document.querySelectorAll('button, div, [role="button"], span')
-      ).find((el) => (el.textContent || "").toLowerCase().includes("new project"));
+        document.querySelectorAll('button, div, [role="button"], span'),
+      ).find((el) =>
+        (el.textContent || "").toLowerCase().includes("new project"),
+      );
       if (newProjBtn) {
         newProjBtn.click();
         for (let i = 0; i < 25; i++) {
@@ -655,7 +734,7 @@
       'button[aria-label="Start generation"]',
       'flow-generate-icon-button button.generate-icon-button',
       'flow-generate-icon-button button[type="submit"]',
-      'flow-generate-icon-button button',
+      "flow-generate-icon-button button",
       'button[aria-label*="Start generation" i]',
       'button[aria-label*="generation" i]',
       'button[aria-label*="Generate" i]',
@@ -716,7 +795,10 @@
     selection.addRange(range);
     document.execCommand("delete", false, null);
     editor.dispatchEvent(
-      new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" })
+      new InputEvent("input", {
+        bubbles: true,
+        inputType: "deleteContentBackward",
+      }),
     );
     await sleep(50);
   }
@@ -750,7 +832,9 @@
         } else {
           editor.value = nextValue;
         }
-        editor.dispatchEvent(new InputEvent("input", { bubbles: true, data: val }));
+        editor.dispatchEvent(
+          new InputEvent("input", { bubbles: true, data: val }),
+        );
       };
 
       const tokens = text.split(/(\s+)/);
@@ -791,7 +875,7 @@
             cancelable: true,
             inputType: "insertText",
             data: token,
-          })
+          }),
         );
         await sleep(interWordDelay + Math.floor(Math.random() * 35));
       } else {
@@ -806,7 +890,7 @@
               cancelable: true,
               inputType: "insertText",
               data: ch,
-            })
+            }),
           );
           await sleep(intraCharDelay + Math.floor(Math.random() * 10));
         }
@@ -831,7 +915,7 @@
 
     const countChips = () =>
       editor.querySelectorAll(
-        '[contenteditable="false"], [data-mention], .ingredient-chip, [data-ingredient-id], span[data-type="mention"]'
+        '[contenteditable="false"], [data-mention], .ingredient-chip, [data-ingredient-id], span[data-type="mention"]',
       ).length;
     const initialChipCount = countChips();
 
@@ -842,8 +926,8 @@
     const findMatchingOption = () => {
       const options = Array.from(
         document.querySelectorAll(
-          '[role="listbox"] [role="option"], [data-radix-popper-content-wrapper] [role="menuitem"], .mention-item, [data-ingredient-option], [role="menuitem"]'
-        )
+          '[role="listbox"] [role="option"], [data-radix-popper-content-wrapper] [role="menuitem"], .mention-item, [data-ingredient-option], [role="menuitem"]',
+        ),
       );
       if (options.length === 0) return null;
 
@@ -881,7 +965,7 @@
             which: 13,
             bubbles: true,
             cancelable: true,
-          })
+          }),
         );
       }
       await sleep(150);
@@ -913,7 +997,10 @@
       .replace(/\b(blood-stained|bloodstained|bloody)\b/gi, "crimson-draped")
       .replace(/\b(blood)\b/gi, "crimson essence")
       .replace(/\b(corpse|dead body|slain body)\b/gi, "fallen figure")
-      .replace(/\b(kill|killing|slaying|murder|assassinate)\b/gi, "dramatic confrontation")
+      .replace(
+        /\b(kill|killing|slaying|murder|assassinate)\b/gi,
+        "dramatic confrontation",
+      )
       .replace(/\b(knife|dagger|blade|sword)\b/gi, "ornate steel prop")
       .replace(/\b(wound|wounds|gash|severed|gore)\b/gi, "battle wear")
       .replace(/\b(strangle|choke|suffocate|hang)\b/gi, "intense grapple")
@@ -925,7 +1012,11 @@
   /**
    * Injects full prompt while resolving `@Ingredient` tokens dynamically.
    */
-  async function injectPromptWithIngredients(editor, prompt, ingredientRefs = []) {
+  async function injectPromptWithIngredients(
+    editor,
+    prompt,
+    ingredientRefs = [],
+  ) {
     await clearEditorContent(editor);
 
     const knownHandles = new Map();
@@ -963,7 +1054,10 @@
     // If ingredient_refs were specified but not explicitly written in prompt text, prepend them
     for (const ref of ingredientRefs) {
       const handle = ref.mention_handle;
-      if (handle && !prompt.toLowerCase().includes(`@${handle.toLowerCase()}`)) {
+      if (
+        handle &&
+        !prompt.toLowerCase().includes(`@${handle.toLowerCase()}`)
+      ) {
         await insertTextSegment(editor, " ");
         await injectMentionToken(editor, handle);
       }
@@ -981,9 +1075,11 @@
 
   function snapshotExistingDomMedia() {
     activeTaskCandidates.clear();
-    document.querySelectorAll("img[src], video[src], video source[src]").forEach((el) => {
-      if (el.src) seenDomMediaSrcs.add(el.src);
-    });
+    document
+      .querySelectorAll("img[src], video[src], video source[src]")
+      .forEach((el) => {
+        if (el.src) seenDomMediaSrcs.add(el.src);
+      });
   }
 
   /**
@@ -999,14 +1095,20 @@
 
     // Scan for tombstone / safety cards in DOM
     const tombstoneTiles = document.querySelectorAll(
-      '[data-filter-error], [data-safety-filtered], .error-tile, .filtered-tile, .safety-card, [data-testid*="error-tile"], [role="alert"][class*="error"]'
+      '[data-filter-error], [data-safety-filtered], .error-tile, .filtered-tile, .safety-card, [data-testid*="error-tile"], [role="alert"][class*="error"]',
     );
     let tombstoneCount = tombstoneTiles.length;
 
     // Check for safety alert banners
-    const allAlerts = Array.from(document.querySelectorAll('[role="alert"], .banner, .notification, .toast'));
+    const allAlerts = Array.from(
+      document.querySelectorAll(
+        '[role="alert"], .banner, .notification, .toast',
+      ),
+    );
     const safetyAlertFound = allAlerts.some((el) =>
-      /safety|guideline|content filtered|violates our policies|prompt was blocked/i.test(el.textContent || "")
+      /safety|guideline|content filtered|violates our policies|prompt was blocked/i.test(
+        el.textContent || "",
+      ),
     );
     if (safetyAlertFound && tombstoneCount === 0) {
       tombstoneCount = targetCount;
@@ -1019,13 +1121,17 @@
     if (totalSettled >= targetCount) {
       if (validCandidates.length >= 1) {
         console.info(
-          `[Settled-Grid Quorum] Quorum reached with ${validCandidates.length} valid tile(s) (${tombstoneCount} tombstones). Finalizing!`
+          `[Settled-Grid Quorum] Quorum reached with ${validCandidates.length} valid tile(s) (${tombstoneCount} tombstones). Finalizing!`,
         );
         finalizeActiveTaskSuccess(validCandidates, `quorum://${sourceTrigger}`);
         return;
       } else {
-        console.warn("[Settled-Grid Quorum] All tiles were blocked by safety policy.");
-        handleSafetyFilteredFailure("RAI_SAFETY_BLOCKED: All candidate tiles blocked by Responsible AI safety filter.");
+        console.warn(
+          "[Settled-Grid Quorum] All tiles were blocked by safety policy.",
+        );
+        handleSafetyFilteredFailure(
+          "RAI_SAFETY_BLOCKED: All candidate tiles blocked by Responsible AI safety filter.",
+        );
         return;
       }
     }
@@ -1033,15 +1139,20 @@
     // Rule 2: Hard Quorum Grace Timeout (>= 1 valid tile and elapsed >= 30s)
     if (validCandidates.length >= 1 && elapsedMs >= 30_000) {
       console.info(
-        `[Settled-Grid Quorum] Grace timeout reached (30s) with ${validCandidates.length} valid tile(s). Finalizing!`
+        `[Settled-Grid Quorum] Grace timeout reached (30s) with ${validCandidates.length} valid tile(s). Finalizing!`,
       );
-      finalizeActiveTaskSuccess(validCandidates, `quorum-grace-timeout://${sourceTrigger}`);
+      finalizeActiveTaskSuccess(
+        validCandidates,
+        `quorum-grace-timeout://${sourceTrigger}`,
+      );
       return;
     }
 
     // Rule 3: Safety alert banner appeared with 0 valid tiles
     if (safetyAlertFound && validCandidates.length === 0) {
-      handleSafetyFilteredFailure("RAI_SAFETY_BLOCKED: Prompt flagged by Google Flow safety filters.");
+      handleSafetyFilteredFailure(
+        "RAI_SAFETY_BLOCKED: Prompt flagged by Google Flow safety filters.",
+      );
       return;
     }
   }
@@ -1049,12 +1160,16 @@
   async function handleSafetyFilteredFailure(reason) {
     if (!activeTask) return;
     if (!activeTask.__retryWithSanitization) {
-      console.warn(`[Settled-Grid Quorum] Prompt triggered safety filter. Attempting auto-sanitized retry...`);
+      console.warn(
+        `[Settled-Grid Quorum] Prompt triggered safety filter. Attempting auto-sanitized retry...`,
+      );
       activeTask.__retryWithSanitization = true;
 
       const sanitizedPrompt = sanitizePromptForSafety(activeTask.prompt);
       if (sanitizedPrompt !== activeTask.prompt) {
-        console.info(`[Settled-Grid Quorum] Sanitized prompt: "${sanitizedPrompt}"`);
+        console.info(
+          `[Settled-Grid Quorum] Sanitized prompt: "${sanitizedPrompt}"`,
+        );
         activeTask.prompt = sanitizedPrompt;
         activeTaskStartTime = Date.now();
         activeTaskCandidates.clear();
@@ -1063,14 +1178,21 @@
           const editor = findPromptEditor();
           if (editor) {
             await clearEditorContent(editor);
-            await injectPromptWithIngredients(editor, sanitizedPrompt, activeTask.ingredient_refs || []);
+            await injectPromptWithIngredients(
+              editor,
+              sanitizedPrompt,
+              activeTask.ingredient_refs || [],
+            );
             await sleep(300);
             const generateBtn = findGenerateButton();
             if (generateBtn) generateBtn.click();
             return;
           }
         } catch (e) {
-          console.error("[Settled-Grid Quorum] Failed to submit sanitized prompt:", e);
+          console.error(
+            "[Settled-Grid Quorum] Failed to submit sanitized prompt:",
+            e,
+          );
         }
       }
     }
@@ -1101,7 +1223,8 @@
             src.includes("flow-content.google") ||
             src.includes("storage.googleapis.com")
           ) {
-            const width = el.naturalWidth || el.videoWidth || el.clientWidth || 0;
+            const width =
+              el.naturalWidth || el.videoWidth || el.clientWidth || 0;
             if (width > 0 && width < 128) continue;
 
             seenDomMediaSrcs.add(src);
@@ -1171,7 +1294,9 @@
     const normalizedCandidates = candidates.map((c, idx) => ({
       candidate_index: idx,
       remote_url: c.remote_url,
-      mime_type: c.mime_type || (finishedTask.media_type === "VIDEO" ? "video/mp4" : "image/png"),
+      mime_type:
+        c.mime_type ||
+        (finishedTask.media_type === "VIDEO" ? "video/mp4" : "image/png"),
       width: c.width || null,
       height: c.height || null,
       duration_seconds: c.duration_seconds || null,
@@ -1243,7 +1368,7 @@
           task_id: task.task_id,
           error: `Companion is already executing task ${activeTask.task_id}`,
         },
-        task.task_id
+        task.task_id,
       );
       return;
     }
@@ -1256,7 +1381,7 @@
     const timeoutMs = (task.timeout_seconds || 180) * 1000;
     activeTaskTimeoutHandle = setTimeout(() => {
       finalizeActiveTaskFailure(
-        `Timed out after ${task.timeout_seconds || 180}s waiting for Google Flow media output.`
+        `Timed out after ${task.timeout_seconds || 180}s waiting for Google Flow media output.`,
       );
     }, timeoutMs);
 
@@ -1278,12 +1403,15 @@
           status: "INJECTING_PROMPT",
           flow_project_id: detectFlowProjectId(),
         },
-        task.task_id
+        task.task_id,
       );
       sendEnvelope("COMPANION_STATUS", buildStatusPayload("BUSY_GENERATING"));
 
       // 1. Programmatically apply deck configuration (model engine, aspect ratio, thinking level, candidate count)
-      if (globalThis.FlowDeckController && typeof globalThis.FlowDeckController.configureFlowDeck === "function") {
+      if (
+        globalThis.FlowDeckController &&
+        typeof globalThis.FlowDeckController.configureFlowDeck === "function"
+      ) {
         await globalThis.FlowDeckController.configureFlowDeck({
           mediaType: task.media_type,
           modelEngine: task.model_engine,
@@ -1300,14 +1428,14 @@
       }
       if (!editor) {
         throw new Error(
-          "Could not locate Google Flow prompt editor in DOM. Please click on a project or '+ New project' in Google Flow to open the canvas."
+          "Could not locate Google Flow prompt editor in DOM. Please click on a project or '+ New project' in Google Flow to open the canvas.",
         );
       }
 
       await injectPromptWithIngredients(
         editor,
         task.prompt,
-        task.ingredient_refs || []
+        task.ingredient_refs || [],
       );
 
       await sleep(350);
@@ -1316,10 +1444,18 @@
       if (generateBtn) {
         generateBtn.removeAttribute("disabled");
         generateBtn.focus();
-        generateBtn.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
-        generateBtn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
-        generateBtn.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true }));
-        generateBtn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+        generateBtn.dispatchEvent(
+          new PointerEvent("pointerdown", { bubbles: true, cancelable: true }),
+        );
+        generateBtn.dispatchEvent(
+          new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
+        );
+        generateBtn.dispatchEvent(
+          new PointerEvent("pointerup", { bubbles: true, cancelable: true }),
+        );
+        generateBtn.dispatchEvent(
+          new MouseEvent("mouseup", { bubbles: true, cancelable: true }),
+        );
         generateBtn.click();
         console.info("[Scriptoria Companion] Successfully activated 'Start generation' button!");
       } else {
@@ -1344,11 +1480,11 @@
           status: "AWAITING_RENDER",
           flow_project_id: detectFlowProjectId(),
         },
-        task.task_id
+        task.task_id,
       );
     } catch (err) {
       finalizeActiveTaskFailure(
-        err instanceof Error ? err.message : String(err)
+        err instanceof Error ? err.message : String(err),
       );
     }
   }
@@ -1372,7 +1508,7 @@
 
     if (syncPayload.auto_create_missing && missing.length > 0) {
       console.log(
-        `[Scriptoria Companion] Auto-creating ${missing.length} missing ingredients in Flow...`
+        `[Scriptoria Companion] Auto-creating ${missing.length} missing ingredients in Flow...`,
       );
       for (const missingItem of missing) {
         try {
@@ -1385,7 +1521,11 @@
           sendEnvelope("CHARACTER_SYNC_RESULT", res);
           await sleep(600);
         } catch (err) {
-          console.warn("[Scriptoria Companion] Failed auto-creating ingredient:", missingItem, err);
+          console.warn(
+            "[Scriptoria Companion] Failed auto-creating ingredient:",
+            missingItem,
+            err,
+          );
         }
       }
       detectedHandles = scanAvailableIngredientsInDom();
@@ -1401,7 +1541,7 @@
         synced_count: ingredients.length,
         synced_at: new Date().toISOString(),
       },
-      syncPayload.sync_id
+      syncPayload.sync_id,
     );
 
     sendEnvelope("COMPANION_STATUS", buildStatusPayload("IDLE"));
@@ -1412,13 +1552,20 @@
   // ==========================================================================
   window.addEventListener("SCRIPTORIA_FLOW_MEDIA_CAPTURED", (event) => {
     const detail = event.detail;
-    if (!detail || !Array.isArray(detail.candidates) || detail.candidates.length === 0) {
+    if (
+      !detail ||
+      !Array.isArray(detail.candidates) ||
+      detail.candidates.length === 0
+    ) {
       return;
     }
 
     if (activeTask) {
       for (const candidate of detail.candidates) {
-        const key = candidate.flow_media_key || candidate.remote_url || `c-${activeTaskCandidates.size}`;
+        const key =
+          candidate.flow_media_key ||
+          candidate.remote_url ||
+          `c-${activeTaskCandidates.size}`;
         if (!activeTaskCandidates.has(key)) {
           activeTaskCandidates.set(key, candidate);
         }
@@ -1458,8 +1605,13 @@
 
   window.addEventListener("SCRIPTORIA_FLOW_SAFETY_BLOCKED", (event) => {
     if (activeTask) {
-      console.warn("[Scriptoria Companion] Caught SCRIPTORIA_FLOW_SAFETY_BLOCKED from MAIN world.");
-      handleSafetyFilteredFailure("RAI_SAFETY_BLOCKED: " + (event.detail?.reason || "Policy filter triggered."));
+      console.warn(
+        "[Scriptoria Companion] Caught SCRIPTORIA_FLOW_SAFETY_BLOCKED from MAIN world.",
+      );
+      handleSafetyFilteredFailure(
+        "RAI_SAFETY_BLOCKED: " +
+          (event.detail?.reason || "Policy filter triggered."),
+      );
     }
   });
 
@@ -1482,14 +1634,18 @@
   }
 
   async function connectWebSocket() {
-    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    if (
+      ws &&
+      (ws.readyState === WebSocket.OPEN ||
+        ws.readyState === WebSocket.CONNECTING)
+    ) {
       return;
     }
 
     const baseWs = await resolveWsEndpoint();
     const flowProjectId = detectFlowProjectId();
     const wsUrl = `${baseWs}?session_id=${encodeURIComponent(
-      SESSION_ID
+      SESSION_ID,
     )}&flow_project_id=${encodeURIComponent(flowProjectId)}&source=FLOW_TAB`;
 
     try {
@@ -1506,7 +1662,7 @@
       startHeartbeat();
       updateFloatingPill(state);
       console.info(
-        `[Scriptoria Companion] Connected to FastAPI Bridge (${wsUrl})`
+        `[Scriptoria Companion] Connected to FastAPI Bridge (${wsUrl})`,
       );
     };
 
@@ -1530,51 +1686,110 @@
               activeTask &&
               activeTask.task_id === payload.target_task_id
             ) {
-              finalizeActiveTaskFailure("Task cancelled via Scriptoria Queue Action.");
+              finalizeActiveTaskFailure(
+                "Task cancelled via Scriptoria Queue Action.",
+              );
             } else if (payload.action === "PING_COMPANION") {
               const state = activeTask ? "BUSY_GENERATING" : "IDLE";
-              sendEnvelope("COMPANION_STATUS", buildStatusPayload(state), correlation_id);
+              sendEnvelope(
+                "COMPANION_STATUS",
+                buildStatusPayload(state),
+                correlation_id,
+              );
             }
             break;
 
           case "CONFIGURE_DECK":
-            console.log("[Scriptoria Companion] Received CONFIGURE_DECK:", payload);
+            console.log(
+              "[Scriptoria Companion] Received CONFIGURE_DECK:",
+              payload,
+            );
             try {
               const deckOk = await configureFlowDeck(payload);
-              console.log("[Scriptoria Companion] CONFIGURE_DECK result:", deckOk);
-              sendEnvelope("DECK_CONFIG_RESULT", { success: deckOk, settings: payload }, correlation_id);
+              console.log(
+                "[Scriptoria Companion] CONFIGURE_DECK result:",
+                deckOk,
+              );
+              sendEnvelope(
+                "DECK_CONFIG_RESULT",
+                { success: deckOk, settings: payload },
+                correlation_id,
+              );
             } catch (err) {
-              console.error("[Scriptoria Companion] CONFIGURE_DECK failed:", err);
-              sendEnvelope("DECK_CONFIG_RESULT", { success: false, error: String(err) }, correlation_id);
+              console.error(
+                "[Scriptoria Companion] CONFIGURE_DECK failed:",
+                err,
+              );
+              sendEnvelope(
+                "DECK_CONFIG_RESULT",
+                { success: false, error: String(err) },
+                correlation_id,
+              );
             }
             break;
 
           case "SYNC_CHARACTER":
-            console.log("[Scriptoria Companion] Received SYNC_CHARACTER:", payload);
+            console.log(
+              "[Scriptoria Companion] Received SYNC_CHARACTER:",
+              payload,
+            );
             try {
-              sendEnvelope("COMPANION_STATUS", buildStatusPayload("SYNCING_INGREDIENTS"));
+              sendEnvelope(
+                "COMPANION_STATUS",
+                buildStatusPayload("SYNCING_INGREDIENTS"),
+              );
               const charResult = await syncCharacterProfile(payload);
-              console.log("[Scriptoria Companion] SYNC_CHARACTER result:", charResult);
+              console.log(
+                "[Scriptoria Companion] SYNC_CHARACTER result:",
+                charResult,
+              );
               sendEnvelope("CHARACTER_SYNC_RESULT", charResult, correlation_id);
               sendEnvelope("COMPANION_STATUS", buildStatusPayload("IDLE"));
             } catch (err) {
-              console.error("[Scriptoria Companion] SYNC_CHARACTER failed:", err);
-              sendEnvelope("CHARACTER_SYNC_RESULT", { success: false, error: String(err) }, correlation_id);
+              console.error(
+                "[Scriptoria Companion] SYNC_CHARACTER failed:",
+                err,
+              );
+              sendEnvelope(
+                "CHARACTER_SYNC_RESULT",
+                { success: false, error: String(err) },
+                correlation_id,
+              );
               sendEnvelope("COMPANION_STATUS", buildStatusPayload("IDLE"));
             }
             break;
 
           case "ORCHESTRATE_SCENE":
-            console.log("[Scriptoria Companion] Received ORCHESTRATE_SCENE:", payload);
+            console.log(
+              "[Scriptoria Companion] Received ORCHESTRATE_SCENE:",
+              payload,
+            );
             try {
-              sendEnvelope("COMPANION_STATUS", buildStatusPayload("BUSY_GENERATING"));
+              sendEnvelope(
+                "COMPANION_STATUS",
+                buildStatusPayload("BUSY_GENERATING"),
+              );
               const sceneResult = await orchestrateChapterScene(payload);
-              console.log("[Scriptoria Companion] ORCHESTRATE_SCENE result:", sceneResult);
-              sendEnvelope("SCENE_ORCHESTRATION_RESULT", sceneResult, correlation_id);
+              console.log(
+                "[Scriptoria Companion] ORCHESTRATE_SCENE result:",
+                sceneResult,
+              );
+              sendEnvelope(
+                "SCENE_ORCHESTRATION_RESULT",
+                sceneResult,
+                correlation_id,
+              );
               sendEnvelope("COMPANION_STATUS", buildStatusPayload("IDLE"));
             } catch (err) {
-              console.error("[Scriptoria Companion] ORCHESTRATE_SCENE failed:", err);
-              sendEnvelope("SCENE_ORCHESTRATION_RESULT", { success: false, error: String(err) }, correlation_id);
+              console.error(
+                "[Scriptoria Companion] ORCHESTRATE_SCENE failed:",
+                err,
+              );
+              sendEnvelope(
+                "SCENE_ORCHESTRATION_RESULT",
+                { success: false, error: String(err) },
+                correlation_id,
+              );
               sendEnvelope("COMPANION_STATUS", buildStatusPayload("IDLE"));
             }
             break;
@@ -1604,7 +1819,7 @@
     reconnectAttempts += 1;
     const delay = Math.min(
       RECONNECT_BASE_DELAY_MS * Math.pow(1.5, reconnectAttempts - 1),
-      RECONNECT_MAX_DELAY_MS
+      RECONNECT_MAX_DELAY_MS,
     );
     setTimeout(connectWebSocket, delay);
   }
@@ -1646,7 +1861,8 @@
     dock.title = "Click to toggle Scriptoria Quick Bar";
     dock.addEventListener("click", () => {
       const bar = document.getElementById("scriptoria-quick-bar");
-      if (bar) bar.style.display = bar.style.display === "none" ? "flex" : "none";
+      if (bar)
+        bar.style.display = bar.style.display === "none" ? "flex" : "none";
     });
     document.body.appendChild(dock);
 
@@ -1697,7 +1913,8 @@
     if (!dot || !text) return;
 
     const isOnLobby =
-      window.location.pathname === "/" || !window.location.pathname.includes("/project/");
+      window.location.pathname === "/" ||
+      !window.location.pathname.includes("/project/");
 
     if (state === "IDLE" || state === "CONNECTED") {
       dot.style.background = isOnLobby ? "#f59e0b" : "#10b981";
@@ -1753,12 +1970,19 @@
   // Hook capture event
   window.addEventListener("SCRIPTORIA_FLOW_MEDIA_CAPTURED", (e) => {
     if (e.detail && e.detail.candidates && e.detail.candidates.length > 0) {
-      showCaptureToast(e.detail.candidates.length, e.detail.candidates[0].remote_url);
+      showCaptureToast(
+        e.detail.candidates.length,
+        e.detail.candidates[0].remote_url,
+      );
     }
   });
 
   // Listen to messages from popup
-  if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage) {
+  if (
+    typeof chrome !== "undefined" &&
+    chrome.runtime &&
+    chrome.runtime.onMessage
+  ) {
     chrome.runtime.onMessage.addListener(async (msg) => {
       if (msg.type === "SCRIPTORIA_INSERT_HANDLE") {
         const editor = findPromptEditor();
@@ -1770,10 +1994,16 @@
   }
 
   // Listen for dynamic server switches in popup
-  if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.onChanged) {
+  if (
+    typeof chrome !== "undefined" &&
+    chrome.storage &&
+    chrome.storage.onChanged
+  ) {
     chrome.storage.onChanged.addListener((changes, areaName) => {
       if (areaName === "local" && changes.scriptoria_bridge_config) {
-        console.info("[Scriptoria Companion] Server config updated. Reconnecting WebSocket...");
+        console.info(
+          "[Scriptoria Companion] Server config updated. Reconnecting WebSocket...",
+        );
         if (ws) {
           try {
             ws.close();
