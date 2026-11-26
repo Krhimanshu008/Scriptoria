@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getAuthUser } from "@/lib/auth/session";
 import { getDecryptedCredential } from "@/lib/crypto/credentials";
+import { kaggleCustomKernelSlug } from "@/lib/orchestrator/kaggle-connection";
 import { KaggleOrchestrator } from "@/lib/orchestrator/kaggle-client";
 import { VmGateway } from "@/lib/orchestrator/vm-gateway";
 import {
@@ -70,7 +71,8 @@ export async function POST(
         const kaggleCred = await getDecryptedCredential(user.userId, "kaggle", vm.accountAlias);
         if (kaggleCred && kaggleCred.username) {
           const isTpu = vm.target.startsWith("tpu");
-          const kernelSlug = getKaggleKernelSlug(vm.accountAlias, isTpu);
+          const customSlug = kaggleCustomKernelSlug(kaggleCred.metadata, isTpu);
+          const kernelSlug = getKaggleKernelSlug(vm.accountAlias, isTpu, customSlug);
           const kStatus = await KaggleOrchestrator.getKernelStatus(
             {
               username: kaggleCred.username,
@@ -81,16 +83,26 @@ export async function POST(
           );
           kaggleState = kStatus.status;
 
-          // If Kaggle says running or queued, reflect in stepProgress if starting
-          if (kStatus.status === "queued" && vm.status === "STARTING") {
+          if (kStatus.status === "queued") {
             await prisma.vmInstance.updateMany({
               where: { userId: user.userId, sessionGroup: vm.sessionGroup },
-              data: { stepProgress: 1 },
+              data: {
+                ...(vm.status === "OFFLINE" ? { status: "STARTING" } : {}),
+                stepProgress: Math.max(1, vm.stepProgress),
+              },
             });
-          } else if (kStatus.status === "running" && vm.status === "STARTING" && vm.stepProgress < 2) {
+          } else if (kStatus.status === "running") {
             await prisma.vmInstance.updateMany({
               where: { userId: user.userId, sessionGroup: vm.sessionGroup },
-              data: { stepProgress: 2 },
+              data: {
+                ...(vm.status === "OFFLINE"
+                  ? {
+                      status: "STARTING",
+                      lastError: `Kaggle reports '${kernelSlug}' is running (awaiting worker heartbeat).`,
+                    }
+                  : {}),
+                stepProgress: Math.max(2, vm.stepProgress),
+              },
             });
           }
         }

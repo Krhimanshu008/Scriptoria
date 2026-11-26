@@ -43,6 +43,7 @@ export async function POST(
     const body = (await req.json().catch(() => ({}))) as {
       action?: string;
       force?: boolean;
+      forcePushCpu?: boolean;
       workerMode?: "headless_safe" | "interactive_tunnel";
     };
     const requestedWorkerMode =
@@ -50,7 +51,7 @@ export async function POST(
     const isKillRequested =
       body.action === "kill" ||
       body.action === "reset" ||
-      Boolean(body.force);
+      (body.action !== "boot" && Boolean(body.force));
 
     // TOGGLE OFF / FORCE KILL: Kill running, starting, or errored session across entire sessionGroup
     if (
@@ -74,12 +75,12 @@ export async function POST(
             key: credential.secret,
             authType: (credential.authType === "bearer" ? "bearer" : "basic") as "bearer" | "basic",
           };
-          let cancelled = false;
           if (sessionId > 0) {
-            const result = await KaggleOrchestrator.cancelKernelSession(kaggleCreds, sessionId);
-            cancelled = result.ok;
+            await KaggleOrchestrator.cancelKernelSession(kaggleCreds, sessionId).catch(() => null);
           }
-          if (!cancelled) {
+          // Only push CPU overwrite if explicitly requested; normal Stop relies on vmSecret invalidation -> 410 os._exit(0)
+          // so we don't spawn a masking Version #2 commit over the running Version #1 in Kaggle /kernels/status.
+          if (body.forcePushCpu === true) {
             const customSlug = kaggleCustomKernelSlug(credential.metadata, isTpu);
             const kernelSlug = getKaggleKernelSlug(vm.accountAlias, isTpu, customSlug);
             await KaggleOrchestrator.releaseKernelGpu(kaggleCreds, kernelSlug).catch(() => null);
@@ -190,6 +191,39 @@ export async function POST(
       );
 
       const isTpu = profileSpec.accelerator === "tpu";
+      const customSlug = kaggleCustomKernelSlug(kaggleCred.metadata, isTpu);
+      const kernelSlug = getKaggleKernelSlug(vm.accountAlias, isTpu, customSlug);
+      const kaggleAuth = {
+        username: kaggleCred.username,
+        key: kaggleCred.secret,
+        authType: (kaggleCred.authType === "bearer" ? "bearer" : "basic") as "bearer" | "basic",
+      };
+
+      // Anti-duplicate guard 1: cooldown right after a recent heartbeat so an exiting container never overlaps a new boot
+      const newestHeartbeatMs = Math.max(
+        0,
+        ...sortedGroupVms.map((gv) => (gv.lastHeartbeat ? gv.lastHeartbeat.getTime() : 0))
+      );
+      if (newestHeartbeatMs > 0 && Date.now() - newestHeartbeatMs < 35_000) {
+        return NextResponse.json(
+          {
+            error: `Previous container for ${vm.accountAlias} is still shutting down (~25s teardown window). Wait a moment before rebooting to prevent 2× GPU quota usage.`,
+          },
+          { status: 409 }
+        );
+      }
+
+      // Anti-duplicate guard 2: refuse launching a second parallel Kaggle GPU session if Kaggle reports running/queued
+      const preflightStatus = await KaggleOrchestrator.getKernelStatus(kaggleAuth, kernelSlug).catch(() => null);
+      if (preflightStatus && (preflightStatus.status === "running" || preflightStatus.status === "queued")) {
+        return NextResponse.json(
+          {
+            error: `Kaggle reports '${kernelSlug}' is already ${preflightStatus.status} on @${kaggleCred.username}. Stop or wait for it to exit before launching another session.`,
+          },
+          { status: 409 }
+        );
+      }
+
       const claimToken = signVmClaimToken({
         userId: user.userId,
         sessionGroup: vm.sessionGroup,
@@ -240,15 +274,8 @@ export async function POST(
       }
 
       try {
-        const customSlug = kaggleCustomKernelSlug(kaggleCred.metadata, isTpu);
-        const kernelSlug = getKaggleKernelSlug(vm.accountAlias, isTpu, customSlug);
-
         const pushRes = await KaggleOrchestrator.pushKernel({
-          credentials: {
-            username: kaggleCred.username,
-            key: kaggleCred.secret,
-            authType: (kaggleCred.authType === "bearer" ? "bearer" : "basic"),
-          },
+          credentials: kaggleAuth,
           kernelSlug,
           pythonCode,
           datasetDataSources: isTpu

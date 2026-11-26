@@ -375,6 +375,7 @@ STEP_START = time.time()
 STEP_DURATIONS = {}
 EVER_CONNECTED = False
 HEARTBEAT_FAIL_STREAK = 0
+STALE_410_STREAK = 0
 LAST_HB_SENT = 0.0
 COMFY_DIR = "/tmp/ComfyUI"
 FASTBOOT_SITE = "/tmp/sc_site_packages"
@@ -408,8 +409,24 @@ def has_pending_logs():
 
 ${buildPythonRcloneHelpers()}
 
+def _terminate_worker_and_exit(reason="Session cancelled or superseded"):
+    if not QUIET_STDOUT:
+        print(f"[SHUTDOWN] {reason}. Terminating container cleanly.", flush=True)
+    for pat in ("ComfyUI/main.py", "/tmp/caddy", "/tmp/cloudflared", "/usr/local/bin/rclone", "llama-server"):
+        try:
+            subprocess.run(["pkill", "-f", pat], check=False)
+        except Exception:
+            pass
+    if PROVIDER == "colab":
+        try:
+            from google.colab import runtime
+            runtime.unassign()
+        except Exception:
+            pass
+    os._exit(0)
+
 def post_heartbeat(step, status="STARTING", telemetry=None):
-    global CURRENT_STEP, EVER_CONNECTED, HEARTBEAT_FAIL_STREAK, LAST_HB_SENT, STEP_START, STEP_DURATIONS
+    global CURRENT_STEP, EVER_CONNECTED, HEARTBEAT_FAIL_STREAK, STALE_410_STREAK, LAST_HB_SENT, STEP_START, STEP_DURATIONS
     now = time.time()
     if step > CURRENT_STEP:
         prev_step = CURRENT_STEP
@@ -450,16 +467,21 @@ def post_heartbeat(step, status="STARTING", telemetry=None):
             hb_raw = resp.read().decode("utf-8", errors="ignore")
             try:
                 hb_json = json.loads(hb_raw or "{}")
-                if isinstance(hb_json, dict) and hb_json.get("gdriveTokenPayload"):
-                    apply_synced_gdrive_token(hb_json.get("gdriveTokenPayload"), hb_json.get("gdriveUpdatedAtMs"))
+                if isinstance(hb_json, dict):
+                    if hb_json.get("kill") is True:
+                        _terminate_worker_and_exit(hb_json.get("reason") or "Server kill signal")
+                    if hb_json.get("gdriveTokenPayload"):
+                        apply_synced_gdrive_token(hb_json.get("gdriveTokenPayload"), hb_json.get("gdriveUpdatedAtMs"))
             except Exception:
                 pass
         EVER_CONNECTED = True
         HEARTBEAT_FAIL_STREAK = 0
+        STALE_410_STREAK = 0
     except urllib.error.HTTPError as he:
         if he.code == 410:
-            if not QUIET_STDOUT:
-                print("[HEARTBEAT] Session notification: 410 received. Retrying...", flush=True)
+            STALE_410_STREAK += 1
+            if EVER_CONNECTED or STALE_410_STREAK >= 2:
+                _terminate_worker_and_exit("Session stopped or superseded (HTTP 410)")
             time.sleep(2)
         else:
             HEARTBEAT_FAIL_STREAK += 1
@@ -2482,6 +2504,11 @@ def _headless_worker_loop(worker_target, port):
         try:
             res = _worker_api_post("/api/v1/workers/claim", {"workerId": worker_target, "capabilities": [PROFILE_ID], "driveReady": bool(RCLONE_READY)}, timeout=45)
             task = res.get("task")
+        except urllib.error.HTTPError as claim_http_err:
+            if claim_http_err.code in (401, 410):
+                _terminate_worker_and_exit(f"Worker claim session ended ({claim_http_err.code})")
+            time.sleep(5)
+            continue
         except Exception:
             time.sleep(5)
             continue
