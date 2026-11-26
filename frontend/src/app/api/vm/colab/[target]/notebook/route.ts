@@ -57,7 +57,7 @@ export async function GET(
         status: 200,
         headers: {
           "Content-Type": "application/x-ipynb+json",
-          "Content-Disposition": `attachment; filename="scriptoria-${target}-runner.ipynb"`,
+          "Content-Disposition": `attachment; filename="scriptoria-${target}-notebook.ipynb"`,
         },
       });
     }
@@ -101,7 +101,7 @@ export async function GET(
       status: 200,
       headers: {
         "Content-Type": "application/x-ipynb+json",
-        "Content-Disposition": `attachment; filename="scriptoria-${target}-runner.ipynb"`,
+        "Content-Disposition": `attachment; filename="scriptoria-${target}-notebook.ipynb"`,
       },
     });
   } catch (error) {

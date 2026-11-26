@@ -1,4 +1,4 @@
-import { checkKaggleConnection } from "@/lib/orchestrator/kaggle-connection";
+import { sanitizeKaggleSlug } from "@/lib/orchestrator/kaggle-connection";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getAuthUser } from "@/lib/auth/session";
@@ -33,8 +33,8 @@ export async function GET(req: NextRequest) {
         username: user,
       })),
     });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+  } catch (err: unknown) {
+    return NextResponse.json({ error: err instanceof Error ? err.message : "Request failed" }, { status: 500 });
   }
 }
 
@@ -50,11 +50,10 @@ export async function POST(req: NextRequest) {
 
     const cleanAlias = (accountAlias || "").trim().toLowerCase();
     if (!cleanAlias) {
-      return NextResponse.json({ error: "Connection ID is required." }, { status: 400 });
+      return NextResponse.json({ error: "Account alias is required (e.g. acc3, acc4)." }, { status: 400 });
     }
 
-    const conflict = await checkKaggleConnection(user.userId, cleanAlias, username);
-    if (conflict) return NextResponse.json({ error: conflict }, { status: 409 });
+    const customSlug = sanitizeKaggleSlug(body.kernelSlug);
     // 1. If username and apiKey provided, save encrypted credential
     if (username && apiKey) {
       await saveUserCredential(user.userId, {
@@ -62,7 +61,10 @@ export async function POST(req: NextRequest) {
         accountAlias: cleanAlias,
         username: username.trim(),
         rawSecret: apiKey.trim(),
-        metadata: { displayName: String(body.displayName || username).trim().slice(0, 80) },
+        metadata: {
+          displayName: String(body.displayName || username).trim().slice(0, 80),
+          ...(customSlug ? { kernelSlug: customSlug } : {}),
+        },
       });
     }
 
@@ -135,8 +137,8 @@ export async function POST(req: NextRequest) {
       message: `Account ${cleanAlias.toUpperCase()} configured with slots: ${results.map((r) => r.target).join(", ")}`,
       created: results,
     });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+  } catch (err: unknown) {
+    return NextResponse.json({ error: err instanceof Error ? err.message : "Request failed" }, { status: 500 });
   }
 }
 
@@ -220,7 +222,7 @@ export async function DELETE(req: NextRequest) {
       success: true,
       message: `Deleted ${deleteResult.count} VM slot(s).`,
     });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+  } catch (err: unknown) {
+    return NextResponse.json({ error: err instanceof Error ? err.message : "Request failed" }, { status: 500 });
   }
 }

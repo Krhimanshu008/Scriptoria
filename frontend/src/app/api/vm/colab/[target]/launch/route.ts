@@ -152,7 +152,7 @@ export async function GET(
 
       const upserted = await upsertColabNotebookInDrive({
         accessToken: driveAccessToken,
-        filename: `scriptoria-${vm.target}-runner.ipynb`,
+        filename: `scriptoria-${vm.target}-notebook.ipynb`,
         notebookJson,
         existingFileId,
         folderSegments: hasFullDriveScope ? [...baseFolderParts, "notebooks"] : undefined,

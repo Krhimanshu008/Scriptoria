@@ -193,6 +193,57 @@ export class KaggleOrchestrator {
   }
 
   /**
+   * Releases any lingering GPU/TPU allocation on a Kaggle notebook by pushing
+   * a lightweight CPU-only placeholder commit when session cancellation is unavailable.
+   */
+  public static async releaseKernelGpu(
+    credentials: KaggleCredentials,
+    kernelSlug: string
+  ): Promise<{ ok: boolean; errorMessage?: string }> {
+    try {
+      const fullSlug = `${credentials.username}/${kernelSlug}`;
+      const notebookJson = this.wrapPythonAsNotebookJson(
+        "# Idle release\nprint('Session released.')\n"
+      );
+      const payload: Record<string, unknown> = {
+        slug: fullSlug,
+        newTitle: kernelSlug,
+        text: JSON.stringify(notebookJson),
+        language: "python",
+        kernelType: "notebook",
+        isPrivate: true,
+        enableGpu: false,
+        enableTpu: false,
+        enableInternet: false,
+        datasetDataSources: [],
+        competitionDataSources: [],
+        kernelDataSources: [],
+        modelDataSources: [],
+        categoryIds: [],
+      };
+
+      const res = await fetch(`${this.KAGGLE_BASE_URL}/kernels.KernelsApiService/SaveKernel`, {
+        method: "POST",
+        headers: this.getHeaders(credentials),
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => res.statusText);
+        return { ok: false, errorMessage: `HTTP ${res.status}: ${errBody}` };
+      }
+
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      return { ok: !data.error, errorMessage: data.error };
+    } catch (err) {
+      return {
+        ok: false,
+        errorMessage: err instanceof Error ? err.message : "Release request failed",
+      };
+    }
+  }
+
+  /**
    * Reads redacted stdout/stderr kernel log lines from Kaggle `/kernels/output`.
    */
   public static async getKernelOutput(

@@ -47,7 +47,8 @@ export async function GET(req: NextRequest) {
       );
 
     const gdrive = findCred("gdrive");
-    const kaggle = findCred("kaggle");
+    const kaggleCreds = creds.filter((c) => c.provider === "kaggle");
+    const kaggleByAlias = new Map(kaggleCreds.map((c) => [c.accountAlias, c]));
     const colab1 = findCred("colab", "acc1");
     const colab2 = findCred("colab", "acc2");
     const hf = findCred("huggingface");
@@ -69,7 +70,27 @@ export async function GET(req: NextRequest) {
         getGoogleOAuthClientConfig(gdriveCred?.parsed).clientSecret
     );
 
-    const hasPrimaryCompute = Boolean(kaggle || colab1 || colab2);
+    const hasPrimaryCompute = Boolean(kaggleCreds.length > 0 || colab1 || colab2);
+
+    const kaggleAliases = Array.from(
+      new Set(["acc1", "acc2", "acc3", ...kaggleCreds.map((c) => c.accountAlias)])
+    );
+    const kaggleItems: ReadinessItem[] = kaggleAliases.map((alias, idx) => {
+      const cred = kaggleByAlias.get(alias);
+      return {
+        id: `kaggle-${alias}`,
+        title:
+          idx === 0
+            ? `Kaggle Account (${alias} · Primary Dual T4)`
+            : `Kaggle Account (${alias} · Dual T4)`,
+        tier: idx === 0 ? "REQUIRED" : "OPTIONAL",
+        provider: "kaggle",
+        accountAlias: alias,
+        configured: Boolean(cred),
+        usedFor: `Boots Dual-T4 GPU worker slots for ${alias}.`,
+        hint: cred?.username ? `@${cred.username}` : `Connect Kaggle (${alias})`,
+      };
+    });
 
     const items: ReadinessItem[] = [
       {
@@ -96,16 +117,7 @@ export async function GET(req: NextRequest) {
           : "Missing OAuth token",
         health: gdriveHealth,
       },
-      {
-        id: "kaggle",
-        title: "Personal Kaggle connection",
-        tier: "REQUIRED",
-        provider: "kaggle",
-        accountAlias: kaggle?.accountAlias || "personal",
-        configured: Boolean(kaggle),
-        usedFor: "Runs project notebooks on the owner's GPU or TPU.",
-        hint: kaggle?.username ? "@" + kaggle.username : "Connect your Kaggle account",
-      },
+      ...kaggleItems,
       {
         id: "colab-acc1",
         title: "Google Colab (acc1 / acc2)",

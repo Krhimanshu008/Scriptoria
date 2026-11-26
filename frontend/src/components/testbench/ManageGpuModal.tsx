@@ -6,11 +6,9 @@ import {
   Server,
   Plus,
   Trash2,
-  Cpu,
   KeyRound,
   User,
   CheckCircle2,
-  AlertCircle,
   Loader2,
 } from "lucide-react";
 import type { PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
@@ -37,7 +35,9 @@ export function ManageGpuModal({
   const [isAdding, setIsAdding] = useState(false);
 
   // Form fields for adding new account
-  const [connectionName, setConnectionName] = useState("Personal Kaggle");
+  const [newAlias, setNewAlias] = useState("acc3");
+  const [connectionName, setConnectionName] = useState("");
+  const [newKernelSlug, setNewKernelSlug] = useState("");
   const [newUsername, setNewUsername] = useState("");
   const [newApiKey, setNewApiKey] = useState("");
   const [gpuType, setGpuType] = useState<"dual_t4" | "single">("dual_t4");
@@ -91,8 +91,8 @@ export function ManageGpuModal({
 
       toast.success(data.message || `Account ${alias.toUpperCase()} removed successfully`);
       onRefreshVms?.();
-    } catch (err: any) {
-      toast.error("Failed to delete: " + err.message);
+    } catch (err: unknown) {
+      toast.error("Failed to delete: " + (err instanceof Error ? err.message : "Unknown error"));
     } finally {
       setIsDeleting(null);
     }
@@ -101,8 +101,8 @@ export function ManageGpuModal({
   // Handle Adding New Account
   const handleAddAccount = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!connectionName.trim()) {
-      toast.error("Enter a connection name");
+    if (!newAlias.trim()) {
+      toast.error("Account alias is required (e.g. acc3)");
       return;
     }
 
@@ -112,8 +112,9 @@ export function ManageGpuModal({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          accountAlias: kaggleAccounts.find((a) => a.configured)?.accountAlias || gpuVms[0]?.accountAlias || "personal",
-          displayName: connectionName.trim(),
+          accountAlias: newAlias.trim().toLowerCase(),
+          displayName: connectionName.trim() || undefined,
+          kernelSlug: newKernelSlug.trim() || undefined,
           username: newUsername.trim() || undefined,
           apiKey: newApiKey.trim() || undefined,
           gpuType,
@@ -128,10 +129,12 @@ export function ManageGpuModal({
       toast.success(data.message || "Account added successfully!");
       setNewUsername("");
       setNewApiKey("");
+      setConnectionName("");
+      setNewKernelSlug("");
       setActiveTab("manage");
       onRefreshVms?.();
-    } catch (err: any) {
-      toast.error("Failed to add account: " + err.message);
+    } catch (err: unknown) {
+      toast.error("Failed to add account: " + (err instanceof Error ? err.message : "Unknown error"));
     } finally {
       setIsAdding(false);
     }
@@ -263,20 +266,50 @@ export function ManageGpuModal({
         {/* Tab 2: Add New Account Form */}
         {activeTab === "add" && (
           <form onSubmit={handleAddAccount} className="flex-1 overflow-y-auto space-y-3.5 pr-1 text-xs">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <label className="block font-medium text-zinc-300 mb-1">
+                  Account Alias (e.g. acc2, acc3, acc4)
+                </label>
+                <input
+                  type="text"
+                  value={newAlias}
+                  onChange={(e) => setNewAlias(e.target.value)}
+                  placeholder="acc3"
+                  className="w-full h-8 px-2.5 rounded-md bg-zinc-900 border border-zinc-700 text-zinc-200 focus:border-amber-500 focus:outline-none"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block font-medium text-zinc-300 mb-1">
+                  Display Label (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={connectionName}
+                  onChange={(e) => setConnectionName(e.target.value)}
+                  maxLength={80}
+                  placeholder="e.g. Kaggle ACC3"
+                  className="w-full h-8 px-2.5 rounded-md bg-zinc-900 border border-zinc-700 text-zinc-200 focus:border-amber-500 focus:outline-none"
+                />
+              </div>
+            </div>
+
             <div>
               <label className="block font-medium text-zinc-300 mb-1">
-                Connection name
+                Notebook Slug (Optional)
               </label>
               <input
                 type="text"
-                value={connectionName}
-                onChange={(e) => setConnectionName(e.target.value)}
-                maxLength={80}
+                value={newKernelSlug}
+                onChange={(e) => setNewKernelSlug(e.target.value)}
+                maxLength={50}
+                placeholder="ml-batch-inference-lab (default)"
                 className="w-full h-8 px-2.5 rounded-md bg-zinc-900 border border-zinc-700 text-zinc-200 focus:border-amber-500 focus:outline-none"
-                required
               />
               <p className="text-[10px] text-zinc-500 mt-1">
-                GPU slots stay linked when you rename the connection.
+                GPU slots stay linked cleanly when you customize labels or notebook names.
               </p>
             </div>
 

@@ -48,6 +48,7 @@ interface RedactedCredential {
   secretHint?: string;
   metadata: {
     displayName?: string;
+    kernelSlug?: string;
     baseFolder?: string;
     model?: string;
     baseUrl?: string;
@@ -132,6 +133,8 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
   // Edit existing key modal state
   const [editingCred, setEditingCred] = useState<RedactedCredential | null>(null);
   const [editAlias, setEditAlias] = useState("");
+  const [editDisplayName, setEditDisplayName] = useState("");
+  const [editKernelSlug, setEditKernelSlug] = useState("");
   const [editUsername, setEditUsername] = useState("");
   const [editBaseFolder, setEditBaseFolder] = useState("");
   const [editGdriveClientId, setEditGdriveClientId] = useState("");
@@ -143,7 +146,9 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
   const [savingEdit, setSavingEdit] = useState(false);
 
   // Add form states
-  const [kaggleName, setKaggleName] = useState("Personal Kaggle");
+  const [kaggleAlias, setKaggleAlias] = useState("acc1");
+  const [kaggleName, setKaggleName] = useState("");
+  const [kaggleSlug, setKaggleSlug] = useState("");
   const [kaggleUser, setKaggleUser] = useState("");
   const [kaggleKey, setKaggleKey] = useState("");
   const [savingKaggle, setSavingKaggle] = useState(false);
@@ -328,7 +333,9 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
 
   function openEditModal(cred: RedactedCredential) {
     setEditingCred(cred);
-    setEditAlias(cred.provider === "kaggle" ? cred.metadata?.displayName || cred.username || "Personal Kaggle" : cred.accountAlias);
+    setEditAlias(cred.accountAlias);
+    setEditDisplayName(cred.metadata?.displayName || cred.username || "");
+    setEditKernelSlug(cred.metadata?.kernelSlug || "");
     setEditUsername(cred.username || "");
     setEditBaseFolder(cred.metadata?.baseFolder || "NovelVisualizer/ComfyUI_Storage");
     setEditGdriveClientId("");
@@ -358,7 +365,10 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
       const metadata: Record<string, unknown> = { ...(editingCred.metadata || {}) };
       let usernameToSend: string | null = editUsername.trim() || null;
 
-      if (editingCred.provider === "kaggle") metadata.displayName = editAlias.trim().slice(0, 80);
+      if (editingCred.provider === "kaggle") {
+        metadata.displayName = editDisplayName.trim().slice(0, 80) || undefined;
+        metadata.kernelSlug = editKernelSlug.trim() || "";
+      }
       if (editingCred.provider === "gdrive") {
         metadata.baseFolder = editBaseFolder.trim() || "NovelVisualizer/ComfyUI_Storage";
       } else if (editingCred.provider === "llm") {
@@ -374,7 +384,7 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
         body: JSON.stringify({
           provider: editingCred.provider,
           accountAlias: editingCred.accountAlias,
-          newAccountAlias: editingCred.provider === "kaggle" ? undefined : editAlias.trim() || editingCred.accountAlias,
+          newAccountAlias: editAlias.trim() || editingCred.accountAlias,
           username: usernameToSend,
           rawSecret: editNewSecret.trim() || undefined,
           ...(editingCred.provider === "gdrive"
@@ -413,8 +423,11 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           provider: "kaggle",
-          accountAlias: credentials.find((c) => c.provider === "kaggle")?.accountAlias || vaultData?.vms?.find((v) => v.provider === "kaggle")?.accountAlias || "personal",
-          metadata: { displayName: kaggleName.trim() || "Personal Kaggle" },
+          accountAlias: kaggleAlias,
+          metadata: {
+            ...(kaggleName.trim() ? { displayName: kaggleName.trim().slice(0, 80) } : {}),
+            ...(kaggleSlug.trim() ? { kernelSlug: kaggleSlug.trim() } : {}),
+          },
           username: kaggleUser,
           rawSecret: kaggleKey,
         }),
@@ -424,8 +437,9 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
         toast.error(body.error || "Failed to save Kaggle credential");
         return;
       }
-      toast.success(`Encrypted & saved Kaggle (${kaggleName})`);
+      toast.success(`Encrypted & saved Kaggle (${kaggleAlias})`);
       setKaggleKey("");
+      setKaggleSlug("");
       setAddModalOpen(false);
       await Promise.all([refetchVault(), refetchReadiness()]);
     } finally {
@@ -959,7 +973,13 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
                         </td>
 
                         <td className="px-3 py-2.5 font-mono text-[11px] text-zinc-300">
-                          {c.provider === "kaggle" ? c.metadata?.displayName || c.username || "Personal Kaggle" : c.accountAlias}
+                          <div>{c.accountAlias}</div>
+                          {c.provider === "kaggle" && c.metadata?.displayName && (
+                            <div className="text-[10px] text-zinc-500">{c.metadata.displayName}</div>
+                          )}
+                          {c.provider === "kaggle" && c.metadata?.kernelSlug && (
+                            <div className="text-[10px] text-cyan-400/80">/{c.metadata.kernelSlug}</div>
+                          )}
                         </td>
 
                         <td className="px-3 py-2.5 text-[11px] text-zinc-300">
@@ -1452,8 +1472,27 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
             {addKind === "kaggle" && (
               <form onSubmit={handleSaveKaggle} className="space-y-3">
                 <div className="space-y-1">
-                  <Label className="text-xs">Connection name</Label>
-                  <Input value={kaggleName} maxLength={80} onChange={(e) => setKaggleName(e.target.value)} />
+                  <Label className="text-xs">Account Alias</Label>
+                  <select
+                    value={kaggleAlias}
+                    onChange={(e) => setKaggleAlias(e.target.value)}
+                    className="h-9 w-full rounded-md border border-zinc-800 bg-zinc-950 px-2.5 text-xs text-zinc-100"
+                  >
+                    <option value="acc1" className="bg-zinc-900">acc1 (gpu0 &amp; gpu1 · Primary Dual-T4)</option>
+                    <option value="acc2" className="bg-zinc-900">acc2 (gpu2 &amp; gpu3 · Secondary Dual-T4)</option>
+                    <option value="acc3" className="bg-zinc-900">acc3 (gpu4 &amp; gpu5 · Tertiary Dual-T4)</option>
+                    <option value="acc4" className="bg-zinc-900">acc4 (gpu6 &amp; gpu7 · Quaternary Dual-T4)</option>
+                  </select>
+                </div>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label className="text-xs">Display Label (Optional)</Label>
+                    <Input value={kaggleName} maxLength={80} placeholder="e.g. Friend ACC2" onChange={(e) => setKaggleName(e.target.value)} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Notebook Slug (Optional)</Label>
+                    <Input value={kaggleSlug} maxLength={50} placeholder="ml-batch-inference-lab" onChange={(e) => setKaggleSlug(e.target.value)} />
+                  </div>
                 </div>
                 <div className="space-y-1">
                   <Label className="text-xs">Kaggle Username</Label>
@@ -1599,7 +1638,7 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
         <DialogContent className="border-zinc-800 bg-[#111114] text-zinc-100">
           <DialogHeader>
             <DialogTitle className="text-sm font-semibold">
-              Edit {editingCred?.provider.toUpperCase()} connection
+              Edit {editingCred?.provider.toUpperCase()} ({editingCred?.accountAlias})
             </DialogTitle>
             <DialogDescription className="text-xs text-zinc-400">
               Update metadata without re-entering your secret, or supply a new secret to rotate it.
@@ -1614,7 +1653,7 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
 
               <div className="grid grid-cols-2 gap-2.5">
                 <div className="space-y-1">
-                  <Label className="text-xs">{editingCred.provider === "kaggle" ? "Connection name" : "Account Alias"}</Label>
+                  <Label className="text-xs">Account Alias</Label>
                   <Input value={editAlias} onChange={(e) => setEditAlias(e.target.value)} required />
                 </div>
 
@@ -1628,6 +1667,29 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
                   </div>
                 )}
               </div>
+
+              {editingCred.provider === "kaggle" && (
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div className="space-y-1">
+                    <Label className="text-xs">Display Label (Optional)</Label>
+                    <Input
+                      value={editDisplayName}
+                      maxLength={80}
+                      placeholder="e.g. ACC2 (@username)"
+                      onChange={(e) => setEditDisplayName(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Notebook Slug (Optional)</Label>
+                    <Input
+                      value={editKernelSlug}
+                      maxLength={50}
+                      placeholder="ml-batch-inference-lab"
+                      onChange={(e) => setEditKernelSlug(e.target.value)}
+                    />
+                  </div>
+                </div>
+              )}
 
               {editingCred.provider === "gdrive" && (
                 <div className="space-y-3">

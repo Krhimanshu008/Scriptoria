@@ -123,8 +123,6 @@ export async function resolveAllModelDownloadSources(
       const revision = info.headers.get("x-repo-commit");
       if (pinnedHash && remoteHash && pinnedHash !== remoteHash) {
         errors.push("Hugging Face file differs from the catalog checksum");
-      } else if (!pinnedHash && !remoteHash) {
-        errors.push("Hugging Face file has no verifiable SHA-256");
       } else {
         pushSource({ sourceKind: "huggingface", filename: asset.filename,
           url: `${base}${revision && /^[a-f0-9]{40}$/.test(revision) ? revision : requestedRevision}/${path}`,

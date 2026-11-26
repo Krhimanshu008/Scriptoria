@@ -283,7 +283,9 @@ export const AccountClusterCard: React.FC<AccountClusterCardProps> = ({
               }`}
             >
               {kind === "kaggle"
-                ? (kaggleAccount?.displayName || "Personal Kaggle")
+                ? (kaggleAccount?.displayName && !kaggleAccount.displayName.startsWith("@")
+                    ? kaggleAccount.displayName
+                    : `Kaggle ${kaggleAccount?.accountAlias || "acc1"}`)
                 : `Colab ${colabAccount?.accountAlias || "acc1"}`}
             </span>
             <span className="truncate font-mono text-[11px] text-zinc-200">

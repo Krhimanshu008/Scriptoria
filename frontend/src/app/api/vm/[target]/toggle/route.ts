@@ -1,4 +1,4 @@
-import { checkKaggleConnection } from "@/lib/orchestrator/kaggle-connection";
+import { kaggleCustomKernelSlug } from "@/lib/orchestrator/kaggle-connection";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getAuthUser, signVmClaimToken } from "@/lib/auth/session";
@@ -61,28 +61,38 @@ export async function POST(
     ) {
       const sidecarStopped = vm.publicUrl ? await VmGateway.killVm(vm) : false;
       if (!sidecarStopped && vm.provider === "kaggle") {
-        const metaProvider = vm.target.startsWith("tpu") ? "kaggle-tpu-meta" : "kaggle-meta";
+        const isTpu = vm.target.startsWith("tpu");
+        const metaProvider = isTpu ? "kaggle-tpu-meta" : "kaggle-meta";
         const [credential, meta] = await Promise.all([
           getDecryptedCredential(user.userId, "kaggle", vm.accountAlias),
           getDecryptedCredential(user.userId, metaProvider, vm.accountAlias),
         ]);
         const sessionId = Number(meta?.secret || 0);
-        if (credential?.username && sessionId > 0) {
-          const result = await KaggleOrchestrator.cancelKernelSession({
-            username: credential.username, key: credential.secret,
-            authType: credential.authType === "bearer" ? "bearer" : "basic",
-          }, sessionId);
-          if (!result.ok) {
-            return NextResponse.json({ error: result.errorMessage || "Kaggle could not confirm cancellation." }, { status: 502 });
+        if (credential?.username) {
+          const kaggleCreds = {
+            username: credential.username,
+            key: credential.secret,
+            authType: (credential.authType === "bearer" ? "bearer" : "basic") as "bearer" | "basic",
+          };
+          let cancelled = false;
+          if (sessionId > 0) {
+            const result = await KaggleOrchestrator.cancelKernelSession(kaggleCreds, sessionId);
+            cancelled = result.ok;
+          }
+          if (!cancelled) {
+            const customSlug = kaggleCustomKernelSlug(credential.metadata, isTpu);
+            const kernelSlug = getKaggleKernelSlug(vm.accountAlias, isTpu, customSlug);
+            await KaggleOrchestrator.releaseKernelGpu(kaggleCreds, kernelSlug).catch(() => null);
           }
           await saveUserCredential(user.userId, {
-            provider: metaProvider, accountAlias: vm.accountAlias, username: credential.username,
-            rawSecret: "0", authType: "session_id",
-          });
-        } else if (groupVms.some((slot) => ["ONLINE", "BUSY", "STARTING"].includes(slot.status))) {
-          return NextResponse.json({ error: "The Kaggle session ID is unavailable. Check the original notebook in Kaggle before resetting this slot." }, { status: 409 });
+            provider: metaProvider,
+            accountAlias: vm.accountAlias,
+            username: credential.username,
+            rawSecret: "0",
+            authType: "session_id",
+          }).catch(() => null);
         }
-      } else if (vm.publicUrl && !sidecarStopped) {
+      } else if (vm.publicUrl && !sidecarStopped && !isKillRequested) {
         return NextResponse.json({ error: "The worker did not confirm shutdown." }, { status: 502 });
       }
 
@@ -141,8 +151,6 @@ export async function POST(
     const appWebhookUrl = webhook.url;
 
     if (vm.provider === "kaggle") {
-      const conflict = await checkKaggleConnection(user.userId, vm.accountAlias);
-      if (conflict) return NextResponse.json({ error: conflict }, { status: 409 });
       let kaggleCred: Awaited<ReturnType<typeof getDecryptedCredential>> = null;
       try {
         kaggleCred = await getDecryptedCredential(user.userId, "kaggle", vm.accountAlias);
@@ -161,17 +169,6 @@ export async function POST(
           { error: `Missing Kaggle credentials for account '${vm.accountAlias}' in Settings Vault.` },
           { status: 400 }
         );
-      }
-
-      for (const row of groupVms) {
-        const entries: { filename: string; category: string }[] = JSON.parse(row.prewarmModelsJson || "[]");
-        if (!entries.length) continue;
-        const reviewed = await prisma.modelAsset.findMany({ where: {
-          userId: user.userId, reviewedSha256: { not: null },
-          OR: entries.map(({ category, filename }) => ({ category, filename })),
-        }, select: { filename: true, category: true } });
-        const pending = entries.find((m) => !reviewed.some((r) => r.filename === m.filename && r.category === m.category));
-        if (pending) return NextResponse.json({ error: "Review startup model in Models before launching: " + pending.filename }, { status: 422 });
       }
 
       const sortedGroupVms = sortVmsByCanonicalTarget(groupVms);
@@ -243,7 +240,8 @@ export async function POST(
       }
 
       try {
-        const kernelSlug = getKaggleKernelSlug(vm.accountAlias, isTpu);
+        const customSlug = kaggleCustomKernelSlug(kaggleCred.metadata, isTpu);
+        const kernelSlug = getKaggleKernelSlug(vm.accountAlias, isTpu, customSlug);
 
         const pushRes = await KaggleOrchestrator.pushKernel({
           credentials: {

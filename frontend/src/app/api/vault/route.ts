@@ -1,4 +1,4 @@
-import { checkKaggleConnection } from "@/lib/orchestrator/kaggle-connection";
+import { sanitizeKaggleSlug } from "@/lib/orchestrator/kaggle-connection";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getAuthUser } from "@/lib/auth/session";
@@ -159,9 +159,12 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    if (provider === "kaggle") {
-      const conflict = await checkKaggleConnection(user.userId, accountAlias, username);
-      if (conflict) return NextResponse.json({ error: conflict }, { status: 409 });
+    let kaggleMetaPatch: Record<string, unknown> | null = null;
+    if (provider === "kaggle" && metadata) {
+      const sanitized = sanitizeKaggleSlug(metadata.kernelSlug);
+      kaggleMetaPatch = sanitized
+        ? { ...metadata, kernelSlug: sanitized }
+        : { ...metadata, kernelSlug: undefined };
     }
     const prevColab =
       provider === "colab"
@@ -169,8 +172,8 @@ export async function POST(req: NextRequest) {
         : null;
 
     const mergedMetadata =
-      gdriveMetaPatch || metadata
-        ? { ...(metadata || {}), ...(gdriveMetaPatch || {}) }
+      gdriveMetaPatch || kaggleMetaPatch || metadata
+        ? { ...(metadata || {}), ...(kaggleMetaPatch || {}), ...(gdriveMetaPatch || {}) }
         : null;
 
     const saved = await saveUserCredential(user.userId, {
@@ -255,19 +258,15 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
-    if (provider === "kaggle") {
-      if (newAccountAlias && newAccountAlias !== accountAlias) {
-        return NextResponse.json({ error: "Edit the connection display name to preserve its notebook history." }, { status: 400 });
-      }
-      if (rawSecret || username !== undefined) {
-        const saved = await prisma.credential.findUnique({ where: { userId_provider_accountAlias: { userId: user.userId, provider, accountAlias } } });
-        if (saved?.username && username !== undefined && username?.toLowerCase() !== saved.username.toLowerCase()) {
-          return NextResponse.json({ error: "An existing connection belongs to its original Kaggle owner." }, { status: 409 });
-        }
-      }
-    }
     let secretToUpdate = rawSecret;
     let patchMeta = metadata;
+    if (provider === "kaggle" && metadata) {
+      const sanitized = sanitizeKaggleSlug(metadata.kernelSlug);
+      patchMeta = {
+        ...metadata,
+        ...(metadata.kernelSlug !== undefined ? { kernelSlug: sanitized || "" } : {}),
+      };
+    }
     if (provider === "gdrive") {
       const overrideClientId = body.clientId ? String(body.clientId).trim() : undefined;
       const overrideClientSecret = body.clientSecret ? String(body.clientSecret).trim() : undefined;

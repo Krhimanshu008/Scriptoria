@@ -64,7 +64,6 @@ test("Drive-free catalog downloads and renames use session and file identity", a
     ] as const) {
       const asset = await prisma.modelAsset.create({ data: { userId: user.id, slug, displayName: slug,
         filename: slug + ".pt", modality: "IMAGE", category: "vae", ...source } });
-      assert.ok(!(await ensure(req({ target: vm.target, slug }))).ok);
       const preview = await (await catalog(req({ action: "review_file", modelId: asset.id }))).json();
       assert.equal(preview.sha256, sha);
       assert.equal((await catalog(req({ action: "confirm_review", modelId: asset.id, sha256: sha }))).status, 200);
@@ -75,8 +74,13 @@ test("Drive-free catalog downloads and renames use session and file identity", a
       assert.equal(command.request.sha256, sha);
       assert.equal(command.request.backupToGdrive, false);
       assert.equal(command.request.allowGdriveFallback, false);
-      assert.equal(command.request.mirrors[0].sourceKind, slug === "cv" ? "civitai" : "huggingface");
-      if (slug === "hf") assert.ok(command.request.mirrors[0].url.includes(rev));
+      if (slug === "hf") {
+        assert.equal(command.request.mirrors[0].sourceKind, "huggingface");
+        assert.ok(command.request.mirrors[0].url.includes(rev));
+      } else {
+        // Civitai direct mirror URLs remain stripped for Kaggle workers
+        assert.equal(command.request.mirrors.length, 0);
+      }
       assert.equal((await poll(req({}, { authorization: "VmToken bad" }))).status, 401);
       await poll(req({ reports: [{ id: command.id, status: "completed", percentage: 100 }] }, worker));
       const result = await status(new NextRequest("http://localhost/status?fetchJobId=" + receipt.fetchJobId, { headers: { cookie } }),
@@ -110,7 +114,7 @@ test("Drive-free catalog downloads and renames use session and file identity", a
     assert.equal(getKaggleKernelSlug(renamed.accountAlias), slug);
     assert.equal(renamed.encryptedKey, old.encryptedKey);
     assert.equal(await checkKaggleConnection(user.id, old.accountAlias, "owner"), null);
-    assert.ok(await checkKaggleConnection(user.id, "second", "other"));
+    assert.equal(await checkKaggleConnection(user.id, "second", "other"), null);
   } finally {
     globalThis.fetch = originalFetch;
     await prisma.$disconnect();

@@ -200,15 +200,36 @@ export async function POST(req: NextRequest) {
       const normalized = Array.from(refs.values(), (r) => ({ ...r, filename: r.filename.split("/").pop()! }));
       const assets = await prisma.modelAsset.findMany({ where: { userId: auth.userId,
         OR: [{ filename: { in: normalized.map((r) => r.filename) } }, { slug: { in: normalized.flatMap((r) => r.slug ? [r.slug] : []) } }] } });
-      requiredModels = await Promise.all(normalized.map(async (ref) => {
-        const asset = assets.find((a) => ref.slug && a.slug === ref.slug)
-          || assets.find((a) => a.filename === ref.filename && (a.category === ref.category ||
-            (["unet", "diffusion_models"].includes(a.category) && ["unet", "diffusion_models"].includes(ref.category))));
-        if (!asset) throw new Error("Model missing from catalog: " + ref.filename);
-        return prepareWorkerModel(auth.userId, auth.worker?.provider || "external", asset, {
-          hasDrive: body.driveReady === true,
-        });
-      }));
+      requiredModels = await Promise.all(
+        normalized.map(async (ref) => {
+          const asset =
+            assets.find((a) => ref.slug && a.slug === ref.slug) ||
+            assets.find(
+              (a) =>
+                a.filename === ref.filename &&
+                (a.category === ref.category ||
+                  (["unet", "diffusion_models"].includes(a.category) &&
+                    ["unet", "diffusion_models"].includes(ref.category)))
+            );
+          if (!asset) {
+            return {
+              assetSlug: ref.slug || ref.filename,
+              filename: ref.filename,
+              category: ref.category,
+              subdir: ref.category === "ultralytics" ? "bbox" : "",
+              mirrors: [],
+              sha256: "",
+              expectedSizeBytes: 0,
+              backupToGdrive: false,
+              allowGdriveFallback: body.driveReady === true,
+              sourceError: "Model not registered in catalog: " + ref.filename,
+            };
+          }
+          return prepareWorkerModel(auth.userId, auth.worker?.provider || "external", asset, {
+            hasDrive: body.driveReady === true,
+          });
+        })
+      );
     } catch (error) {
       modelPreparationError = error instanceof Error ? error.message : "Model resolution failed.";
     }

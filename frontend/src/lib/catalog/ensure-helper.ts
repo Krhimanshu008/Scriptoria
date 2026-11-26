@@ -94,9 +94,6 @@ export async function ensureModelReadyOnVm(params: {
   const gdriveCred = await getUserGDriveCredential(userId).catch(() => null);
   const rcloneCategory = asset.subdir ? `${asset.category}/${asset.subdir}` : asset.category;
 
-  if (vm.provider === "kaggle" && !asset.reviewedSha256) {
-    throw new Error("Review this file for Kaggle in the Models catalog before use.");
-  }
   const hasDrive = Boolean(gdriveCred?.parsed.access_token || gdriveCred?.parsed.refresh_token);
   if (!vm.publicUrl) {
     const boot = JSON.parse(vm.bootMetadataJson || "{}");

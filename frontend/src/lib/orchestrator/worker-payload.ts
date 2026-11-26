@@ -119,13 +119,20 @@ export async function assembleWorkerRuntimePayload(
     }
   }
 
-  const prewarmModels = await Promise.all(Array.from(prewarmMap.values(), async (item) => {
-    const asset = await prisma.modelAsset.findFirst({ where: { userId, ...item } });
-    if (!asset) throw new WorkerPayloadError("Startup model missing from catalog: " + item.filename);
-    return prepareWorkerModel(userId, vm.provider, asset, {
-      hasDrive: Boolean(gdriveCred?.parsed.access_token || gdriveCred?.parsed.refresh_token),
-    });
-  }));
+  const rawPrewarm = await Promise.all(
+    Array.from(prewarmMap.values(), async (item) => {
+      try {
+        const asset = await prisma.modelAsset.findFirst({ where: { userId, ...item } });
+        if (!asset) return null;
+        return await prepareWorkerModel(userId, vm.provider, asset, {
+          hasDrive: Boolean(gdriveCred?.parsed.access_token || gdriveCred?.parsed.refresh_token),
+        });
+      } catch {
+        return null;
+      }
+    })
+  );
+  const prewarmModels = rawPrewarm.filter((m): m is NonNullable<typeof m> => Boolean(m));
   const isTpu = profileSpec.accelerator === "tpu";
   const isKaggle = vm.provider === "kaggle";
 

@@ -1,4 +1,4 @@
-import { kaggleDisplayName } from "@/lib/orchestrator/kaggle-connection";
+import { kaggleCustomKernelSlug, kaggleDisplayName } from "@/lib/orchestrator/kaggle-connection";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getAuthUser, ensureUserVmSlots } from "@/lib/auth/session";
@@ -6,6 +6,7 @@ import { getDecryptedCredential } from "@/lib/crypto/credentials";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
 import { getGoogleOAuthClientConfig } from "@/lib/gdrive/oauth-config";
 import { KaggleOrchestrator, KaggleQuotaInfo } from "@/lib/orchestrator/kaggle-client";
+import { getKaggleKernelSlug } from "@/lib/orchestrator/vm-helpers";
 import {
   peekActiveTunnelUrl,
   prewarmLocalTunnelIfNeeded,
@@ -14,6 +15,7 @@ import {
 export interface KaggleAccountSummary {
   accountAlias: string;
   displayName?: string;
+  kernelSlug?: string;
   username: string | null;
   configured: boolean;
   targets: string[];
@@ -80,9 +82,9 @@ export async function GET(req: NextRequest) {
     const vmAliases = vms
       .filter((v) => v.provider === "kaggle")
       .map((v) => v.accountAlias);
-    const configuredAliases = kaggleCreds.map((c) => c.accountAlias);
+    const defaultAliases = ["acc1", "acc2", "acc3", "acc4"];
     const kaggleAliases = Array.from(
-      new Set(configuredAliases.length ? configuredAliases : vmAliases.slice(0, 1))
+      new Set([...defaultAliases, ...kaggleCreds.map((c) => c.accountAlias), ...vmAliases])
     )
       .filter(Boolean)
       .sort();
@@ -90,6 +92,11 @@ export async function GET(req: NextRequest) {
       kaggleAliases.map(async (alias) => {
         const connection = kaggleCreds.find((c) => c.accountAlias === alias);
         const displayName = kaggleDisplayName(connection?.metadataJson, connection?.username);
+        const kernelSlug = getKaggleKernelSlug(
+          alias,
+          false,
+          kaggleCustomKernelSlug(connection?.metadataJson, false)
+        );
         const allTargets = vms
           .filter((v) => v.provider === "kaggle" && v.accountAlias === alias)
           .map((v) => v.target)
@@ -105,6 +112,7 @@ export async function GET(req: NextRequest) {
           return {
             accountAlias: alias,
             displayName,
+            kernelSlug,
             username: null,
             configured: false,
             targets,
@@ -121,6 +129,7 @@ export async function GET(req: NextRequest) {
           return {
             accountAlias: alias,
             displayName,
+            kernelSlug,
             username: null,
             configured: false,
             targets,
@@ -130,11 +139,6 @@ export async function GET(req: NextRequest) {
           };
         }
 
-        if (configuredAliases.length > 1) return {
-          accountAlias: alias, displayName, username: cred.username, configured: true,
-          targets, gpuTargets, tpuTargets, quota: null,
-          quotaError: "Multiple connections in this workspace. Launches are paused for ownership review.",
-        };
         const cacheKey = `${cred.username}:${cred.authType}`;
         const cached = quotaCache.get(cacheKey);
         const now = Date.now();
@@ -142,6 +146,7 @@ export async function GET(req: NextRequest) {
           return {
             accountAlias: alias,
             displayName,
+            kernelSlug,
             username: cred.username,
             configured: true,
             targets,
@@ -161,6 +166,7 @@ export async function GET(req: NextRequest) {
           return {
             accountAlias: alias,
             displayName,
+            kernelSlug,
             username: cred.username,
             configured: true,
             targets,
@@ -172,6 +178,7 @@ export async function GET(req: NextRequest) {
           return {
             accountAlias: alias,
             displayName,
+            kernelSlug,
             username: cred.username,
             configured: true,
             targets,

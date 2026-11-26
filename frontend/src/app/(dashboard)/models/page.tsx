@@ -16,7 +16,6 @@ import {
   Search,
   Zap,
   CloudUpload,
-  Cpu,
 } from "lucide-react";
 import type { PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
 import type { VmStoredModelItem } from "@/lib/orchestrator/rclone-client";
@@ -750,12 +749,12 @@ export default function ModelsPage() {
                     <div className="flex shrink-0 items-center gap-2">
                       {activeVm?.provider === "kaggle" && hasDirect && !m.reviewedSha256 && (
                         <Button size="sm" variant="outline" disabled={fetchingSlug === m.slug} onClick={() => reviewFile(m)}>
-                          Review for Kaggle
+                          Pin SHA-256
                         </Button>
                       )}
                       <Button
                         size="sm"
-                        disabled={(activeVm?.provider === "kaggle" && !m.reviewedSha256) || !isTargetOnline || fetchingSlug === m.slug || (!hasDirect && m.backupStatus !== "BACKED_UP")}
+                        disabled={!isTargetOnline || fetchingSlug === m.slug || (!hasDirect && m.backupStatus !== "BACKED_UP")}
                         onClick={() => handleFastEnsure(m, "auto")}
                         className="bg-indigo-600 text-xs text-white hover:bg-indigo-500 disabled:opacity-40"
                       >

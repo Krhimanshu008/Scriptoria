@@ -45,10 +45,25 @@ const TARGET_ORDER = [
   "tpu0", "tpu1", "tpu2", "tpu3"
 ];
 
-export function getKaggleKernelSlug(accountAlias: string, isTpu = false): string {
-  const safeAlias = (accountAlias || "acc1").trim() || "acc1";
-  if (safeAlias === "personal") return isTpu ? "scriptoria-tpu-worker" : "scriptoria-batch-worker";
-  return isTpu ? `scriptoria-tpu-worker-${safeAlias}` : `scriptoria-batch-worker-${safeAlias}`;
+export function getKaggleKernelSlug(
+  accountAlias: string,
+  isTpu = false,
+  customSlug?: string | null
+): string {
+  const cleanedCustom = (customSlug || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 50);
+  if (cleanedCustom.length >= 3) {
+    if (isTpu && !cleanedCustom.endsWith("-tpu")) {
+      return `${cleanedCustom}-tpu`;
+    }
+    return cleanedCustom;
+  }
+  void accountAlias;
+  return isTpu ? "ml-tpu-inference-lab" : "ml-batch-inference-lab";
 }
 
 export function sortVmsByCanonicalTarget(vms: VmInstance[]): VmInstance[] {
