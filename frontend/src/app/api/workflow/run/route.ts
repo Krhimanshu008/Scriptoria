@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { getAuthUser } from "@/lib/auth/session";
 import { ComfyClient } from "@/lib/orchestrator/comfy-client";
 import { parseWorkflowParamsFromBody } from "@/lib/orchestrator/workflow-presets";
+import { enqueueHeadlessBatchJobForStudio } from "@/lib/batch/studio-headless";
 import { appendSystemLog } from "@/lib/logs/logger";
 
 export async function POST(req: NextRequest) {
@@ -25,48 +26,36 @@ export async function POST(req: NextRequest) {
     const vm = await prisma.vmInstance.findUnique({
       where: { userId_target: { userId: user.userId, target: parsed.target } },
     });
-    if (!vm || vm.status !== "ONLINE" || !vm.publicUrl) {
+    if (!vm || vm.status !== "ONLINE") {
       return NextResponse.json({ error: `GPU ${parsed.target} is not online.` }, { status: 400 });
     }
 
-    const client = new ComfyClient(vm);
+    const isHeadlessVm = !vm.publicUrl;
+    const client = isHeadlessVm ? null : new ComfyClient(vm);
     let checkpoint = parsed.requestedCheckpoint || "custom-workflow";
 
     if (!parsed.customWorkflowJson) {
       if (!parsed.requestedCheckpoint) {
-        const catalog = await client.getCatalog(parsed.target);
-        const ckpts = catalog.models.checkpoints;
-        if (!ckpts.length) {
-          return NextResponse.json(
-            { error: "No checkpoints are loaded on this GPU yet. Stream a checkpoint in the Models tab first." },
-            { status: 400 }
-          );
+        if (client) {
+          const catalog = await client.getCatalog(parsed.target);
+          const ckpts = catalog.models.checkpoints;
+          if (!ckpts.length) {
+            return NextResponse.json(
+              { error: "No checkpoints are loaded on this GPU yet. Stream a checkpoint in the Models tab first." },
+              { status: 400 }
+            );
+          }
+          checkpoint =
+            parsed.preset && ckpts.includes(parsed.preset.recommendedCheckpoint)
+              ? parsed.preset.recommendedCheckpoint
+              : ckpts[0];
+        } else {
+          checkpoint = parsed.preset?.recommendedCheckpoint || "Illustrious-XL-v2.0.safetensors";
         }
-        checkpoint =
-          parsed.preset && ckpts.includes(parsed.preset.recommendedCheckpoint)
-            ? parsed.preset.recommendedCheckpoint
-            : ckpts[0];
       } else {
         checkpoint = parsed.requestedCheckpoint;
       }
     }
-
-    const job = await prisma.job.create({
-      data: {
-        userId: user.userId,
-        vmInstanceId: vm.id,
-        target: parsed.target,
-        prompt: parsed.prompt || `[Custom Workflow] ${parsed.preset?.name || "API JSON"}`,
-        negativePrompt: parsed.negativePrompt,
-        checkpoint,
-        width: parsed.width,
-        height: parsed.height,
-        steps: parsed.steps,
-        cfg: parsed.cfg,
-        seed: String(parsed.seed),
-        status: "PROCESSING",
-      },
-    });
 
     const graph =
       parsed.customWorkflowJson ??
@@ -87,6 +76,60 @@ export async function POST(req: NextRequest) {
         seed: parsed.seed,
         target: parsed.target,
       });
+
+    if (!client) {
+      const queued = await enqueueHeadlessBatchJobForStudio({
+        userId: user.userId,
+        vm,
+        prompt: parsed.prompt || `[Custom Workflow] ${parsed.preset?.name || "API JSON"}`,
+        negativePrompt: parsed.negativePrompt,
+        checkpoint,
+        width: parsed.width,
+        height: parsed.height,
+        steps: parsed.steps,
+        cfg: parsed.cfg,
+        seed: String(parsed.seed),
+        workerProfile: vm.workerProfile,
+        requiredModels: parsed.customWorkflowJson
+          ? []
+          : [{ category: "checkpoints", filename: checkpoint }],
+        graph,
+      });
+
+      await appendSystemLog({
+        userId: user.userId,
+        vmInstanceId: vm.id,
+        category: "COMFYUI",
+        level: "INFO",
+        message: `Queued headless job ${queued.jobId} for ${parsed.target} (${checkpoint}) without tunnel proxy.`,
+      });
+
+      return NextResponse.json({
+        jobId: queued.jobId,
+        batchId: queued.batchId,
+        headless: true,
+        status: "PROCESSING",
+        checkpoint,
+        seed: String(parsed.seed),
+      });
+    }
+
+    const job = await prisma.job.create({
+      data: {
+        userId: user.userId,
+        vmInstanceId: vm.id,
+        target: parsed.target,
+        prompt: parsed.prompt || `[Custom Workflow] ${parsed.preset?.name || "API JSON"}`,
+        negativePrompt: parsed.negativePrompt,
+        checkpoint,
+        width: parsed.width,
+        height: parsed.height,
+        steps: parsed.steps,
+        cfg: parsed.cfg,
+        seed: String(parsed.seed),
+        status: "PROCESSING",
+      },
+    });
 
     try {
       const { prompt_id } = await client.queuePrompt(graph, job.id);

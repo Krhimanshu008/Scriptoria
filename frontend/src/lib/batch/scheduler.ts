@@ -97,7 +97,7 @@ export async function createBatchFromSpec(params: {
     if (scene.tracks.visual) {
       const vSpec: WorkflowBuildSpec = {
         pipeline: scene.tracks.visual.pipeline || "sdxl_txt2img",
-        baseModel: scene.tracks.visual.baseModel || spec.defaults?.baseModel || "waiNSFWIllustrious_v110.safetensors",
+        baseModel: scene.tracks.visual.baseModel || spec.defaults?.baseModel || "Illustrious-XL-v2.0.safetensors",
         loras: scene.tracks.visual.loras,
         prompt: scene.tracks.visual.prompt,
         negativePrompt: scene.tracks.visual.negativePrompt,

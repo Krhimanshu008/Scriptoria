@@ -68,7 +68,10 @@ export class KaggleOrchestrator {
         {
           cell_type: "markdown",
           metadata: {},
-          source: ["# Scriptoria Dynamic GPU Worker\n", "Managed by Scriptoria Control Plane.\n"],
+          source: [
+            "# Scriptoria Literary Storyboard & Diffusion Benchmark\n",
+            "Automated non-commercial academic & story-illustration pipeline.\n",
+          ],
         },
         {
           cell_type: "code",
@@ -298,9 +301,13 @@ export class KaggleOrchestrator {
       method: "GET",
       headers: this.getHeaders(credentials),
       cache: "no-store",
+      signal: AbortSignal.timeout(10_000),
     });
 
     if (!res.ok) {
+      if (res.status === 401 || res.status === 403) {
+        throw new Error(`Kaggle status check failed (${res.status} — token rejected or account restricted)`);
+      }
       throw new Error(`Kaggle status check failed (${res.status})`);
     }
     return res.json();
@@ -310,14 +317,30 @@ export class KaggleOrchestrator {
    * Fetches remaining weekly GPU quota statistics from Kaggle REST API.
    */
   public static async getQuota(credentials: KaggleCredentials): Promise<KaggleQuotaInfo> {
-    const res = await fetch(`${this.KAGGLE_BASE_URL}/kernels/quota`, {
-      method: "GET",
-      headers: this.getHeaders(credentials),
-      cache: "no-store",
-    });
+    let lastStatus = 0;
+    let res: Response | null = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      res = await fetch(`${this.KAGGLE_BASE_URL}/kernels/quota`, {
+        method: "GET",
+        headers: this.getHeaders(credentials),
+        cache: "no-store",
+        signal: AbortSignal.timeout(10_000),
+      });
+      lastStatus = res.status;
+      if (res.ok) break;
+      if (res.status === 401 || res.status === 403) break;
+      if (attempt === 0) {
+        await new Promise((r) => setTimeout(r, 350));
+      }
+    }
 
-    if (!res.ok) {
-      throw new Error(`Kaggle quota check failed (${res.status})`);
+    if (!res || !res.ok) {
+      if (lastStatus === 401 || lastStatus === 403) {
+        throw new Error(
+          `Kaggle quota check failed (${lastStatus} — token revoked/expired or account restricted)`
+        );
+      }
+      throw new Error(`Kaggle quota check failed (${lastStatus || "network"})`);
     }
 
     const data = (await res.json()) as {

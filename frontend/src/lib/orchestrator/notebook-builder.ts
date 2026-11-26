@@ -25,6 +25,7 @@ export interface NotebookBuildConfig {
   idleTimeoutSeconds?: number;
   enableOfflineDatasetScan?: boolean;
   prewarmModels?: PrewarmModelItem[];
+  headlessMode?: boolean;
 }
 
 export interface CpuMirrorSourceItem {
@@ -336,6 +337,7 @@ GDRIVE_TOKEN_RAW = ${JSON.stringify(cfg.gdriveTokenJson)}
 IDLE_TIMEOUT_SEC = ${idleSeconds}
 ENABLE_OFFLINE_SCAN = ${cfg.enableOfflineDatasetScan ? "True" : "False"}
 PREWARM_MODELS = ${JSON.stringify(prewarmModels)}
+HEADLESS_MODE = ${cfg.headlessMode ? "True" : "False"}
 
 LAST_ACTIVE = time.time()
 BOOT_LOGS = deque(maxlen=150)
@@ -405,6 +407,7 @@ def post_heartbeat(step, status="STARTING", telemetry=None):
     telem["totalBootElapsed"] = round(now - T_BOOT_START, 1)
     telem["needsGdriveSync"] = bool(NEEDS_GDRIVE_SYNC)
     telem["gdriveSyncedAtMs"] = GDRIVE_SYNCED_AT_MS
+    telem["headlessMode"] = bool(HEADLESS_MODE)
     payload = {
         "token": REG_JWT,
         "tunnelUrl": TUNNEL_URL or "",
@@ -1233,8 +1236,11 @@ def setup_aria2():
         except Exception:
             pass
 
-threading.Thread(target=setup_caddy, daemon=True).start()
-threading.Thread(target=setup_cloudflared, daemon=True).start()
+if not HEADLESS_MODE:
+    threading.Thread(target=setup_caddy, daemon=True).start()
+    threading.Thread(target=setup_cloudflared, daemon=True).start()
+else:
+    log_event("Safe Headless Mode active (tunnel/proxy disabled; outbound worker polling enabled).", category="NETWORK", level="INFO")
 threading.Thread(target=setup_aria2, daemon=True).start()
 uv_thread = threading.Thread(target=setup_uv, daemon=True)
 uv_thread.start()
@@ -2337,6 +2343,222 @@ def probe_comfy_stats():
             stats[t_name] = {"ready": False}
     return stats
 
+def _worker_api_post(path, body_dict, timeout=20):
+    req = urllib.request.Request(
+        f"{APP_URL}{path}",
+        data=json.dumps(body_dict).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"VmToken {REG_JWT}",
+            "User-Agent": "Scriptoria-HeadlessWorker/1.0",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8") or "{}")
+
+def _extract_graph_models(graph, req_models):
+    items = []
+    seen = set()
+    for m in (req_models or []):
+        cat = str(m.get("category") or "checkpoints")
+        fn = str(m.get("filename") or "").strip()
+        if fn and (cat, fn) not in seen:
+            seen.add((cat, fn))
+            items.append((cat, fn))
+    field_map = {
+        "ckpt_name": "checkpoints",
+        "vae_name": "vae",
+        "lora_name": "loras",
+        "control_net_name": "controlnet",
+        "ipadapter_file": "ipadapter",
+        "clip_name": "clip_vision",
+        "unet_name": "unet",
+        "clip_name1": "text_encoders",
+        "clip_name2": "text_encoders",
+        "upscale_model": "upscale_models",
+    }
+    if isinstance(graph, dict):
+        for node in graph.values():
+            if not isinstance(node, dict):
+                continue
+            ct = str(node.get("class_type") or "")
+            inp = node.get("inputs") or {}
+            if not isinstance(inp, dict):
+                continue
+            if ct == "UNETLoader" and inp.get("unet_name"):
+                pair = ("diffusion_models", str(inp["unet_name"]))
+                if pair not in seen:
+                    seen.add(pair); items.append(pair)
+                continue
+            if ct == "CLIPLoader" and inp.get("clip_name"):
+                pair = ("text_encoders", str(inp["clip_name"]))
+                if pair not in seen:
+                    seen.add(pair); items.append(pair)
+                continue
+            if ct == "UltralyticsDetectorProvider" and inp.get("model_name"):
+                fn = os.path.basename(str(inp["model_name"]))
+                pair = ("ultralytics", fn)
+                if pair not in seen:
+                    seen.add(pair); items.append(pair)
+                continue
+            if ct == "SAMLoader" and inp.get("model_name"):
+                pair = ("sams", str(inp["model_name"]))
+                if pair not in seen:
+                    seen.add(pair); items.append(pair)
+                continue
+            if ct == "LBMModelLoader" and inp.get("model_name"):
+                pair = ("lbm", str(inp["model_name"]))
+                if pair not in seen:
+                    seen.add(pair); items.append(pair)
+                continue
+            if ct == "UpscaleModelLoader" and inp.get("model_name"):
+                pair = ("upscale_models", str(inp["model_name"]))
+                if pair not in seen:
+                    seen.add(pair); items.append(pair)
+                continue
+            for k, cat in field_map.items():
+                v = inp.get(k)
+                if isinstance(v, str) and v.strip():
+                    pair = (cat, v.strip())
+                    if pair not in seen:
+                        seen.add(pair); items.append(pair)
+    return items
+
+def _headless_worker_loop(worker_target, port):
+    import base64
+    log_event(f"Headless polling worker ready for {worker_target} (127.0.0.1:{port})", category="COMFYUI")
+    while True:
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/system_stats", timeout=2) as r:
+                if r.status == 200:
+                    break
+        except Exception:
+            pass
+        time.sleep(2)
+
+    while True:
+        task = None
+        try:
+            res = _worker_api_post("/api/v1/workers/claim", {"workerId": worker_target, "capabilities": [PROFILE_ID]}, timeout=15)
+            task = res.get("task")
+        except Exception:
+            time.sleep(5)
+            continue
+
+        if not task:
+            time.sleep(4)
+            continue
+
+        task_id = task["id"]
+        globals()["LAST_ACTIVE"] = time.time()
+        try:
+            graph = task.get("compiledGraph")
+            if not isinstance(graph, dict):
+                raise RuntimeError("Claimed task missing compiledGraph JSON")
+
+            # Ensure required models from Google Drive (zero CivitAI hits on Kaggle)
+            if RCLONE_READY:
+                for cat, fn in _extract_graph_models(graph, task.get("requiredModels")):
+                    sub_dir = "bbox" if cat == "ultralytics" else ""
+                    clean_cat, _, dst_path = _safe_model_target(cat, fn, sub_dir)
+                    if dst_path and not os.path.exists(dst_path):
+                        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+                        remote_dir = f"{GDRIVE_BASE}/models/{clean_cat}" + (f"/{sub_dir}" if sub_dir else "")
+                        log_event(f"[{worker_target}] Streaming {fn} from Drive...", category="RCLONE")
+                        rc_copy_async({
+                            "srcFs": f"gdrive:{remote_dir}",
+                            "srcRemote": fn,
+                            "dstFs": os.path.dirname(dst_path),
+                            "dstRemote": fn,
+                        }, max_wait=600, label=f"Drive {fn}")
+
+            # Stage any inline base64 data:image LoadImage inputs into COMFY_DIR/input
+            in_dir = os.path.join(COMFY_DIR, "input")
+            os.makedirs(in_dir, exist_ok=True)
+            for nid, node in graph.items():
+                if isinstance(node, dict) and node.get("class_type") == "LoadImage":
+                    img_val = str((node.get("inputs") or {}).get("image") or "")
+                    if img_val.startswith("data:image/") and ";base64," in img_val:
+                        header, b64_data = img_val.split(";base64,", 1)
+                        ext = "jpg" if "jpeg" in header else "png"
+                        fname = f"sc_{task_id}_{nid}.{ext}"
+                        with open(os.path.join(in_dir, fname), "wb") as f_out:
+                            f_out.write(base64.b64decode(b64_data))
+                        node["inputs"]["image"] = fname
+
+            q_req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/prompt",
+                data=json.dumps({"prompt": graph, "client_id": task_id}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(q_req, timeout=20) as qr:
+                q_res = json.loads(qr.read().decode("utf-8"))
+            prompt_id = q_res["prompt_id"]
+
+            outputs_uploaded = []
+            t_wait = time.time()
+            while (time.time() - t_wait) < 900:
+                globals()["LAST_ACTIVE"] = time.time()
+                time.sleep(1.5)
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/history/{prompt_id}", timeout=10) as hr:
+                    h_data = json.loads(hr.read().decode("utf-8") or "{}")
+                item = h_data.get(prompt_id)
+                if item and (item.get("outputs") or item.get("status", {}).get("status_str") == "error"):
+                    if item.get("status", {}).get("status_str") == "error":
+                        raise RuntimeError(f"ComfyUI execution error: {item.get('status')}")
+                    date_dir = time.strftime("%Y-%m-%d")
+                    remote_out = f"{GDRIVE_BASE}/outputs/{date_dir}"
+                    if RCLONE_READY:
+                        try:
+                            rc_post("operations/mkdir", {"fs": "gdrive:", "remote": remote_out})
+                        except Exception:
+                            pass
+                    for node_out in (item.get("outputs") or {}).values():
+                        for img_info in (node_out.get("images") or []):
+                            fn = img_info.get("filename")
+                            sub = (img_info.get("subfolder") or "").strip("/")
+                            if not fn:
+                                continue
+                            src_dir = f"/tmp/outputs/{sub}" if sub else "/tmp/outputs"
+                            file_id = ""
+                            if RCLONE_READY:
+                                rc_copy_async({
+                                    "srcFs": src_dir, "srcRemote": fn,
+                                    "dstFs": f"gdrive:{remote_out}", "dstRemote": fn,
+                                }, max_wait=240, label=f"Upload {fn}")
+                                stat = rc_post("operations/stat", {"fs": f"gdrive:{remote_out}", "remote": fn}, timeout=15)
+                                file_id = (stat.get("item") or {}).get("ID", "")
+                            outputs_uploaded.append({
+                                "filename": fn,
+                                "gdriveFileId": file_id,
+                                "gdrivePath": f"{remote_out}/{fn}",
+                                "previewUrl": f"/api/outputs/{file_id}" if file_id else "",
+                            })
+                    break
+
+            _worker_api_post("/api/v1/workers/complete", {
+                "taskId": task_id,
+                "workerId": worker_target,
+                "outputFiles": outputs_uploaded,
+            }, timeout=20)
+            log_event(f"[{worker_target}] Completed headless task {task_id} ({len(outputs_uploaded)} file(s))", category="COMFYUI", level="SUCCESS")
+        except Exception as w_err:
+            log_event(f"[{worker_target}] Task {task_id} failed: {w_err}", category="ERROR", level="ERROR")
+            try:
+                _worker_api_post("/api/v1/workers/fail", {
+                    "taskId": task_id,
+                    "workerId": worker_target,
+                    "errorMessage": str(w_err),
+                }, timeout=15)
+            except Exception:
+                pass
+
+if HEADLESS_MODE:
+    for _w_target, _w_port in zip(TARGETS[:len(active_ports)], active_ports):
+        threading.Thread(target=_headless_worker_loop, args=(_w_target, _w_port), daemon=True).start()
+
 t_loop_start = time.time()
 last_step_sent = -1
 last_ready_count = -1
@@ -2346,9 +2568,9 @@ while True:
     telem = probe_comfy_stats()
     ready_count = sum(1 for v in telem.values() if v.get("ready"))
     any_ready = ready_count > 0
-    caddy_ok = is_caddy_ready()
-    all_ready = bool(TUNNEL_URL) and caddy_ok and len(telem) > 0 and all(v.get("ready") for v in telem.values())
-    next_step = 5 if all_ready else (4 if (TUNNEL_URL and caddy_ok) else 3)
+    caddy_ok = True if HEADLESS_MODE else is_caddy_ready()
+    all_ready = (True if HEADLESS_MODE else (bool(TUNNEL_URL) and caddy_ok)) and len(telem) > 0 and all(v.get("ready") for v in telem.values())
+    next_step = 5 if all_ready else (4 if (HEADLESS_MODE or (TUNNEL_URL and caddy_ok)) else 3)
     next_status = "ONLINE" if all_ready else "STARTING"
 
     if not all_ready:

@@ -92,7 +92,12 @@ export async function ensureModelReadyOnVm(params: {
   const rcloneCategory = asset.subdir ? `${asset.category}/${asset.subdir}` : asset.category;
 
   if (preferSource !== "gdrive" && (asset.id || asset.hfRepoId || asset.civitaiModelId || asset.civitaiVersionId || asset.directUrl)) {
-    const sources = await resolveAllModelDownloadSources(userId, asset);
+    const rawSources = await resolveAllModelDownloadSources(userId, asset);
+    // Keep Kaggle IPs away from CivitAI URLs by default; prefer HF / GDrive unless explicit "direct" is requested.
+    const sources =
+      vm.provider === "kaggle" && preferSource !== "direct"
+        ? rawSources.filter((s) => s.sourceKind !== "civitai")
+        : rawSources;
     if (sources.length > 0) {
       const primary = sources[0];
       try {

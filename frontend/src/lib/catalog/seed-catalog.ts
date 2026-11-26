@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db/prisma";
 
-export const CATALOG_VERSION = 20261101;
+export const CATALOG_VERSION = 20261102;
 
 export type QuantFormat = "FP16" | "BF16" | "INT8_CONVROT" | "W4A8" | "GGUF" | "FP8";
 
@@ -172,30 +172,6 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     hfRepoId: "cagliostrolab/animagine-xl-4.0",
     hfFilePath: "animagine-xl-4.0-opt.safetensors",
     civitaiModelId: "1188071",
-  },
-  {
-    slug: "wai-nsfw-illustrious-v110",
-    displayName: "WAI-NSFW-Illustrious SDXL v11",
-    modality: "IMAGE",
-    category: "checkpoints",
-    filename: "waiNSFWIllustrious_v110.safetensors",
-    sizeBytes: Math.round(6.6 * GB),
-    vramEstimateGb: 6.8,
-    compatibleBase: "Illustrious",
-    quantFormat: "FP16",
-    useCases: ["txt2img", "anime", "character_turnaround", "multi_char", "consistent_ip"],
-    styleStrengths: ["vibrant_anime", "glossy_illustration", "manhwa"],
-    t4Notes: "Single T4 :8188/:8189. Pair with sdxl_vae_fp16_fix on T4.",
-    recommendedConfig: {
-      steps: 26,
-      cfg: 6.0,
-      sampler: "euler_ancestral",
-      scheduler: "normal",
-      vae: "sdxl_vae_fp16_fix.safetensors",
-    },
-    hfRepoId: "guy39/wai-nsfw-illustrious-sdxl-v11.0",
-    hfFilePath: "waiNSFWIllustrious_v110.safetensors",
-    civitaiModelId: "827184",
   },
   {
     slug: "noobai-xl-v1-1",
@@ -1709,10 +1685,10 @@ export const SEED_WORKFLOW_TEMPLATES: SeedWorkflowSpec[] = [
     targetProfile: "IMAGE_CORE",
     description: "Illustrious + VN Character Sheet v4 turnaround with FaceDetailer and 4x-AnimeSharp upscaling.",
     vramRequiredGb: 10.5,
-    requiredModels: ["wai-nsfw-illustrious-v110", "sdxl-vae-fp16-fix", "vn-character-sheet-v4", "4x-animesharp", "yolo-face-yolov8m", "sam-vit-b"],
+    requiredModels: ["illustrious-xl-v2-0", "sdxl-vae-fp16-fix", "vn-character-sheet-v4", "4x-animesharp", "yolo-face-yolov8m", "sam-vit-b"],
     requiredNodes: ["CheckpointLoaderSimple", "VAELoader", "LoraLoader", "CLIPTextEncode", "KSampler", "VAEDecode", "UltralyticsDetectorProvider", "SAMLoader", "FaceDetailer", "UpscaleModelLoader", "ImageUpscaleWithModel", "SaveImage"],
     apiGraphTemplate: {
-      "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "waiNSFWIllustrious_v110.safetensors" } },
+      "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "Illustrious-XL-v2.0.safetensors" } },
       "2": { class_type: "VAELoader", inputs: { vae_name: "sdxl_vae_fp16_fix.safetensors" } },
       "3": { class_type: "LoraLoader", inputs: { model: ["1", 0], clip: ["1", 1], lora_name: "vn_character_sheet_v4.safetensors", strength_model: 0.85, strength_clip: 0.85 } },
       "4": { class_type: "EmptyLatentImage", inputs: { width: "{{width}}", height: "{{height}}", batch_size: 1 } },
@@ -2069,6 +2045,13 @@ export async function ensureUserCatalogSeeded(userId: string): Promise<void> {
   const assetBySlug = new Map(existingAssets.map((a) => [a.slug, a]));
   const wfBySlug = new Map(existingWorkflows.map((w) => [w.slug, w]));
 
+  // Remove deprecated seeded NSFW entry if present in older user catalogs
+  if (assetBySlug.has("wai-nsfw-illustrious-v110")) {
+    await prisma.modelAsset
+      .deleteMany({ where: { userId, slug: "wai-nsfw-illustrious-v110", isSeeded: true } })
+      .catch(() => {});
+  }
+
   for (const m of SEED_MODEL_CATALOG) {
     const mergedConfigJson = buildMergedRecommendedConfig(m);
     const reqNodesJson = m.requiredCustomNodes ? JSON.stringify(m.requiredCustomNodes) : null;
@@ -2161,7 +2144,9 @@ export async function ensureUserCatalogSeeded(userId: string): Promise<void> {
       });
     } else if (
       existingWf.isSeeded &&
-      (existingWf.apiGraphTemplateJson.trim() === "{}" || existingWf.apiGraphTemplateJson.trim() === "")
+      (existingWf.apiGraphTemplateJson.trim() === "{}" ||
+        existingWf.apiGraphTemplateJson.trim() === "" ||
+        existingWf.apiGraphTemplateJson.includes("waiNSFWIllustrious"))
     ) {
       await prisma.workflowTemplate.update({
         where: { id: existingWf.id },

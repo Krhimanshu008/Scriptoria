@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { getAuthContext } from "@/lib/auth/api-token";
+import { getWorkerAuthContext } from "@/lib/auth/api-token";
 import { ensureDbSchemaReady } from "@/lib/db/ensure-schema";
 
 export async function POST(req: NextRequest) {
   try {
-    const auth = await getAuthContext(req);
+    const auth = await getWorkerAuthContext(req);
     if (!auth) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -64,6 +64,20 @@ export async function POST(req: NextRequest) {
         updatedAt: new Date(),
       },
     });
+
+    // If linked to an interactive Studio Job (headless mode), update Job row so UI polling resolves
+    if (task.jobId) {
+      await prisma.job
+        .updateMany({
+          where: { id: task.jobId, userId: auth.userId },
+          data: {
+            status: "COMPLETED",
+            outputFiles: JSON.stringify(normalizedOutputs),
+            errorMessage: null,
+          },
+        })
+        .catch(() => null);
+    }
 
     // 2. Increment completed count on parent batch
     const updatedBatch = await prisma.batchJob.update({

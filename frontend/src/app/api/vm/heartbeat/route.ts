@@ -72,14 +72,15 @@ export async function POST(req: NextRequest) {
       updatedTargets.push(vm.target);
 
       const tStats = telemetry[vm.target];
+      const isHeadlessReady = Boolean(rawTelem.headlessMode === true && tStats?.ready);
       const nextStatus =
         requestedStatus === "OFFLINE"
           ? "OFFLINE"
           : requestedStatus === "ERROR"
           ? "ERROR"
-          : tStats?.ready && tunnelUrl
+          : tStats?.ready && (tunnelUrl || isHeadlessReady)
           ? "ONLINE"
-          : requestedStatus === "ONLINE" && tunnelUrl
+          : requestedStatus === "ONLINE" && (tunnelUrl || rawTelem.headlessMode === true)
           ? "ONLINE"
           : "STARTING";
 

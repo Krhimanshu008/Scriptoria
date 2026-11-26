@@ -54,6 +54,7 @@ export interface EnrichedKaggleAccount {
   totalAllowedSeconds: number;
   activeProfile: string;
   lastError?: string | null;
+  quotaError?: string | null;
 }
 
 const STEP_LABELS: Record<number, string> = {
@@ -132,6 +133,7 @@ export function useKaggleClusterAccounts(vms: PublicVmInstance[]) {
         totalAllowedSeconds: totalAllowed,
         activeProfile: slotVms[0]?.workerProfile || "BASE_COMFY",
         lastError: slotVms.find((v) => v.lastError)?.lastError,
+        quotaError: acc.quotaError || null,
       };
     });
   }, [accountsData, vms]);
@@ -143,7 +145,9 @@ export function useKaggleClusterAccounts(vms: PublicVmInstance[]) {
 
   const bestOfflineAccount = useMemo(() => {
     const offline = configuredAccounts.filter((a) => !a.isOnline && !a.isStarting);
-    return [...offline].sort((a, b) => b.remainingSeconds - a.remainingSeconds)[0] || null;
+    const healthy = offline.filter((a) => !a.quotaError);
+    const pool = healthy.length > 0 ? healthy : offline;
+    return [...pool].sort((a, b) => b.remainingSeconds - a.remainingSeconds)[0] || null;
   }, [configuredAccounts]);
 
   const refreshCluster = async () => {
@@ -172,8 +176,16 @@ export async function bootKaggleAccount(params: {
   workerProfile?: WorkerProfileId | string;
   currentProfile?: string;
   prewarmModels?: PrewarmModelRef[];
+  workerMode?: "headless_safe" | "interactive_tunnel";
 }): Promise<boolean> {
-  const { primaryTarget, alias, workerProfile, currentProfile, prewarmModels } = params;
+  const {
+    primaryTarget,
+    alias,
+    workerProfile,
+    currentProfile,
+    prewarmModels,
+    workerMode = "headless_safe",
+  } = params;
 
   const needProfilePatch =
     (workerProfile && workerProfile !== currentProfile) ||
@@ -202,7 +214,7 @@ export async function bootKaggleAccount(params: {
   const res = await fetch(`/api/vm/${encodeURIComponent(primaryTarget)}/toggle`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "boot" }),
+    body: JSON.stringify({ action: "boot", workerMode }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -262,6 +274,7 @@ export function KaggleVmLauncherDialog({
   const [busyAlias, setBusyAlias] = useState<string | null>(null);
   const [matchWorkflowProfile, setMatchWorkflowProfile] = useState(true);
   const [attachPrewarm, setAttachPrewarm] = useState(true);
+  const [workerMode, setWorkerMode] = useState<"headless_safe" | "interactive_tunnel">("headless_safe");
   const [profileOverrides, setProfileOverrides] = useState<Record<string, string>>({});
 
   const imageProfiles = WORKER_PROFILE_LIST.filter((p) => !isLlmWorkerProfile(p.id) && p.accelerator !== "tpu");
@@ -278,6 +291,7 @@ export function KaggleVmLauncherDialog({
         workerProfile: targetProfile,
         currentProfile: acc.activeProfile,
         prewarmModels: attachPrewarm ? prewarmModels : undefined,
+        workerMode,
       });
       if (ok && onTargetSelected) {
         onTargetSelected(acc.primaryTarget);
@@ -299,9 +313,11 @@ export function KaggleVmLauncherDialog({
   }
 
   async function handleBootAllOffline() {
-    const offlineList = configuredAccounts.filter((a) => !a.isOnline && !a.isStarting);
+    const offlineList = configuredAccounts.filter(
+      (a) => !a.isOnline && !a.isStarting && !a.quotaError
+    );
     if (offlineList.length === 0) {
-      toast.info("All configured Kaggle accounts are already starting or online.");
+      toast.info("All healthy configured Kaggle accounts are already starting or online.");
       return;
     }
     setBusyAlias("__ALL__");
@@ -393,7 +409,7 @@ export function KaggleVmLauncherDialog({
                 Boot Best ({bestOfflineAccount.alias.toUpperCase()})
               </Button>
             )}
-            {configuredAccounts.filter((a) => !a.isOnline && !a.isStarting).length > 1 && (
+            {configuredAccounts.filter((a) => !a.isOnline && !a.isStarting && !a.quotaError).length > 1 && (
               <Button
                 type="button"
                 size="sm"
@@ -407,9 +423,33 @@ export function KaggleVmLauncherDialog({
                 ) : (
                   <Power className="mr-1.5 h-3.5 w-3.5" />
                 )}
-                Boot All {configuredAccounts.filter((a) => !a.isOnline && !a.isStarting).length} Accounts
+                Boot All {configuredAccounts.filter((a) => !a.isOnline && !a.isStarting && !a.quotaError).length} Healthy
               </Button>
             )}
+          </div>
+        </div>
+
+        {/* Kaggle Execution Mode Selector (Protects against Tunnel/Proxy Bans) */}
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-zinc-800 bg-zinc-950/60 px-3 py-2 text-[11px]">
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex cursor-pointer items-center gap-1.5 text-emerald-300">
+              <input
+                type="radio"
+                name="kaggleWorkerMode"
+                checked={workerMode === "headless_safe"}
+                onChange={() => setWorkerMode("headless_safe")}
+              />
+              <span>Safe Headless Mode (No Tunnel · Batch + Studio Ready)</span>
+            </label>
+            <label className="flex cursor-pointer items-center gap-1.5 text-zinc-400">
+              <input
+                type="radio"
+                name="kaggleWorkerMode"
+                checked={workerMode === "interactive_tunnel"}
+                onChange={() => setWorkerMode("interactive_tunnel")}
+              />
+              <span>Interactive Tunnel Proxy (Higher Ban Risk)</span>
+            </label>
           </div>
         </div>
 
@@ -460,17 +500,23 @@ export function KaggleVmLauncherDialog({
                     </div>
 
                     <div className="flex items-center gap-2">
-                      <span className="inline-flex items-center gap-1 font-mono text-[10px] text-zinc-400">
-                        <Clock className="h-3 w-3 text-zinc-500" />
-                        {formatQuotaHrs(acc.remainingSeconds)} ({pct}%)
-                      </span>
+                      {acc.quotaError ? (
+                        <span className="rounded-full bg-rose-500/20 px-2 py-0.5 font-mono text-[10px] font-semibold text-rose-300">
+                          AUTH ERROR (401/403)
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 font-mono text-[10px] text-zinc-400">
+                          <Clock className="h-3 w-3 text-zinc-500" />
+                          {formatQuotaHrs(acc.remainingSeconds)} ({pct}%)
+                        </span>
+                      )}
                       <span
                         className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${
                           acc.isOnline
                             ? "bg-emerald-500/20 text-emerald-300"
                             : acc.isStarting
                             ? "bg-amber-500/20 text-amber-200"
-                            : acc.isError
+                            : acc.isError || acc.quotaError
                             ? "bg-rose-500/20 text-rose-300"
                             : "bg-zinc-800 text-zinc-400"
                         }`}
@@ -481,10 +527,31 @@ export function KaggleVmLauncherDialog({
                           ? STEP_LABELS[acc.maxStep] || "STARTING"
                           : acc.isError
                           ? "ERROR"
+                          : acc.quotaError
+                          ? "RESTRICTED"
                           : "OFFLINE"}
                       </span>
                     </div>
                   </div>
+
+                  {acc.quotaError && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-rose-500/35 bg-rose-950/35 px-2.5 py-1.5 text-[11px] text-rose-200">
+                      <span>{acc.quotaError}</span>
+                      <div className="flex items-center gap-2">
+                        <a
+                          href="https://www.kaggle.com/contact"
+                          target="_blank"
+                          rel="noreferrer"
+                          className="font-semibold underline hover:text-white"
+                        >
+                          Appeal Ban
+                        </a>
+                        <Link href="/settings/vault" className="font-semibold underline hover:text-white">
+                          Rotate Key in Vault
+                        </Link>
+                      </div>
+                    </div>
+                  )}
 
                   {acc.lastError && acc.isError && (
                     <p className="rounded border border-rose-500/30 bg-rose-950/40 px-2 py-1 text-[11px] text-rose-200">

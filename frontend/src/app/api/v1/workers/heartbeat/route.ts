@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { getAuthContext } from "@/lib/auth/api-token";
+import { getWorkerAuthContext } from "@/lib/auth/api-token";
 import { ensureDbSchemaReady } from "@/lib/db/ensure-schema";
 
 export async function POST(req: NextRequest) {
   try {
-    const auth = await getAuthContext(req);
+    const auth = await getWorkerAuthContext(req);
     if (!auth) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }

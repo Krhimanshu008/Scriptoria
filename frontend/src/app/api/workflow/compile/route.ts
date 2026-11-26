@@ -7,6 +7,7 @@ import { saveCompiledWorkflowTemplate } from "@/lib/workflow/registry";
 import { recommendWorkflowStacks, type RecommendWorkflowInput } from "@/lib/workflow/recommender";
 import { callLlmJson, resolveCandidateLlmConfigs } from "@/lib/agent/llm-client";
 import { ensureModelReadyOnVm } from "@/lib/catalog/ensure-helper";
+import { enqueueHeadlessBatchJobForStudio } from "@/lib/batch/studio-headless";
 import { appendSystemLog } from "@/lib/logs/logger";
 
 export async function POST(req: NextRequest) {
@@ -136,11 +137,47 @@ export async function POST(req: NextRequest) {
       const vm = await prisma.vmInstance.findUnique({
         where: { userId_target: { userId: user.userId, target } },
       });
-      if (!vm || vm.status !== "ONLINE" || !vm.publicUrl) {
+      if (!vm || vm.status !== "ONLINE") {
         return NextResponse.json(
-          { error: `GPU ${target.toUpperCase()} is offline. Boot it on VM Cluster first.` },
+          { error: `GPU ${target.toUpperCase()} is offline. Boot it via Kaggle Launcher first.` },
           { status: 400 }
         );
+      }
+
+      // Safe Headless Mode (no Cloudflare/Caddy proxy): enqueue outbound batch task + linked Job
+      if (!vm.publicUrl) {
+        const queued = await enqueueHeadlessBatchJobForStudio({
+          userId: user.userId,
+          vm,
+          prompt: spec.prompt || spec.dialogueText || `[Creator] ${compiled.pipeline}`,
+          negativePrompt: spec.negativePrompt || null,
+          checkpoint: spec.baseModel || compiled.pipeline,
+          width: spec.width || 1024,
+          height: spec.height || 1024,
+          steps: spec.steps || 20,
+          cfg: spec.cfg || 6.0,
+          seed: String(spec.seed || 0),
+          workerProfile: vm.workerProfile,
+          requiredModels: compiled.requiredModels,
+          graph: compiled.graph,
+        });
+
+        await appendSystemLog({
+          userId: user.userId,
+          vmInstanceId: vm.id,
+          category: "COMFYUI",
+          level: "INFO",
+          message: `Queued ${compiled.pipeline} job ${queued.jobId} for Safe Headless worker on ${target} (no tunnel).`,
+        });
+
+        return NextResponse.json({
+          ok: true,
+          status: "PROCESSING",
+          headless: true,
+          jobId: queued.jobId,
+          batchId: queued.batchId,
+          compiled,
+        });
       }
 
       // Ensure required models are cached/streaming before dispatch

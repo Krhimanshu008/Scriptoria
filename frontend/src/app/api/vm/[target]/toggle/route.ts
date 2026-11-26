@@ -41,7 +41,13 @@ export async function POST(
     });
     const groupTargets = sortVmsByCanonicalTarget(groupVms).map((v) => v.target);
 
-    const body = (await req.json().catch(() => ({}))) as { action?: string; force?: boolean };
+    const body = (await req.json().catch(() => ({}))) as {
+      action?: string;
+      force?: boolean;
+      workerMode?: "headless_safe" | "interactive_tunnel";
+    };
+    const requestedWorkerMode =
+      body.workerMode === "interactive_tunnel" ? "interactive_tunnel" : "headless_safe";
     const isKillRequested =
       body.action === "kill" ||
       body.action === "reset" ||
@@ -284,6 +290,7 @@ export async function POST(
             idleTimeoutSeconds: effectiveIdleMinutes * 60,
             prewarmModels,
             enableOfflineDatasetScan: vm.accountAlias === "acc1" || customDatasets.length > 0,
+            headlessMode: !isLlmProfile && requestedWorkerMode === "headless_safe",
           });
 
       await prisma.vmInstance.updateMany({

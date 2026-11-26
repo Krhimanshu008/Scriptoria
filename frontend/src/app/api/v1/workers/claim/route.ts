@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { getAuthContext } from "@/lib/auth/api-token";
+import { getWorkerAuthContext } from "@/lib/auth/api-token";
 import { ensureDbSchemaReady } from "@/lib/db/ensure-schema";
 
 export async function POST(req: NextRequest) {
   try {
-    const auth = await getAuthContext(req);
+    const auth = await getWorkerAuthContext(req);
     if (!auth) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -163,6 +163,14 @@ export async function POST(req: NextRequest) {
       } catch {}
     }
 
+    let requiredModels: Array<{ category: string; filename: string; slug?: string }> = [];
+    if (nextTask.requiredModelsJson) {
+      try {
+        const parsed = JSON.parse(nextTask.requiredModelsJson);
+        if (Array.isArray(parsed)) requiredModels = parsed;
+      } catch {}
+    }
+
     return NextResponse.json({
       task: {
         id: nextTask.id,
@@ -174,6 +182,7 @@ export async function POST(req: NextRequest) {
         workerProfile: nextTask.workerProfile,
         workflowSlug: nextTask.workflowSlug,
         baseCheckpoint: nextTask.baseCheckpoint,
+        requiredModels,
         inputParams,
         compiledGraph,
       },

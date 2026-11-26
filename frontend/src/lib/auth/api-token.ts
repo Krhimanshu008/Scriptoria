@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { ensureDbSchemaReady } from "@/lib/db/ensure-schema";
-import { getAuthUser, type SessionUser } from "@/lib/auth/session";
+import { getAuthUser, verifyVmRegistrationToken, type SessionUser } from "@/lib/auth/session";
 
 export function hashApiToken(rawToken: string): string {
   return crypto.createHash("sha256").update(rawToken).digest("hex");
@@ -81,5 +81,26 @@ export async function getAuthContext(req: NextRequest): Promise<ApiAuthContext |
     authKind: "session",
     scopes: ["ingest", "batch", "read", "admin"],
   };
+}
+
+/**
+ * Authenticates worker polling/completion routes via either API token, user session,
+ * or signed `VmToken <REG_JWT>` header issued to active cloud GPU workers.
+ */
+export async function getWorkerAuthContext(req: NextRequest): Promise<ApiAuthContext | null> {
+  const auth = req.headers.get("authorization")?.trim() || "";
+  if (auth.toLowerCase().startsWith("vmtoken ")) {
+    const vmJwt = auth.slice(8).trim();
+    const verified = verifyVmRegistrationToken(vmJwt);
+    if (verified?.userId) {
+      return {
+        userId: verified.userId,
+        email: `vm-${verified.sessionGroup}`,
+        authKind: "api_token",
+        scopes: ["batch", "worker"],
+      };
+    }
+  }
+  return getAuthContext(req);
 }
 

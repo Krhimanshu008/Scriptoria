@@ -216,7 +216,7 @@ Generate rich visual ComfyUI prompts matching the user's available models. Limit
     tracks: {
       visual: {
         prompt: `cinematic story illustration, masterpiece, detailed lighting: ${para.slice(0, 260)}`,
-        baseModel: defaults?.baseModel || "waiNSFWIllustrious_v110.safetensors",
+        baseModel: defaults?.baseModel || "Illustrious-XL-v2.0.safetensors",
         width: defaults?.width || 1024,
         height: defaults?.height || 1024,
       },

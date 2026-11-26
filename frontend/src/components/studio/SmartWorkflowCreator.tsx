@@ -155,7 +155,7 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
   const [showAllGpuSlots, setShowAllGpuSlots] = useState(false);
   const [showRawJson, setShowRawJson] = useState(false);
   const [pipeline, setPipeline] = useState<WorkflowPipelineKind>("sdxl_txt2img");
-  const [baseModel, setBaseModel] = useState("waiNSFWIllustrious_v110.safetensors");
+  const [baseModel, setBaseModel] = useState("Illustrious-XL-v2.0.safetensors");
   const [vaeModel, setVaeModel] = useState("sdxl_vae_fp16_fix.safetensors");
   const [lora1, setLora1] = useState("");
   const [lora1Strength, setLora1Strength] = useState(0.8);
