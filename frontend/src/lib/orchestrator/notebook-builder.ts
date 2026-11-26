@@ -1999,7 +1999,25 @@ should_upload_cache = False
 snapshot_meta = None
 if not os.path.exists(os.path.join(COMFY_DIR, "main.py")):
     cache_restored = False
-    if rclone_ok:
+    if os.path.exists("/kaggle/input"):
+        from pathlib import Path as _Path
+        for _ds_name in ("comfy_env.tar.gz", "comfy_env.tar"):
+            for _ds_arc in _Path("/kaggle/input").rglob(_ds_name):
+                if _ds_arc.is_file() and _ds_arc.stat().st_size > 100000:
+                    try:
+                        _t_ds = time.time()
+                        log_event(f"Pre-built Kaggle Dataset HIT ({_ds_arc.name})! Extracting to /tmp...", category="COMFYUI", level="SUCCESS")
+                        _tar_flag = "-xzf" if str(_ds_arc).endswith(".gz") else "-xf"
+                        subprocess.run(["tar", _tar_flag, str(_ds_arc), "-C", "/tmp"], check=True)
+                        if os.path.exists(os.path.join(COMFY_DIR, "main.py")):
+                            cache_restored = True
+                            log_event(f"Dataset ComfyUI restored in {round(time.time() - _t_ds, 1)}s!", category="COMFYUI", level="SUCCESS")
+                            break
+                    except Exception as _ds_err:
+                        log_event(f"Dataset restore failed ({_ds_err}); falling back.", category="COMFYUI", level="WARN")
+            if cache_restored:
+                break
+    if not cache_restored and rclone_ok:
         candidate_remotes = [FASTBOOT_REMOTE]
         if PROFILE_ID == "BASE_COMFY":
             candidate_remotes.append(f"{GDRIVE_BASE}/cache/fastboot_{PROVIDER}_py{PY_VER_TAG}_v1.tar.gz")
