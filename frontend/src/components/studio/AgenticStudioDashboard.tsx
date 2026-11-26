@@ -1,10 +1,14 @@
 "use client";
 
 import React, { useState } from "react";
-import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { Bot, Cpu, PanelRightClose, PanelRightOpen, Server } from "lucide-react";
+import { Bot, Cpu, Loader2, PanelRightClose, PanelRightOpen, Power, Server } from "lucide-react";
 import type { PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
+import { useClusterStore } from "@/store/cluster-store";
+import {
+  KaggleVmLauncherDialog,
+  useKaggleClusterAccounts,
+} from "@/components/studio/StudioVmLauncher";
 import { StudioWorkspace } from "@/components/studio/StudioWorkspace";
 import { SmartWorkflowCreator } from "@/components/studio/SmartWorkflowCreator";
 import { SceneBatchStudio } from "@/components/studio/SceneBatchStudio";
@@ -27,6 +31,8 @@ const STUDIO_TABS: Array<{ id: StudioTabId; label: string }> = [
 export function AgenticStudioDashboard() {
   const [activeTab, setActiveTab] = useState<StudioTabId>("single");
   const [agentDrawerOpen, setAgentDrawerOpen] = useState(false);
+  const [launcherOpen, setLauncherOpen] = useState(false);
+  const setSelectedTarget = useClusterStore((s) => s.setSelectedTarget);
 
   const { data: vmData } = useQuery<{ vms: PublicVmInstance[] }>({
     queryKey: ["vm-status"],
@@ -36,10 +42,15 @@ export function AgenticStudioDashboard() {
       return res.json();
     },
     staleTime: 2500,
+    refetchInterval: (q) =>
+      q.state.data?.vms?.some((v) => v.status === "STARTING") ? 3000 : 12000,
   });
 
   const vms = vmData?.vms ?? [];
   const onlineVms = vms.filter((v) => v.status === "ONLINE" || v.status === "BUSY");
+  const startingVms = vms.filter((v) => v.status === "STARTING");
+  const { configuredAccounts } = useKaggleClusterAccounts(vms);
+  const onlineKaggleCount = configuredAccounts.filter((a) => a.isOnline).length;
 
   return (
     <div className="space-y-4">
@@ -63,30 +74,54 @@ export function AgenticStudioDashboard() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {onlineVms.length === 0 ? (
-            <Link
-              href="/vms"
-              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-900 px-2.5 text-[11px] font-medium text-amber-300 hover:bg-zinc-800"
+          {onlineVms.map((v) => {
+            const total = v.vramTotalGb ?? 16;
+            const free = Math.max(0, total - (v.vramUsedGb ?? 0));
+            return (
+              <span
+                key={v.target}
+                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 font-mono text-[10px] text-emerald-300"
+              >
+                <Cpu className="h-3 w-3" />
+                <strong>{v.target.toUpperCase()}</strong>
+                <span className="text-emerald-200/75">{free.toFixed(1)}G</span>
+              </span>
+            );
+          })}
+
+          {startingVms.map((v) => (
+            <span
+              key={v.target}
+              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-amber-500/35 bg-amber-500/15 px-2 font-mono text-[10px] text-amber-200"
             >
-              <Server className="h-3 w-3" />
-              Boot GPUs
-            </Link>
-          ) : (
-            onlineVms.map((v) => {
-              const total = v.vramTotalGb ?? 16;
-              const free = Math.max(0, total - (v.vramUsedGb ?? 0));
-              return (
-                <span
-                  key={v.target}
-                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 font-mono text-[10px] text-emerald-300"
-                >
-                  <Cpu className="h-3 w-3" />
-                  <strong>{v.target.toUpperCase()}</strong>
-                  <span className="text-emerald-200/75">{free.toFixed(1)}G</span>
-                </span>
-              );
-            })
-          )}
+              <Loader2 className="h-3 w-3 animate-spin" />
+              <strong>{v.target.toUpperCase()}</strong>
+              <span>{v.stepProgress || 1}/5</span>
+            </span>
+          ))}
+
+          <button
+            type="button"
+            onClick={() => setLauncherOpen(true)}
+            className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-[11px] font-medium transition ${
+              onlineVms.length === 0 && startingVms.length === 0
+                ? "border-amber-500/45 bg-amber-500/15 text-amber-200 hover:bg-amber-500/25"
+                : "border-zinc-800 bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
+            }`}
+          >
+            {onlineVms.length === 0 && startingVms.length === 0 ? (
+              <Power className="h-3 w-3 text-amber-300" />
+            ) : (
+              <Server className="h-3 w-3 text-indigo-400" />
+            )}
+            <span>
+              {onlineVms.length === 0 && startingVms.length === 0
+                ? configuredAccounts.length > 0
+                  ? `Boot Kaggle VM (${configuredAccounts.length} Acct${configuredAccounts.length > 1 ? "s" : ""})`
+                  : "Boot Kaggle VM"
+                : `Kaggle VMs (${onlineKaggleCount}/${configuredAccounts.length || 3})`}
+            </span>
+          </button>
 
           <button
             type="button"
@@ -126,6 +161,13 @@ export function AgenticStudioDashboard() {
           </aside>
         )}
       </div>
+
+      <KaggleVmLauncherDialog
+        open={launcherOpen}
+        onOpenChange={setLauncherOpen}
+        vms={vms}
+        onTargetSelected={(t) => setSelectedTarget(t, true)}
+      />
     </div>
   );
 }

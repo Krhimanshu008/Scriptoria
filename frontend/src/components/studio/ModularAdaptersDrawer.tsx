@@ -13,6 +13,7 @@ import {
   Trash2,
   Loader2,
 } from "lucide-react";
+import type { WorkflowPipelineKind } from "@/lib/workflow/compiler";
 import type {
   ControlNetMode,
   ControlNetModuleInput,
@@ -21,6 +22,13 @@ import type {
   MultiCharRegionInput,
   RelightMode,
 } from "@/lib/workflow/modules";
+
+export const DIT_SPLIT_PIPELINES = new Set<WorkflowPipelineKind>([
+  "flux3_klein",
+  "moss_image",
+  "qwen21_edit",
+  "panorama_360",
+]);
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -151,6 +159,7 @@ interface ModularAdaptersDrawerProps {
   onChange: (next: ModularAdaptersState) => void;
   target: string;
   isVmOnline: boolean;
+  pipeline?: WorkflowPipelineKind;
 }
 
 /**
@@ -161,6 +170,7 @@ export function ModularAdaptersDrawer({
   onChange,
   target,
   isVmOnline,
+  pipeline,
 }: ModularAdaptersDrawerProps) {
   const [openSection, setOpenSection] = useState<"ip" | "cn" | "chars" | "post" | null>("ip");
 
@@ -432,12 +442,17 @@ export function ModularAdaptersDrawer({
             Relighting, Hand/Face Detailer &amp; Dual-T4 Split
           </span>
           <span className="font-mono text-[10px] text-zinc-400">
-            {value.dualGpuSplit ? "Dual-T4 Split" : "Single T4"}
+            {value.dualGpuSplit ? "Dual-T4 Split (32G DiT)" : "Standard 16G T4"}
           </span>
         </button>
 
         {openSection === "post" && (
           <div className="space-y-2.5 border-t border-zinc-800/80 p-3">
+            {value.dualGpuSplit && pipeline && !DIT_SPLIT_PIPELINES.has(pipeline) && (
+              <div className="rounded border border-amber-500/35 bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-200">
+                Note: SDXL / NoobAI / Animagine run fastest on Standard 16G (:8188 &amp; :8189 independent GPUs). Dual-T4 Split is meant for 5B+ DiTs (FLUX 3, MOSS, Qwen 2.1).
+              </div>
+            )}
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <div className="space-y-1">
                 <Label className="text-[11px] text-zinc-300">Relight / Lighting Pass</Label>

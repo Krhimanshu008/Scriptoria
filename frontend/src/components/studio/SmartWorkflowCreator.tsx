@@ -14,8 +14,13 @@ import {
   Cpu,
   Layers,
   DownloadCloud,
+  Power,
+  Code2,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import type { PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
+import type { WorkerProfileId } from "@/lib/catalog/worker-profiles";
 import type { DrivePreviewCandidate } from "@/app/api/catalog/scan-drive/route";
 import type { CompiledWorkflowResult, WorkflowBuildSpec, WorkflowPipelineKind } from "@/lib/workflow/compiler";
 import type { WorkflowStackRecommendation } from "@/lib/workflow/recommender";
@@ -24,9 +29,17 @@ import { WorkflowRecommenderBar } from "@/components/studio/WorkflowRecommenderB
 import {
   ModularAdaptersDrawer,
   DEFAULT_MODULAR_ADAPTERS,
+  DIT_SPLIT_PIPELINES,
   buildAdapterArraysFromState,
   type ModularAdaptersState,
 } from "@/components/studio/ModularAdaptersDrawer";
+import {
+  KaggleVmLauncherDialog,
+  bootKaggleAccount,
+  formatQuotaHrs,
+  useKaggleClusterAccounts,
+  type PrewarmModelRef,
+} from "@/components/studio/StudioVmLauncher";
 import {
   Dialog,
   DialogContent,
@@ -73,13 +86,31 @@ const PIPELINE_OPTIONS: Array<{ id: WorkflowPipelineKind; label: string; group: 
   { id: "video_latentsync", label: "LatentSync Lip-Sync Overlay", group: "VIDEO" },
 ];
 
+function inferProfileForPipeline(
+  pipeline: WorkflowPipelineKind,
+  dualGpuSplit: boolean
+): WorkerProfileId {
+  if (dualGpuSplit || DIT_SPLIT_PIPELINES.has(pipeline)) return "IMAGE_DIT_DUAL_T4";
+  if (pipeline === "flux_gguf" || pipeline === "qwen_edit" || pipeline === "anima_v1") {
+    return "IMAGE_GGUF_EDIT";
+  }
+  if (pipeline.startsWith("audio_") || pipeline === "video_latentsync") return "AUDIO_LIPSYNC";
+  if (pipeline === "video_ltx") return "VIDEO_MOTION";
+  return "IMAGE_CORE";
+}
+
 export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
   const onlineVms = useMemo(
     () => vms.filter((v) => v.status === "ONLINE" || v.status === "BUSY"),
     [vms]
   );
+  const { configuredAccounts, bestOfflineAccount, refreshCluster } = useKaggleClusterAccounts(vms);
 
   const [target, setTarget] = useState(onlineVms[0]?.target || "gpu0");
+  const [launcherOpen, setLauncherOpen] = useState(false);
+  const [bootingTarget, setBootingTarget] = useState(false);
+  const [showAllGpuSlots, setShowAllGpuSlots] = useState(false);
+  const [showRawJson, setShowRawJson] = useState(false);
   const [pipeline, setPipeline] = useState<WorkflowPipelineKind>("sdxl_txt2img");
   const [baseModel, setBaseModel] = useState("waiNSFWIllustrious_v110.safetensors");
   const [vaeModel, setVaeModel] = useState("sdxl_vae_fp16_fix.safetensors");
@@ -131,7 +162,55 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
   });
 
   // Fetch cached models on currently selected ONLINE VM so picker shows ON GPU badge
-  const selectedVmOnline = onlineVms.some((v) => v.target === target);
+  const activeVm = vms.find((v) => v.target === target);
+  const selectedVmOnline = activeVm?.status === "ONLINE" || activeVm?.status === "BUSY";
+  const selectedVmStarting = activeVm?.status === "STARTING";
+  const neededProfile: WorkerProfileId =
+    (compiled?.recommendedProfile as WorkerProfileId | undefined) ??
+    inferProfileForPipeline(pipeline, adapters.dualGpuSplit);
+  const prewarmList: PrewarmModelRef[] = useMemo(
+    () =>
+      (compiled?.requiredModels ?? []).slice(0, 3).map((m) => ({
+        slug: m.slug,
+        category: m.category,
+        filename: m.filename,
+      })),
+    [compiled]
+  );
+  const primaryConfiguredTargets = useMemo(
+    () => new Set(configuredAccounts.map((a) => a.primaryTarget)),
+    [configuredAccounts]
+  );
+  const accountByTarget = useMemo(
+    () => new Map(configuredAccounts.flatMap((a) => a.targets.map((t) => [t, a] as const))),
+    [configuredAccounts]
+  );
+  const visibleGpuSlots = useMemo(() => {
+    const baseList = vms.length
+      ? vms
+      : ([
+          {
+            target: "gpu0",
+            status: "OFFLINE",
+            workerProfile: "IMAGE_CORE",
+            accountAlias: "acc1",
+            stepProgress: 0,
+          },
+        ] as PublicVmInstance[]);
+    return baseList.filter(
+      (v) =>
+        showAllGpuSlots ||
+        configuredAccounts.length === 0 ||
+        v.status === "ONLINE" ||
+        v.status === "BUSY" ||
+        v.status === "STARTING" ||
+        v.target === target ||
+        primaryConfiguredTargets.has(v.target)
+    );
+  }, [vms, showAllGpuSlots, configuredAccounts.length, target, primaryConfiguredTargets]);
+  const selectedAccountForTarget =
+    accountByTarget.get(target) || bestOfflineAccount || null;
+
   const { data: vmCatalog } = useQuery<{
     models?: { checkpoints?: string[]; vaes?: string[]; loras?: string[] };
   }>({
@@ -237,6 +316,16 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
       relight: spec.relight || "none",
       dualGpuSplit: Boolean(spec.dualGpuSplit || spec.pipeline === "flux3_klein" || spec.pipeline === "moss_image" || spec.pipeline === "qwen21_edit" || spec.pipeline === "panorama_360"),
       enable360Preview: Boolean(spec.enable360Preview || spec.pipeline === "panorama_360"),
+    }));
+  }
+
+  function handlePipelineChange(nextPipeline: WorkflowPipelineKind) {
+    setPipeline(nextPipeline);
+    const isDiT = DIT_SPLIT_PIPELINES.has(nextPipeline);
+    setAdapters((prev) => ({
+      ...prev,
+      dualGpuSplit: isDiT,
+      enable360Preview: nextPipeline === "panorama_360",
     }));
   }
 
@@ -460,7 +549,7 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
               <Label className="text-[11px]">Pipeline Architecture</Label>
               <select
                 value={pipeline}
-                onChange={(e) => setPipeline(e.target.value as WorkflowPipelineKind)}
+                onChange={(e) => handlePipelineChange(e.target.value as WorkflowPipelineKind)}
                 className="glass-input w-full rounded-xl px-3 py-2 text-xs text-zinc-100"
               >
                 {PIPELINE_OPTIONS.map((op) => (
@@ -472,20 +561,46 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
             </div>
 
             <div className="space-y-1">
-              <Label className="text-[11px]">Target GPU Slot</Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label className="text-[11px]">Target GPU Slot</Label>
+                <button
+                  type="button"
+                  onClick={() => setLauncherOpen(true)}
+                  className="font-mono text-[10px] text-amber-300 hover:text-amber-200 hover:underline"
+                >
+                  Manage Kaggle ({configuredAccounts.length})
+                </button>
+              </div>
               <select
                 value={target}
                 onChange={(e) => setTarget(e.target.value)}
                 className="glass-input w-full rounded-xl px-3 py-2 font-mono text-xs text-zinc-100"
               >
-                {(vms.length ? vms : [{ target: "gpu0", status: "OFFLINE", workerProfile: "BASE_COMFY" }]).map(
-                  (v) => (
+                {visibleGpuSlots.map((v) => {
+                  const acc = accountByTarget.get(v.target);
+                  const quotaLabel = acc ? ` · ${formatQuotaHrs(acc.remainingSeconds)}` : "";
+                  const stepSuffix = v.status === "STARTING" ? ` ${v.stepProgress || 1}/5` : "";
+                  return (
                     <option key={v.target} value={v.target} className="bg-zinc-900">
-                      {v.target.toUpperCase()} · {v.status} ({v.workerProfile})
+                      {v.target.toUpperCase()} ·{" "}
+                      {acc ? `${acc.alias}${acc.username ? ` (${acc.username})` : ""}` : v.accountAlias || "unlinked"}
+                      {quotaLabel} · {v.status}
+                      {stepSuffix} · {v.workerProfile}
                     </option>
-                  )
-                )}
+                  );
+                })}
               </select>
+              {(vms.length > visibleGpuSlots.length || showAllGpuSlots) && (
+                <label className="mt-1 flex cursor-pointer items-center gap-1.5 text-[10px] text-zinc-500 hover:text-zinc-300">
+                  <input
+                    type="checkbox"
+                    checked={showAllGpuSlots}
+                    onChange={(e) => setShowAllGpuSlots(e.target.checked)}
+                    className="h-3 w-3"
+                  />
+                  Show all {vms.length} cluster slots (secondary :8189, Colab, TPU)
+                </label>
+              )}
             </div>
           </div>
 
@@ -601,6 +716,7 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
               onChange={setAdapters}
               target={target}
               isVmOnline={selectedVmOnline}
+              pipeline={pipeline}
             />
           )}
 
@@ -708,7 +824,7 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
               type="button"
               disabled={Boolean(busyAction) || !selectedVmOnline}
               onClick={() => runCreatorAction("compile_and_run")}
-              className="bg-indigo-600 text-xs font-semibold text-white hover:bg-indigo-500"
+              className="bg-indigo-600 text-xs font-semibold text-white hover:bg-indigo-500 disabled:opacity-45"
             >
               {busyAction === "compile_and_run" ? (
                 <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
@@ -717,7 +833,66 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
               )}
               Ensure &amp; Run on {target.toUpperCase()}
             </Button>
+
+            {selectedVmStarting ? (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setLauncherOpen(true)}
+                className="border-amber-500/40 bg-amber-500/15 text-xs text-amber-200 hover:bg-amber-500/25"
+              >
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin text-amber-300" />
+                Booting {target.toUpperCase()} · {activeVm?.stepProgress || 1}/5
+              </Button>
+            ) : !selectedVmOnline && selectedAccountForTarget ? (
+              <Button
+                type="button"
+                disabled={bootingTarget}
+                onClick={async () => {
+                  setBootingTarget(true);
+                  try {
+                    const ok = await bootKaggleAccount({
+                      primaryTarget: selectedAccountForTarget.primaryTarget,
+                      alias: selectedAccountForTarget.alias,
+                      workerProfile: neededProfile,
+                      currentProfile: selectedAccountForTarget.vms[0]?.workerProfile,
+                      prewarmModels: prewarmList,
+                    });
+                    if (ok) {
+                      setTarget(selectedAccountForTarget.primaryTarget);
+                      await refreshCluster();
+                    }
+                  } finally {
+                    setBootingTarget(false);
+                  }
+                }}
+                className="bg-amber-500 text-xs font-semibold text-zinc-950 hover:bg-amber-400"
+              >
+                {bootingTarget ? (
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Power className="mr-1.5 h-3.5 w-3.5" />
+                )}
+                Boot {selectedAccountForTarget.alias.toUpperCase()} ({neededProfile})
+              </Button>
+            ) : null}
+
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setLauncherOpen(true)}
+              className="border-zinc-700 bg-zinc-900 text-xs text-zinc-200 hover:bg-zinc-800"
+            >
+              <Power className="mr-1.5 h-3.5 w-3.5 text-amber-300" />
+              {selectedVmOnline ? "Kaggle VMs" : "Choose Account"}
+            </Button>
           </div>
+          {selectedVmOnline && activeVm?.workerProfile && activeVm.workerProfile !== neededProfile && (
+            <p className="text-[11px] text-amber-300/90">
+              Note: {target.toUpperCase()} is currently running <strong>{activeVm.workerProfile}</strong>, while this pipeline recommends{" "}
+              <strong>{neededProfile}</strong>. Click <strong>Kaggle VMs</strong> to boot another account with {neededProfile}.
+            </p>
+          )}
         </div>
 
         {/* Right: Resource Preflight Inspector + Save Template */}
@@ -811,9 +986,30 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
                   </div>
                 ))}
 
-                <pre className="max-h-48 overflow-auto rounded-xl border border-white/10 bg-black/50 p-3 font-mono text-[10px] text-zinc-300">
-                  {JSON.stringify(compiled.graph, null, 2)}
-                </pre>
+                <div className="rounded-lg border border-zinc-800 bg-zinc-950">
+                  <button
+                    type="button"
+                    onClick={() => setShowRawJson((p) => !p)}
+                    className="flex w-full items-center justify-between px-3 py-2 text-left text-[11px] font-medium text-zinc-300 hover:text-white"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <Code2 className="h-3.5 w-3.5 text-zinc-400" />
+                      <span>
+                        {showRawJson ? "Hide" : "Show"} API Graph JSON ({Object.keys(compiled.graph).length} nodes)
+                      </span>
+                    </span>
+                    {showRawJson ? (
+                      <ChevronDown className="h-3.5 w-3.5 text-zinc-400" />
+                    ) : (
+                      <ChevronRight className="h-3.5 w-3.5 text-zinc-400" />
+                    )}
+                  </button>
+                  {showRawJson && (
+                    <pre className="max-h-56 overflow-auto border-t border-zinc-800 bg-black/60 p-3 font-mono text-[10px] text-zinc-300">
+                      {JSON.stringify(compiled.graph, null, 2)}
+                    </pre>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -838,6 +1034,15 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
           </div>
         </div>
       </div>
+
+      <KaggleVmLauncherDialog
+        open={launcherOpen}
+        onOpenChange={setLauncherOpen}
+        vms={vms}
+        desiredProfile={neededProfile}
+        prewarmModels={prewarmList}
+        onTargetSelected={(t) => setTarget(t)}
+      />
 
       {/* AI-Assisted 5 TB Drive Preview & Review Modal */}
       <Dialog open={Boolean(driveScanModal)} onOpenChange={(o) => !o && setDriveScanModal(null)}>

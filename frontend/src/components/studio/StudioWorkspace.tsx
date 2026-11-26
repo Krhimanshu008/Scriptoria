@@ -17,6 +17,7 @@ import {
   FileJson,
   HardDrive,
   Shuffle,
+  Power,
 } from "lucide-react";
 import type { PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
 import type { VmStoredModelItem } from "@/lib/orchestrator/rclone-client";
@@ -24,6 +25,12 @@ import { WORKFLOW_PRESETS, type WorkflowPreset } from "@/lib/orchestrator/workfl
 import { isLlmWorkerProfile } from "@/lib/catalog/worker-profiles";
 import { useClusterStore } from "@/store/cluster-store";
 import { VmLogsDialog } from "@/components/gpu/VmLogsDialog";
+import {
+  KaggleVmLauncherDialog,
+  bootKaggleAccount,
+  formatQuotaHrs,
+  useKaggleClusterAccounts,
+} from "@/components/studio/StudioVmLauncher";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -52,6 +59,9 @@ export function StudioWorkspace({ onOpenArchitect }: { onOpenArchitect?: () => v
   const [exportingJson, setExportingJson] = useState(false);
   const [startingStream, setStartingStream] = useState(false);
   const [logsOpen, setLogsOpen] = useState(false);
+  const [launcherOpen, setLauncherOpen] = useState(false);
+  const [bootingQuick, setBootingQuick] = useState(false);
+  const [showAllSlots, setShowAllSlots] = useState(false);
   const [multiGpuMode, setMultiGpuMode] = useState(false);
   const [selectedTargets, setSelectedTargets] = useState<string[]>([]);
 
@@ -63,11 +73,26 @@ export function StudioWorkspace({ onOpenArchitect }: { onOpenArchitect?: () => v
       return res.json();
     },
     staleTime: 4000,
+    refetchInterval: (q) =>
+      q.state.data?.vms?.some((v) => v.status === "STARTING") ? 3000 : 12000,
   });
 
   const vms = vmData?.vms ?? [];
   const activeVm = vms.find((v) => v.target === target);
   const isTargetOnline = activeVm?.status === "ONLINE";
+  const { configuredAccounts, bestOfflineAccount, refreshCluster } = useKaggleClusterAccounts(vms);
+  const primaryConfiguredTargets = new Set(configuredAccounts.map((a) => a.primaryTarget));
+  const visibleVms =
+    showAllSlots || configuredAccounts.length === 0
+      ? vms
+      : vms.filter(
+          (v) =>
+            v.status === "ONLINE" ||
+            v.status === "BUSY" ||
+            v.status === "STARTING" ||
+            v.target === target ||
+            primaryConfiguredTargets.has(v.target)
+        );
 
   const {
     data: catalogData,
@@ -362,7 +387,7 @@ export function StudioWorkspace({ onOpenArchitect }: { onOpenArchitect?: () => v
               Fan-Out {multiGpuMode && selectedTargets.length > 0 ? `(${selectedTargets.length})` : ""}
             </button>
 
-            {vms.map((v) => {
+            {visibleVms.map((v) => {
               const isSelected = multiGpuMode
                 ? selectedTargets.includes(v.target)
                 : v.target === target;
@@ -392,7 +417,11 @@ export function StudioWorkspace({ onOpenArchitect }: { onOpenArchitect?: () => v
                       ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
                       : "border-white/10 bg-white/[0.04] text-zinc-400 hover:text-white"
                   } ${isLlm ? "opacity-60" : ""}`}
-                  title={isLlm ? "LLM Profile Slot" : undefined}
+                  title={
+                    isLlm
+                      ? `LLM Profile Slot (${v.accountAlias})`
+                      : `${v.accountAlias} · ${v.workerProfile}`
+                  }
                 >
                   <span
                     className={`h-1.5 w-1.5 rounded-full ${
@@ -401,19 +430,40 @@ export function StudioWorkspace({ onOpenArchitect }: { onOpenArchitect?: () => v
                           ? "bg-cyan-400"
                           : "bg-emerald-400"
                         : v.status === "STARTING"
-                        ? "bg-amber-400"
+                        ? "bg-amber-400 animate-pulse"
                         : "bg-zinc-600"
                     }`}
                   />
                   {v.target.toUpperCase()}
+                  {primaryConfiguredTargets.has(v.target) && !showAllSlots ? `·${v.accountAlias}` : ""}
                   {multiGpuMode && isSelected ? " ✓" : ""}
                 </button>
               );
             })}
+
+            {vms.length > visibleVms.length || showAllSlots ? (
+              <button
+                type="button"
+                onClick={() => setShowAllSlots((p) => !p)}
+                className="rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-1 font-mono text-[10px] text-zinc-400 hover:text-zinc-200"
+              >
+                {showAllSlots ? "Configured" : `All ${vms.length}`}
+              </button>
+            ) : null}
           </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setLauncherOpen(true)}
+            className="h-7 border-amber-500/35 bg-amber-500/10 text-[11px] text-amber-200 hover:bg-amber-500/20"
+          >
+            <Power className="mr-1 h-3 w-3 text-amber-300" />
+            Boot Kaggle
+          </Button>
           {isTargetOnline && (
             <div className="glass-pill hidden items-center gap-2 rounded-lg px-2.5 py-1 text-[11px] text-zinc-300 md:flex">
               <HardDrive className="h-3 w-3 text-emerald-400" />
@@ -892,6 +942,97 @@ export function StudioWorkspace({ onOpenArchitect }: { onOpenArchitect?: () => v
               </>
             )}
           </Button>
+
+          {!isTargetOnline && !multiGpuMode && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">
+              {activeVm?.status === "STARTING" ? (
+                <>
+                  <span className="flex items-center gap-2 text-amber-200">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-300" />
+                    Booting {activeVm.target.toUpperCase()} ({activeVm.accountAlias}) · Step{" "}
+                    {activeVm.stepProgress || 1}/5... Auto-connecting when ready.
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setLauncherOpen(true)}
+                    className="h-7 border-amber-400/35 bg-black/30 text-[11px] text-amber-200 hover:bg-black/50"
+                  >
+                    Manage VMs
+                  </Button>
+                </>
+              ) : bestOfflineAccount ? (
+                <>
+                  <div className="text-[11px] text-zinc-300">
+                    <span className="font-semibold text-amber-200">
+                      {bestOfflineAccount.alias.toUpperCase()}
+                    </span>{" "}
+                    ({bestOfflineAccount.username || bestOfflineAccount.primaryTarget.toUpperCase()}) ·{" "}
+                    <span className="font-mono text-emerald-300">
+                      {formatQuotaHrs(bestOfflineAccount.remainingSeconds)} left
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={bootingQuick}
+                      onClick={async () => {
+                        setBootingQuick(true);
+                        try {
+                          const ok = await bootKaggleAccount({
+                            primaryTarget: bestOfflineAccount.primaryTarget,
+                            alias: bestOfflineAccount.alias,
+                            workerProfile: "IMAGE_CORE",
+                            currentProfile: bestOfflineAccount.vms[0]?.workerProfile,
+                          });
+                          if (ok) {
+                            setSelectedTarget(bestOfflineAccount.primaryTarget, true);
+                            await refreshCluster();
+                          }
+                        } finally {
+                          setBootingQuick(false);
+                        }
+                      }}
+                      className="h-7 bg-amber-500 text-[11px] font-semibold text-zinc-950 hover:bg-amber-400"
+                    >
+                      {bootingQuick ? (
+                        <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                      ) : (
+                        <Power className="mr-1 h-3 w-3" />
+                      )}
+                      Boot {bestOfflineAccount.alias.toUpperCase()} ({bestOfflineAccount.primaryTarget.toUpperCase()})
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setLauncherOpen(true)}
+                      className="h-7 border-zinc-700 bg-zinc-900 text-[11px] text-zinc-200 hover:bg-zinc-800"
+                    >
+                      All Accounts
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <span className="text-[11px] text-zinc-300">
+                    No active GPU connected. Launch any of your Kaggle Dual-T4 notebooks inline.
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => setLauncherOpen(true)}
+                    className="h-7 bg-amber-500 text-[11px] font-semibold text-zinc-950 hover:bg-amber-400"
+                  >
+                    <Power className="mr-1 h-3 w-3" />
+                    Open Kaggle Launcher
+                  </Button>
+                </>
+              )}
+            </div>
+          )}
         </form>
 
         {/* Render Canvas */}
@@ -963,6 +1104,13 @@ export function StudioWorkspace({ onOpenArchitect }: { onOpenArchitect?: () => v
       </div>
 
       <VmLogsDialog target={target} open={logsOpen} onOpenChange={setLogsOpen} />
+      <KaggleVmLauncherDialog
+        open={launcherOpen}
+        onOpenChange={setLauncherOpen}
+        vms={vms}
+        desiredProfile="IMAGE_CORE"
+        onTargetSelected={(t) => setSelectedTarget(t, true)}
+      />
     </div>
   );
 }
