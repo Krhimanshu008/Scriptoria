@@ -13,10 +13,20 @@ import {
   AlertTriangle,
   Cpu,
   Layers,
+  DownloadCloud,
 } from "lucide-react";
 import type { PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
 import type { DrivePreviewCandidate } from "@/app/api/catalog/scan-drive/route";
 import type { CompiledWorkflowResult, WorkflowBuildSpec, WorkflowPipelineKind } from "@/lib/workflow/compiler";
+import type { WorkflowStackRecommendation } from "@/lib/workflow/recommender";
+import type { StylePresetId } from "@/lib/workflow/modules";
+import { WorkflowRecommenderBar } from "@/components/studio/WorkflowRecommenderBar";
+import {
+  ModularAdaptersDrawer,
+  DEFAULT_MODULAR_ADAPTERS,
+  buildAdapterArraysFromState,
+  type ModularAdaptersState,
+} from "@/components/studio/ModularAdaptersDrawer";
 import {
   Dialog,
   DialogContent,
@@ -42,10 +52,19 @@ interface CatalogModelItem {
 }
 
 const PIPELINE_OPTIONS: Array<{ id: WorkflowPipelineKind; label: string; group: string }> = [
-  { id: "sdxl_txt2img", label: "SDXL / Illustrious / Turbo Txt2Img", group: "IMAGE" },
-  { id: "sdxl_detailer_upscale", label: "Character + FaceDetailer + 4x Upscaler", group: "IMAGE" },
+  { id: "sdxl_txt2img", label: "Illustrious v2.0 / SDXL Standard (16G T4)", group: "IMAGE" },
+  { id: "noob_vpred", label: "NoobAI-XL V-Pred 1.0 (ZSNR Dramatic Anime)", group: "IMAGE" },
+  { id: "animagine_v4", label: "Animagine XL 4.0 Opt (Clean Studio Cel)", group: "IMAGE" },
+  { id: "sdxl_detailer_upscale", label: "SDXL / Character + FaceDetailer + 4x Upscaler", group: "IMAGE" },
+  { id: "anima_v1", label: "Anima Turbo v1.0 GGUF + Ref Adapter v2 (16G T4)", group: "IMAGE" },
+  { id: "neta_lumina", label: "NetaYume Lumina v4 (Gothic Anime DiT)", group: "IMAGE" },
+  { id: "flux3_klein", label: "FLUX 3 Image Klein INT8 ConvRot (Dual-T4 Split 32G)", group: "DUAL-T4" },
+  { id: "moss_image", label: "MOSS-Image 5B INT8 + 8-Step DMD2 (Dual-T4 Split 32G)", group: "DUAL-T4" },
+  { id: "qwen21_edit", label: "Qwen-Image 2.1 Turbo INT8 ConvRot (Dual-T4 Split 32G)", group: "DUAL-T4" },
+  { id: "panorama_360", label: "Qwen 2512 + qwen-360-diffusion (360° Panorama)", group: "DUAL-T4" },
   { id: "flux_gguf", label: "Flux.1 Dev GGUF (16 GB T4)", group: "IMAGE" },
-  { id: "qwen_edit", label: "Qwen-Image-Edit 2511 (GGUF)", group: "IMAGE" },
+  { id: "qwen_edit", label: "Qwen-Image-Edit 2511 (GGUF 4-Step Edit)", group: "IMAGE" },
+  { id: "modular", label: "Custom Modular Pipeline (Auto-Inferred)", group: "IMAGE" },
   { id: "audio_kokoro", label: "Kokoro-82M Fast Dialogue TTS", group: "AUDIO" },
   { id: "audio_f5", label: "F5-TTS Zero-Shot Voice Clone", group: "AUDIO" },
   { id: "audio_mmaudio", label: "MMAudio Video-Synced Foley SFX", group: "AUDIO" },
@@ -80,6 +99,9 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
   const [cfg, setCfg] = useState(6.0);
   const [dialogueText, setDialogueText] = useState("");
   const [voice, setVoice] = useState("af_heart");
+  const [stylePreset, setStylePreset] = useState<StylePresetId>("anime_vibrant");
+  const [adapters, setAdapters] = useState<ModularAdaptersState>(DEFAULT_MODULAR_ADAPTERS);
+  const [streamingMissing, setStreamingMissing] = useState(false);
 
   const [compiled, setCompiled] = useState<CompiledWorkflowResult | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -140,11 +162,19 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
   }
 
   const baseCandidates = models.filter((m) => {
+    if (pipeline === "flux3_klein") return m.compatibleBase === "Flux3Klein" && m.category === "diffusion_models";
+    if (pipeline === "moss_image") return m.compatibleBase === "MOSSImage" && (m.category === "diffusion_models" || m.category === "unet");
+    if (pipeline === "qwen21_edit") return m.compatibleBase === "Qwen21" && m.category === "diffusion_models";
+    if (pipeline === "anima_v1") return m.compatibleBase === "Anima" && (m.category === "unet" || m.category === "diffusion_models");
+    if (pipeline === "panorama_360") return m.compatibleBase === "Qwen2512" && m.category === "unet";
+    if (pipeline === "neta_lumina") return m.compatibleBase === "NetaLumina";
+    if (pipeline === "noob_vpred") return m.compatibleBase.includes("Noob") && m.category === "checkpoints";
+    if (pipeline === "animagine_v4") return m.compatibleBase === "Animagine";
     if (pipeline === "flux_gguf") return m.category === "unet" || m.compatibleBase.includes("Flux");
-    if (pipeline === "qwen_edit") return m.category === "diffusion_models" || m.compatibleBase.includes("Qwen");
+    if (pipeline === "qwen_edit") return m.category === "diffusion_models" || m.compatibleBase.includes("QwenEdit");
     if (pipeline.startsWith("audio_")) return m.modality === "AUDIO" || m.category === "checkpoints";
     if (pipeline.startsWith("video_")) return m.modality === "VIDEO";
-    return m.category === "checkpoints";
+    return m.category === "checkpoints" || m.category === "diffusion_models" || m.category === "unet";
   });
 
   const vaeCandidates = models.filter((m) => m.category === "vae");
@@ -152,13 +182,21 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
   const upscalerCandidates = models.filter((m) => m.category === "upscale_models");
 
   function buildSpec(): WorkflowBuildSpec {
+    const adapterArrays = buildAdapterArraysFromState(adapters);
     return {
       pipeline,
+      stylePreset,
       baseModel: baseModel || undefined,
       vaeModel: vaeModel || undefined,
-      loras: lora1 ? [{ filename: lora1, strength: lora1Strength }] : [],
-      upscalerModel: upscalerModel || undefined,
+      loras: lora1 ? [{ filename: lora1, strength: lora1Strength }] : undefined,
+      ...adapterArrays,
+      relight: adapters.relight,
+      relightRefImagePath: adapters.relightRefImage || undefined,
       enableFaceDetailer,
+      enableHandDetailer: adapters.enableHandDetailer,
+      enable360Preview: adapters.enable360Preview,
+      dualGpuSplit: adapters.dualGpuSplit,
+      upscalerModel: upscalerModel || undefined,
       prompt,
       negativePrompt,
       width,
@@ -168,6 +206,110 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
       dialogueText: dialogueText || undefined,
       voice,
     };
+  }
+
+  function applyRecommendedSpec(spec: WorkflowBuildSpec, tunedPrompt?: { positive: string; negative: string }) {
+    setPipeline(spec.pipeline);
+    if (spec.stylePreset) setStylePreset(spec.stylePreset);
+    if (spec.baseModel) setBaseModel(spec.baseModel);
+    if (spec.steps) setSteps(spec.steps);
+    if (spec.cfg !== undefined) setCfg(spec.cfg);
+    if (spec.width) setWidth(spec.width);
+    if (spec.height) setHeight(spec.height);
+    if (spec.loras?.[0]) {
+      setLora1(spec.loras[0].filename);
+      setLora1Strength(spec.loras[0].strength ?? 0.85);
+    } else {
+      setLora1("");
+    }
+    setEnableFaceDetailer(Boolean(spec.enableFaceDetailer));
+    setUpscalerModel(spec.upscalerModel || "");
+    if (tunedPrompt?.positive) setPrompt(tunedPrompt.positive);
+    else if (spec.prompt) setPrompt(spec.prompt);
+    if (tunedPrompt?.negative !== undefined) setNegativePrompt(tunedPrompt.negative);
+
+    setAdapters((prev) => ({
+      ...prev,
+      ipMode: spec.ipConnectors?.[0]?.mode || "none",
+      ipWeight: spec.ipConnectors?.[0]?.weight ?? prev.ipWeight,
+      cnMode: spec.controlNets?.[0]?.mode || "none",
+      cnStrength: spec.controlNets?.[0]?.strength ?? prev.cnStrength,
+      relight: spec.relight || "none",
+      dualGpuSplit: Boolean(spec.dualGpuSplit || spec.pipeline === "flux3_klein" || spec.pipeline === "moss_image" || spec.pipeline === "qwen21_edit" || spec.pipeline === "panorama_360"),
+      enable360Preview: Boolean(spec.enable360Preview || spec.pipeline === "panorama_360"),
+    }));
+  }
+
+  function handleApplyRecommendation(rec: WorkflowStackRecommendation) {
+    applyRecommendedSpec(rec.recommendedSpec, rec.tunedPromptSample);
+    const matchingVm = onlineVms.find((v) => v.workerProfile === rec.targetProfile);
+    if (matchingVm) setTarget(matchingVm.target);
+    toast.success(`Loaded '${rec.title}' into Architect (${rec.t4ExecutionMode})`);
+  }
+
+  async function handleArchitectDesign(
+    goalText: string,
+    opts: { task: string; stylePreset: StylePresetId; speedPriority: string }
+  ) {
+    setBusyAction("architect");
+    try {
+      const res = await fetch("/api/workflow/compile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "architect",
+          goal: goalText,
+          target,
+          architectInput: {
+            task: opts.task,
+            stylePreset: opts.stylePreset,
+            speedPriority: opts.speedPriority,
+          },
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || "AI Architect design failed");
+        return;
+      }
+      if (data.designedSpec) {
+        applyRecommendedSpec(data.designedSpec, data.topRecommendation?.tunedPromptSample);
+      }
+      if (data.compiled) setCompiled(data.compiled);
+      toast.success(data.reasoning || "Designed & compiled modular ComfyUI workflow!");
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleStreamMissingModels() {
+    if (!compiled || !selectedVmOnline) return;
+    setStreamingMissing(true);
+    let startedCount = 0;
+    try {
+      for (const rm of compiled.requiredModels) {
+        if (cachedSet.has(rm.filename.toLowerCase())) continue;
+        const res = await fetch("/api/catalog/ensure", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            target,
+            slug: rm.slug,
+            filename: rm.filename,
+            category: rm.category,
+          }),
+        });
+        const data = await res.json();
+        if (res.ok && data.status === "started") startedCount += 1;
+      }
+      toast.success(
+        startedCount > 0
+          ? `Started streaming ${startedCount} missing model(s) onto ${target.toUpperCase()}!`
+          : `All required models are already present on ${target.toUpperCase()}.`
+      );
+    } finally {
+      setStreamingMissing(false);
+    }
   }
 
   async function runCreatorAction(
@@ -303,6 +445,13 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
         </Button>
       </div>
 
+      {/* Multi-Axis Style & Workflow Recommender + AI Architect */}
+      <WorkflowRecommenderBar
+        onApplyRecommendation={handleApplyRecommendation}
+        onArchitectDesign={handleArchitectDesign}
+        architectBusy={busyAction === "architect"}
+      />
+
       {/* Main Builder + Live Resource Inspector */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
         <div className="space-y-3.5 rounded-lg border border-zinc-800 bg-[#111114] p-4 lg:col-span-7">
@@ -380,10 +529,10 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
             )}
           </div>
 
-          {(pipeline === "sdxl_txt2img" || pipeline === "sdxl_detailer_upscale") && (
+          {!pipeline.startsWith("audio_") && !pipeline.startsWith("video_") && (
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <div className="space-y-1 sm:col-span-2">
-                <Label className="text-[11px]">Optional LoRA (Style / Character)</Label>
+                <Label className="text-[11px]">Optional LoRA (Style / DMD2 / Turnaround / 360)</Label>
                 <select
                   value={lora1}
                   onChange={(e) => setLora1(e.target.value)}
@@ -414,7 +563,7 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
             </div>
           )}
 
-          {(pipeline === "sdxl_txt2img" || pipeline === "sdxl_detailer_upscale") && (
+          {!pipeline.startsWith("audio_") && !pipeline.startsWith("video_") && (
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-1">
                 <Label className="text-[11px]">Optional 4x Upscaler</Label>
@@ -434,18 +583,25 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
                 </select>
               </div>
 
-              {pipeline === "sdxl_detailer_upscale" && (
-                <label className="flex cursor-pointer items-center justify-between rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs">
-                  <span>Enable FaceDetailer (YOLO+SAM)</span>
-                  <input
-                    type="checkbox"
-                    checked={enableFaceDetailer}
-                    onChange={(e) => setEnableFaceDetailer(e.target.checked)}
-                    className="h-4 w-4"
-                  />
-                </label>
-              )}
+              <label className="flex cursor-pointer items-center justify-between rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs">
+                <span>Enable FaceDetailer (YOLOv8m + SAM)</span>
+                <input
+                  type="checkbox"
+                  checked={enableFaceDetailer}
+                  onChange={(e) => setEnableFaceDetailer(e.target.checked)}
+                  className="h-4 w-4"
+                />
+              </label>
             </div>
+          )}
+
+          {!pipeline.startsWith("audio_") && !pipeline.startsWith("video_") && (
+            <ModularAdaptersDrawer
+              value={adapters}
+              onChange={setAdapters}
+              target={target}
+              isVmOnline={selectedVmOnline}
+            />
           )}
 
           {pipeline.startsWith("audio_") ? (
@@ -570,7 +726,7 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-xs font-semibold text-white">
                 <Cpu className="h-3.5 w-3.5 text-zinc-400" />
-                <span>T4 16 GB Resource Inspector</span>
+                <span>T4 Resource Inspector</span>
               </div>
               {compiled && (
                 <span
@@ -582,30 +738,56 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
                       : "bg-emerald-500/15 text-emerald-300"
                   }`}
                 >
-                  {compiled.vramEstimateGb} / 16G · {compiled.vramStatus}
+                  {compiled.vramEstimateGb} /{" "}
+                  {compiled.recommendedProfile === "IMAGE_DIT_DUAL_T4" ? "32G Dual-T4" : "16G T4"} ·{" "}
+                  {compiled.vramStatus}
                 </span>
               )}
             </div>
 
             {!compiled ? (
               <p className="rounded-md border border-zinc-800 bg-zinc-950 p-3 text-xs text-zinc-500">
-                Click <strong>Compile &amp; Check T4 VRAM</strong> to inspect required models, safety guardrails, and ComfyUI graph.
+                Click <strong>Compile &amp; Check T4 VRAM</strong> or <strong>AI Architect</strong> to inspect required models, safety guardrails, and ComfyUI graph.
               </p>
             ) : (
               <div className="space-y-2.5 text-xs">
                 <div className="rounded-md border border-zinc-800 bg-zinc-950 p-2.5">
-                  <div className="mb-1 text-[10px] font-medium uppercase text-zinc-500">
-                    Required Models ({compiled.requiredModels.length}) · {compiled.recommendedProfile}
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-medium uppercase text-zinc-500">
+                      Required Models ({compiled.requiredModels.length}) · {compiled.recommendedProfile}
+                    </span>
+                    {selectedVmOnline && compiled.requiredModels.length > 0 && (
+                      <button
+                        type="button"
+                        disabled={streamingMissing}
+                        onClick={handleStreamMissingModels}
+                        className="inline-flex items-center gap-1 rounded border border-cyan-500/35 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium text-cyan-200 hover:bg-cyan-500/20"
+                      >
+                        {streamingMissing ? (
+                          <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                        ) : (
+                          <DownloadCloud className="h-2.5 w-2.5" />
+                        )}
+                        Stream Missing to {target.toUpperCase()}
+                      </button>
+                    )}
                   </div>
                   <div className="flex flex-wrap gap-1.5">
-                    {compiled.requiredModels.map((rm) => (
-                      <span
-                        key={`${rm.category}/${rm.filename}`}
-                        className="rounded border border-zinc-800 bg-zinc-900 px-1.5 py-0.5 font-mono text-[10px] text-zinc-300"
-                      >
-                        {rm.category}/{rm.filename}
-                      </span>
-                    ))}
+                    {compiled.requiredModels.map((rm) => {
+                      const onGpu = cachedSet.has(rm.filename.toLowerCase());
+                      return (
+                        <span
+                          key={`${rm.category}/${rm.filename}`}
+                          className={`rounded border px-1.5 py-0.5 font-mono text-[10px] ${
+                            onGpu
+                              ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-300"
+                              : "border-zinc-800 bg-zinc-900 text-zinc-300"
+                          }`}
+                        >
+                          {rm.category}/{rm.filename}
+                        </span>
+                      );
+                    })}
                   </div>
                 </div>
 

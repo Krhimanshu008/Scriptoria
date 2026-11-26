@@ -122,6 +122,7 @@ export async function POST(req: NextRequest) {
 
     try {
       const client = new ComfyClient(vm);
+      await client.stageGraphReferenceImages(compiled.graph);
       const { prompt_id } = await client.queuePrompt(compiled.graph, job.id);
       await prisma.job.update({
         where: { id: job.id },

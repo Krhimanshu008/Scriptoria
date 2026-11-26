@@ -464,6 +464,92 @@ export class ComfyClient {
     throw lastError ?? new Error("ComfyUI userdata endpoint rejected workflow save");
   }
 
+  /**
+   * Uploads an image buffer directly into ComfyUI's input/ directory for LoadImage / IP-Adapter / ControlNet nodes.
+   */
+  public async uploadInputImage(
+    bytes: Uint8Array | Buffer,
+    filename: string,
+    mimeType = "image/png",
+    overwrite = true
+  ): Promise<{ name: string; subfolder: string; type: string }> {
+    const cleanName = filename.replace(/[^a-zA-Z0-9._-]/g, "_") || `ref_${Date.now()}.png`;
+    const form = new FormData();
+    const copied = Uint8Array.from(bytes);
+    const blob = new Blob([copied.buffer], { type: mimeType });
+    form.append("image", blob, cleanName);
+    form.append("type", "input");
+    form.append("overwrite", overwrite ? "true" : "false");
+
+    const res = await VmGateway.call(this.vm, "/upload/image", {
+      method: "POST",
+      targetPort: this.vm.internalPort,
+      body: form,
+      timeoutMs: 30000,
+    });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => res.statusText);
+      throw new Error(`ComfyUI /upload/image failed (${res.status}): ${errText}`);
+    }
+    return (await res.json()) as { name: string; subfolder: string; type: string };
+  }
+
+  /**
+   * Automatically stages any LoadImage data:image/... URIs or public HTTP(S) image URLs
+   * into ComfyUI's input/ folder and rewrites the node inputs in-place before queuePrompt.
+   */
+  public async stageGraphReferenceImages(
+    promptGraph: Record<string, unknown>
+  ): Promise<Array<{ nodeId: string; uploadedName: string }>> {
+    const staged: Array<{ nodeId: string; uploadedName: string }> = [];
+    for (const [nodeId, rawNode] of Object.entries(promptGraph || {})) {
+      if (!rawNode || typeof rawNode !== "object") continue;
+      const n = rawNode as { class_type?: string; inputs?: Record<string, unknown> };
+      if (n.class_type !== "LoadImage" || !n.inputs || typeof n.inputs.image !== "string") continue;
+
+      const src = n.inputs.image.trim();
+      if (src.startsWith("data:image/")) {
+        const m = src.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/);
+        if (!m) continue;
+        const mime = m[1];
+        const ext = mime.includes("jpeg") || mime.includes("jpg") ? "jpg" : mime.includes("webp") ? "webp" : "png";
+        const buf = Buffer.from(m[2], "base64");
+        const res = await this.uploadInputImage(buf, `sc_ref_${nodeId}_${Date.now()}.${ext}`, mime);
+        n.inputs.image = res.subfolder ? `${res.subfolder}/${res.name}` : res.name;
+        staged.push({ nodeId, uploadedName: String(n.inputs.image) });
+      } else if (/^https?:\/\//i.test(src)) {
+        const parsed = new URL(src);
+        const host = parsed.hostname.toLowerCase();
+        if (
+          host === "localhost" ||
+          host === "127.0.0.1" ||
+          host === "0.0.0.0" ||
+          host.startsWith("169.254.") ||
+          host.startsWith("10.") ||
+          host.startsWith("192.168.") ||
+          /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)
+        ) {
+          throw new Error(`Blocked non-public reference URL host '${host}' for LoadImage node ${nodeId}.`);
+        }
+        const imgResp = await fetch(src, { signal: AbortSignal.timeout(20000) });
+        if (!imgResp.ok) {
+          throw new Error(`Failed fetching reference image for node ${nodeId}: HTTP ${imgResp.status}`);
+        }
+        const mime = imgResp.headers.get("content-type") || "image/png";
+        const arrBuf = await imgResp.arrayBuffer();
+        const ext = mime.includes("jpeg") ? "jpg" : mime.includes("webp") ? "webp" : "png";
+        const res = await this.uploadInputImage(
+          new Uint8Array(arrBuf),
+          `sc_ref_${nodeId}_${Date.now()}.${ext}`,
+          mime
+        );
+        n.inputs.image = res.subfolder ? `${res.subfolder}/${res.name}` : res.name;
+        staged.push({ nodeId, uploadedName: String(n.inputs.image) });
+      }
+    }
+    return staged;
+  }
+
   public async queuePrompt(
     promptGraph: Record<string, unknown>,
     clientId: string

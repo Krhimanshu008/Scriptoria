@@ -38,7 +38,7 @@ const ASPECT_RATIOS = [
   { label: "4:3", width: 1152, height: 896 },
 ];
 
-export function StudioWorkspace() {
+export function StudioWorkspace({ onOpenArchitect }: { onOpenArchitect?: () => void } = {}) {
   const target = useClusterStore((s) => s.selectedTarget);
   const setSelectedTarget = useClusterStore((s) => s.setSelectedTarget);
   const activeStream = useClusterStore((s) => s.activeStream);
@@ -501,7 +501,27 @@ export function StudioWorkspace() {
         </div>
       </div>
 
-      {/* ONE-CLICK WORKFLOW PRESETS */}
+      {/* ONE-CLICK WORKFLOW PRESETS + AI ARCHITECT JUMP BAR */}
+      {onOpenArchitect && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-indigo-500/20 bg-indigo-950/20 px-3.5 py-2 text-xs">
+          <div className="flex items-center gap-2 text-zinc-300">
+            <Wand2 className="h-3.5 w-3.5 text-indigo-400" />
+            <span>
+              Need <strong>NoobAI V-Pred</strong>, <strong>IP-Connectors</strong>, <strong>ControlNets</strong>, <strong>Dual-T4 DiT</strong> (FLUX 3 / MOSS / Qwen 2.1), or <strong>360° Panoramas</strong>?
+            </span>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={onOpenArchitect}
+            className="h-7 border-indigo-400/40 bg-indigo-500/15 text-[11px] font-medium text-indigo-200 hover:bg-indigo-500/25"
+          >
+            Open AI Workflow Architect ➔
+          </Button>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         {WORKFLOW_PRESETS.map((preset) => {
           const selected = !studio.customJsonMode && studio.activePresetId === preset.id;

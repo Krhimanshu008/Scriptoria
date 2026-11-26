@@ -17,7 +17,7 @@ type StudioTabId = "single" | "creator" | "scenes" | "batch" | "gallery" | "llm"
 
 const STUDIO_TABS: Array<{ id: StudioTabId; label: string }> = [
   { id: "single", label: "Prompt" },
-  { id: "creator", label: "Workflow Creator" },
+  { id: "creator", label: "Workflow Architect" },
   { id: "scenes", label: "5-Track Scenes" },
   { id: "batch", label: "Batch & Ingest" },
   { id: "gallery", label: "Templates" },
@@ -111,7 +111,7 @@ export function AgenticStudioDashboard() {
       {/* Main Workspace + Toggleable Co-Director Right Drawer */}
       <div className="flex flex-col gap-4 xl:flex-row xl:items-start">
         <div className="min-w-0 flex-1 space-y-4">
-          {activeTab === "single" && <StudioWorkspace />}
+          {activeTab === "single" && <StudioWorkspace onOpenArchitect={() => setActiveTab("creator")} />}
           {activeTab === "creator" && <SmartWorkflowCreator vms={vms} />}
           {activeTab === "scenes" && <SceneBatchStudio subView="scenes" />}
           {activeTab === "batch" && <SceneBatchStudio subView="batch" />}

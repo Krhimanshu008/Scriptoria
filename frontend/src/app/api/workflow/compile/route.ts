@@ -196,7 +196,9 @@ export async function POST(req: NextRequest) {
         },
       });
 
-      const { prompt_id } = await new ComfyClient(vm).queuePrompt(compiled.graph, job.id);
+      const comfyClient = new ComfyClient(vm);
+      await comfyClient.stageGraphReferenceImages(compiled.graph);
+      const { prompt_id } = await comfyClient.queuePrompt(compiled.graph, job.id);
       await prisma.job.update({ where: { id: job.id }, data: { promptId: prompt_id } });
 
       await appendSystemLog({
