@@ -2,12 +2,30 @@ import { prisma } from "@/lib/db/prisma";
 import { VmGateway } from "@/lib/orchestrator/vm-gateway";
 import { getOrCreateWorkspaceSettings } from "@/lib/settings/workspace-settings";
 import type { WorkerProfileId } from "@/lib/catalog/worker-profiles";
+import {
+  assembleModularWorkflow,
+  type ArchitectureFamily,
+  type ControlNetModuleInput,
+  type IpConnectorModuleInput,
+  type MultiCharRegionInput,
+  type RelightMode,
+  type StylePresetId,
+} from "./modules";
 
 export type WorkflowPipelineKind =
   | "sdxl_txt2img"
   | "sdxl_detailer_upscale"
+  | "noob_vpred"
+  | "animagine_v4"
+  | "neta_lumina"
+  | "anima_v1"
   | "flux_gguf"
+  | "flux3_klein"
+  | "moss_image"
   | "qwen_edit"
+  | "qwen21_edit"
+  | "panorama_360"
+  | "modular"
   | "audio_kokoro"
   | "audio_f5"
   | "audio_mmaudio"
@@ -22,13 +40,24 @@ export interface LoraSlotSpec {
 
 export interface WorkflowBuildSpec {
   pipeline: WorkflowPipelineKind;
+  architecture?: ArchitectureFamily;
+  stylePreset?: StylePresetId;
   baseModel?: string;
   vaeModel?: string;
   textEncoder1?: string;
   textEncoder2?: string;
   loras?: LoraSlotSpec[];
+  ipConnectors?: IpConnectorModuleInput[];
+  controlNets?: ControlNetModuleInput[];
+  characters?: MultiCharRegionInput[];
+  relight?: RelightMode;
+  relightRefImagePath?: string;
+  inpaintMaskImagePath?: string;
   upscalerModel?: string;
   enableFaceDetailer?: boolean;
+  enableHandDetailer?: boolean;
+  enable360Preview?: boolean;
+  dualGpuSplit?: boolean;
   prompt?: string;
   negativePrompt?: string;
   width?: number;
@@ -74,8 +103,17 @@ export interface CompiledWorkflowResult {
 const DEFAULT_VRAM_BY_PIPELINE: Record<WorkflowPipelineKind, number> = {
   sdxl_txt2img: 7.4,
   sdxl_detailer_upscale: 10.6,
+  noob_vpred: 7.4,
+  animagine_v4: 7.2,
+  neta_lumina: 8.5,
+  anima_v1: 5.8,
   flux_gguf: 13.8,
+  flux3_klein: 18.0,
+  moss_image: 17.5,
   qwen_edit: 14.5,
+  qwen21_edit: 20.5,
+  panorama_360: 18.0,
+  modular: 8.5,
   audio_kokoro: 0.6,
   audio_f5: 2.5,
   audio_mmaudio: 3.2,
@@ -84,12 +122,40 @@ const DEFAULT_VRAM_BY_PIPELINE: Record<WorkflowPipelineKind, number> = {
   video_latentsync: 5.2,
 };
 
+function resolveModularArchitecture(spec: WorkflowBuildSpec): ArchitectureFamily | null {
+  const p = spec.pipeline;
+  const b = (spec.baseModel || "").toLowerCase();
+  if (spec.architecture) return spec.architecture;
+  if (p === "noob_vpred" || b.includes("vpred")) return "noobai_vpred";
+  if (p === "animagine_v4" || b.includes("animagine")) return "animagine";
+  if (p === "neta_lumina" || b.includes("lumina") || b.includes("netayume")) return "neta_lumina";
+  if (p === "anima_v1" || (b.includes("anima") && !b.includes("animagine"))) return "anima_v1";
+  if (p === "flux3_klein" || b.includes("flux3") || b.includes("klein")) return "flux3_klein";
+  if (p === "moss_image" || b.includes("moss")) return "moss_image";
+  if (p === "qwen21_edit" || b.includes("2.1") || b.includes("2_1")) return "qwen21";
+  if (p === "panorama_360" || b.includes("2512") || b.includes("360")) return "qwen_360";
+  if (p === "qwen_edit") return "qwen_edit";
+  if (p === "flux_gguf") return "flux1_gguf";
+  if (p === "sdxl_txt2img" || p === "sdxl_detailer_upscale" || p === "modular") {
+    return "sdxl_illustrious";
+  }
+  return null;
+}
+
 export function detectPipelineFromModalityAndModel(
   modality?: string,
   baseModelFilename?: string
 ): WorkflowPipelineKind {
   const m = (modality || "").toUpperCase();
   const f = (baseModelFilename || "").toLowerCase();
+  if (f.includes("vpred") || f.includes("noobai-xl-vpred")) return "noob_vpred";
+  if (f.includes("animagine")) return "animagine_v4";
+  if (f.includes("netayume") || f.includes("lumina")) return "neta_lumina";
+  if (f.includes("anima") && !f.includes("animagine")) return "anima_v1";
+  if (f.includes("flux3") || f.includes("klein")) return "flux3_klein";
+  if (f.includes("moss")) return "moss_image";
+  if (f.includes("360") || f.includes("2512")) return "panorama_360";
+  if (f.includes("2.1") || f.includes("2_1")) return "qwen21_edit";
   if (f.includes("flux")) return "flux_gguf";
   if (f.includes("qwen")) return "qwen_edit";
   if (f.includes("kokoro")) return "audio_kokoro";
@@ -136,326 +202,53 @@ export async function compileResourceAwareWorkflow(
   let requiredNodes: string[] = [];
   let graph: Record<string, unknown> = {};
 
-  if (pipeline === "sdxl_txt2img" || pipeline === "sdxl_detailer_upscale") {
-    const ckpt = spec.baseModel || "waiNSFWIllustrious_v110.safetensors";
-    registerModel("checkpoints", ckpt);
-
-    let vae = spec.vaeModel;
-    if (!vae && settings.autoVaeFixSdxl) {
-      vae = "sdxl_vae_fp16_fix.safetensors";
-      guardrails.push("Auto-injected sdxl_vae_fp16_fix.safetensors (16 GB T4 NaN prevention).");
-    }
-    if (vae) registerModel("vae", vae);
-
-    const loras = (spec.loras || []).filter((l) => Boolean(l.filename)).slice(0, 3);
-    loras.forEach((l) => registerModel("loras", l.filename));
-
-    const width = spec.width ?? 1024;
-    const height = spec.height ?? 1024;
-    const batchSize = Math.min(4, Math.max(1, spec.batchSize ?? 1));
-
-    const nodes: Record<string, unknown> = {
-      "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: ckpt } },
-      "2": { class_type: "EmptyLatentImage", inputs: { width, height, batch_size: batchSize } },
-    };
-
-    let modelRef: [string, number] = ["1", 0];
-    let clipRef: [string, number] = ["1", 1];
-    let vaeRef: [string, number] = ["1", 2];
-
-    if (vae) {
-      nodes["11"] = { class_type: "VAELoader", inputs: { vae_name: vae } };
-      vaeRef = ["11", 0];
-    }
-
-    loras.forEach((l, idx) => {
-      const nid = String(20 + idx);
-      const strength = l.strength ?? 0.85;
-      nodes[nid] = {
-        class_type: "LoraLoader",
-        inputs: {
-          model: modelRef,
-          clip: clipRef,
-          lora_name: l.filename,
-          strength_model: strength,
-          strength_clip: strength,
-        },
-      };
-      modelRef = [nid, 0];
-      clipRef = [nid, 1];
-      vramEstimate += 0.35;
-    });
-
-    nodes["3"] = {
-      class_type: "CLIPTextEncode",
-      inputs: { text: spec.prompt || "masterpiece, best quality, anime illustration", clip: clipRef },
-    };
-    nodes["4"] = {
-      class_type: "CLIPTextEncode",
-      inputs: {
-        text: spec.negativePrompt || "bad quality, blurry, deformed, lowres, watermark",
-        clip: clipRef,
-      },
-    };
-    nodes["5"] = {
-      class_type: "KSampler",
-      inputs: {
+  const modularArch = resolveModularArchitecture(spec);
+  if (modularArch) {
+    modality = "IMAGE";
+    const slugMap = new Map(userAssets.map((a) => [a.filename.toLowerCase(), a.slug]));
+    const assembled = assembleModularWorkflow(
+      {
+        architecture: modularArch,
+        stylePreset: spec.stylePreset,
+        baseModel: spec.baseModel,
+        vaeModel: spec.vaeModel,
+        textEncoder1: spec.textEncoder1,
+        textEncoder2: spec.textEncoder2,
+        loras: spec.loras,
+        ipConnectors: spec.ipConnectors,
+        controlNets: spec.controlNets,
+        characters: spec.characters,
+        relight: spec.relight,
+        relightRefImagePath: spec.relightRefImagePath,
+        inpaintMaskImagePath: spec.inpaintMaskImagePath,
+        enableFaceDetailer:
+          spec.enableFaceDetailer ?? pipeline === "sdxl_detailer_upscale",
+        enableHandDetailer: spec.enableHandDetailer,
+        upscalerModel: spec.upscalerModel,
+        enable360Preview: spec.enable360Preview,
+        dualGpuSplit: spec.dualGpuSplit,
+        autoVaeFixSdxl: settings.autoVaeFixSdxl,
+        prompt: spec.prompt,
+        negativePrompt: spec.negativePrompt,
+        refImagePath: spec.refImagePath,
+        width: spec.width,
+        height: spec.height,
+        steps: spec.steps,
+        cfg: spec.cfg,
+        samplerName: spec.samplerName,
+        scheduler: spec.scheduler,
+        batchSize: spec.batchSize,
         seed,
-        steps: spec.steps ?? 24,
-        cfg: spec.cfg ?? 6.0,
-        sampler_name: spec.samplerName || "euler_ancestral",
-        scheduler: spec.scheduler || "normal",
-        denoise: 1.0,
-        model: modelRef,
-        positive: ["3", 0],
-        negative: ["4", 0],
-        latent_image: ["2", 0],
       },
-    };
-    nodes["6"] = {
-      class_type: "VAEDecode",
-      inputs: { samples: ["5", 0], vae: vaeRef },
-    };
-
-    let finalImgRef: [string, number] = ["6", 0];
-    requiredNodes = [
-      "CheckpointLoaderSimple",
-      "EmptyLatentImage",
-      "CLIPTextEncode",
-      "KSampler",
-      "VAEDecode",
-      "SaveImage",
-    ];
-    if (vae) requiredNodes.push("VAELoader");
-    if (loras.length > 0) requiredNodes.push("LoraLoader");
-
-    if (pipeline === "sdxl_detailer_upscale" && spec.enableFaceDetailer) {
-      recommendedProfile = "IMAGE_CORE";
-      registerModel("ultralytics", "face_yolov8m.pt");
-      registerModel("sams", "sam_vit_b_01ec64.pth");
-      nodes["30"] = {
-        class_type: "UltralyticsDetectorProvider",
-        inputs: { model_name: "bbox/face_yolov8m.pt" },
-      };
-      nodes["31"] = {
-        class_type: "SAMLoader",
-        inputs: { model_name: "sam_vit_b_01ec64.pth", device_mode: "AUTO" },
-      };
-      nodes["32"] = {
-        class_type: "FaceDetailer",
-        inputs: {
-          image: finalImgRef,
-          model: modelRef,
-          clip: clipRef,
-          vae: vaeRef,
-          positive: ["3", 0],
-          negative: ["4", 0],
-          bbox_detector: ["30", 0],
-          sam_model_opt: ["31", 0],
-          guide_size: 384,
-          guide_size_for: true,
-          max_size: 1024,
-          seed,
-          steps: 14,
-          cfg: spec.cfg ?? 6.0,
-          sampler_name: spec.samplerName || "euler_ancestral",
-          scheduler: spec.scheduler || "normal",
-          denoise: 0.45,
-          feather: 5,
-          noise_mask: true,
-          force_inpaint: true,
-          bbox_threshold: 0.5,
-          bbox_dilation: 10,
-          bbox_crop_factor: 3.0,
-          sam_detection_hint: "center-1",
-          sam_dilation: 0,
-          sam_threshold: 0.93,
-          sam_bbox_expansion: 0,
-          sam_mask_hint_threshold: 0.7,
-          sam_mask_hint_use_negative: "False",
-          drop_size: 10,
-          wildcard: "",
-          cycle: 1,
-        },
-      };
-      finalImgRef = ["32", 0];
-      vramEstimate += 1.6;
-      requiredNodes.push("UltralyticsDetectorProvider", "SAMLoader", "FaceDetailer");
-    }
-
-    if (spec.upscalerModel) {
-      registerModel("upscale_models", spec.upscalerModel);
-      nodes["40"] = {
-        class_type: "UpscaleModelLoader",
-        inputs: { model_name: spec.upscalerModel },
-      };
-      nodes["41"] = {
-        class_type: "ImageUpscaleWithModel",
-        inputs: { upscale_model: ["40", 0], image: finalImgRef },
-      };
-      finalImgRef = ["41", 0];
-      vramEstimate += 1.1;
-      requiredNodes.push("UpscaleModelLoader", "ImageUpscaleWithModel");
-    }
-
-    if (width * height > 1344 * 1024) {
-      warnings.push("High base resolution (>1.3M px) on 16 GB T4; consider 1024x1024 + upscaler.");
-      vramEstimate += 1.2;
-    }
-
-    nodes["7"] = {
-      class_type: "SaveImage",
-      inputs: { filename_prefix: "Scriptoria_Studio", images: finalImgRef },
-    };
-    graph = nodes;
-  } else if (pipeline === "flux_gguf") {
-    recommendedProfile = "IMAGE_GGUF_EDIT";
-    const unet = spec.baseModel || "flux1-dev-Q4_K_S.gguf";
-    const t5 = spec.textEncoder1 || "t5-v1_1-xxl-encoder-Q4_K_M.gguf";
-    const clipL = spec.textEncoder2 || "clip_l.safetensors";
-    const vae = spec.vaeModel || "ae.safetensors";
-    registerModel("unet", unet);
-    registerModel("text_encoders", t5);
-    registerModel("clip", clipL);
-    registerModel("vae", vae);
-
-    guardrails.push("Selected quantized Q4_K_S UNet + Q4_K_M T5 encoder to fit inside 16 GB T4.");
-    requiredNodes = [
-      "UnetLoaderGGUF",
-      "DualCLIPLoaderGGUF",
-      "VAELoader",
-      "CLIPTextEncode",
-      "EmptyLatentImage",
-      "KSampler",
-      "VAEDecode",
-      "SaveImage",
-    ];
-    graph = {
-      "1": { class_type: "UnetLoaderGGUF", inputs: { unet_name: unet } },
-      "2": {
-        class_type: "DualCLIPLoaderGGUF",
-        inputs: { clip_name1: t5, clip_name2: clipL, type: "flux" },
-      },
-      "3": { class_type: "VAELoader", inputs: { vae_name: vae } },
-      "4": {
-        class_type: "CLIPTextEncode",
-        inputs: { text: spec.prompt || "cinematic concept art", clip: ["2", 0] },
-      },
-      "5": { class_type: "CLIPTextEncode", inputs: { text: "", clip: ["2", 0] } },
-      "6": {
-        class_type: "EmptyLatentImage",
-        inputs: { width: spec.width ?? 1024, height: spec.height ?? 1024, batch_size: 1 },
-      },
-      "7": {
-        class_type: "KSampler",
-        inputs: {
-          seed,
-          steps: spec.steps ?? 20,
-          cfg: spec.cfg ?? 1.0,
-          sampler_name: spec.samplerName || "euler",
-          scheduler: spec.scheduler || "simple",
-          denoise: 1.0,
-          model: ["1", 0],
-          positive: ["4", 0],
-          negative: ["5", 0],
-          latent_image: ["6", 0],
-        },
-      },
-      "8": { class_type: "VAEDecode", inputs: { samples: ["7", 0], vae: ["3", 0] } },
-      "9": {
-        class_type: "SaveImage",
-        inputs: { filename_prefix: "Scriptoria_Flux", images: ["8", 0] },
-      },
-    };
-  } else if (pipeline === "qwen_edit") {
-    recommendedProfile = "IMAGE_GGUF_EDIT";
-    const unet = spec.baseModel || "qwen-image-edit-2511-Q3_K_S.gguf";
-    const te = spec.textEncoder1 || "qwen_2.5_vl_7b_fp8_scaled.safetensors";
-    const vae = spec.vaeModel || "qwen_image_vae.safetensors";
-    const lightningLora =
-      spec.loras?.[0]?.filename || "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors";
-    const loraStrength = spec.loras?.[0]?.strength ?? 1.0;
-    registerModel("diffusion_models", unet);
-    registerModel("text_encoders", te);
-    registerModel("vae", vae);
-    registerModel("loras", lightningLora);
-    requiredNodes = [
-      "UnetLoaderGGUF",
-      "CLIPLoader",
-      "VAELoader",
-      "LoraLoaderModelOnly",
-      "ModelSamplingAuraFlow",
-      "CFGNorm",
-      "LoadImage",
-      "TextEncodeQwenImageEditPlus",
-      "CLIPTextEncode",
-      "VAEEncode",
-      "KSampler",
-      "VAEDecode",
-      "SaveImage",
-    ];
-    graph = {
-      "1": { class_type: "UnetLoaderGGUF", inputs: { unet_name: unet } },
-      "2": { class_type: "CLIPLoader", inputs: { clip_name: te, type: "qwen_image" } },
-      "3": { class_type: "VAELoader", inputs: { vae_name: vae } },
-      "4": {
-        class_type: "LoraLoaderModelOnly",
-        inputs: {
-          model: ["1", 0],
-          lora_name: lightningLora,
-          strength_model: loraStrength,
-        },
-      },
-      "5": {
-        class_type: "ModelSamplingAuraFlow",
-        inputs: { model: ["4", 0], shift: 3.0 },
-      },
-      "6": {
-        class_type: "CFGNorm",
-        inputs: { model: ["5", 0], strength: 1.0 },
-      },
-      "7": {
-        class_type: "LoadImage",
-        inputs: { image: spec.refImagePath || "character_ref.png" },
-      },
-      "8": {
-        class_type: "TextEncodeQwenImageEditPlus",
-        inputs: {
-          clip: ["2", 0],
-          vae: ["3", 0],
-          image1: ["7", 0],
-          prompt: spec.prompt || "Relight the subject in image 1 cleanly, preserving identity and attire.",
-        },
-      },
-      "9": {
-        class_type: "CLIPTextEncode",
-        inputs: { text: spec.negativePrompt || "", clip: ["2", 0] },
-      },
-      "10": {
-        class_type: "VAEEncode",
-        inputs: { pixels: ["7", 0], vae: ["3", 0] },
-      },
-      "11": {
-        class_type: "KSampler",
-        inputs: {
-          seed,
-          steps: spec.steps ?? 4,
-          cfg: spec.cfg ?? 1.0,
-          sampler_name: spec.samplerName || "euler",
-          scheduler: spec.scheduler || "simple",
-          denoise: 1.0,
-          model: ["6", 0],
-          positive: ["8", 0],
-          negative: ["9", 0],
-          latent_image: ["10", 0],
-        },
-      },
-      "12": { class_type: "VAEDecode", inputs: { samples: ["11", 0], vae: ["3", 0] } },
-      "13": {
-        class_type: "SaveImage",
-        inputs: { filename_prefix: "Scriptoria_QwenEdit", images: ["12", 0] },
-      },
-    };
+      slugMap
+    );
+    recommendedProfile = assembled.recommendedProfile;
+    vramEstimate = assembled.vramEstimateGb;
+    requiredNodes = assembled.requiredNodes;
+    assembled.requiredModels.forEach((m) => registerModel(m.category, m.filename));
+    assembled.t4GuardrailsApplied.forEach((g) => guardrails.push(g));
+    assembled.warnings.forEach((w) => warnings.push(w));
+    graph = assembled.graph;
   } else if (pipeline === "audio_kokoro") {
     modality = "AUDIO";
     recommendedProfile = "AUDIO_LIPSYNC";
@@ -615,7 +408,11 @@ export async function compileResourceAwareWorkflow(
 
   // Live VM profile & node verification if target VM is supplied
   if (vm) {
-    if (vm.workerProfile !== recommendedProfile && vm.workerProfile === "BASE_COMFY" && recommendedProfile !== "BASE_COMFY") {
+    if (recommendedProfile === "IMAGE_DIT_DUAL_T4" && vm.workerProfile !== "IMAGE_DIT_DUAL_T4") {
+      warnings.push(
+        `Target ${vm.target.toUpperCase()} has profile '${vm.workerProfile}', but Dual-T4 DiT split requires 'IMAGE_DIT_DUAL_T4' (CUDA_VISIBLE_DEVICES=0,1).`
+      );
+    } else if (vm.workerProfile !== recommendedProfile && vm.workerProfile === "BASE_COMFY" && recommendedProfile !== "BASE_COMFY") {
       warnings.push(
         `Target ${vm.target.toUpperCase()} has profile '${vm.workerProfile}', but this pipeline recommends '${recommendedProfile}'.`
       );
@@ -640,11 +437,17 @@ export async function compileResourceAwareWorkflow(
   }
 
   vramEstimate = Number(vramEstimate.toFixed(1));
+  const vramLimitGb = recommendedProfile === "IMAGE_DIT_DUAL_T4" ? 30.8 : 15.4;
+  const vramTightGb = recommendedProfile === "IMAGE_DIT_DUAL_T4" ? 27.0 : 13.5;
   const vramStatus: CompiledWorkflowResult["vramStatus"] =
-    vramEstimate > 15.4 ? "OVER_T4_LIMIT" : vramEstimate > 13.5 ? "TIGHT" : "SAFE";
+    vramEstimate > vramLimitGb ? "OVER_T4_LIMIT" : vramEstimate > vramTightGb ? "TIGHT" : "SAFE";
 
   if (vramStatus === "OVER_T4_LIMIT") {
-    warnings.push(`Estimated ${vramEstimate} GB VRAM exceeds safe 16 GB Tesla T4 ceiling (~15.4 GB).`);
+    warnings.push(
+      `Estimated ${vramEstimate} GB VRAM exceeds safe ${
+        recommendedProfile === "IMAGE_DIT_DUAL_T4" ? "32 GB Dual-T4" : "16 GB Single-T4"
+      } ceiling (~${vramLimitGb} GB).`
+    );
   }
 
   return {

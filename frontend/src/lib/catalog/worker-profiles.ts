@@ -2,6 +2,7 @@ export type WorkerProfileId =
   | "BASE_COMFY"
   | "IMAGE_CORE"
   | "IMAGE_GGUF_EDIT"
+  | "IMAGE_DIT_DUAL_T4"
   | "AUDIO_LIPSYNC"
   | "VIDEO_MOTION"
   | "LLM_QWEN_FAST_8B"
@@ -24,6 +25,7 @@ export interface WorkerProfileSpec {
   recommendedTargets: string[];
   customNodes: CustomNodeSpec[];
   accelerator?: "gpu" | "tpu";
+  multiGpuMode?: "dual_process" | "single_dual_gpu";
 }
 
 export const WORKER_PROFILES: Record<WorkerProfileId, WorkerProfileSpec> = {
@@ -38,11 +40,12 @@ export const WORKER_PROFILES: Record<WorkerProfileId, WorkerProfileSpec> = {
   },
   IMAGE_CORE: {
     id: "IMAGE_CORE",
-    label: "Image Core (SDXL + Detailers + IP-Adapter)",
+    label: "Image Core (SDXL / NoobAI + IP-Adapter + Detailers)",
     shortTag: "IMG-CORE",
     description:
-      "SDXL / Illustrious / Pony stack with IP-Adapter Plus, ControlNet Aux, and Impact-Pack Face/Hand Detailers for 16 GB T4.",
+      "Illustrious v2.0 / NoobAI V-Pred 1.0 / Animagine 4.0 stack on single T4 (:8188 / :8189) with NoobAI IP-Adapter Mk1, Laxhar ControlNets, StyleAligned, ComfyCouple, Crop&Stitch, RMBG, and FaceDetailer.",
     recommendedTargets: ["gpu0", "gpu1"],
+    multiGpuMode: "dual_process",
     customNodes: [
       {
         name: "ComfyUI_IPAdapter_plus",
@@ -57,6 +60,10 @@ export const WORKER_PROFILES: Record<WorkerProfileId, WorkerProfileSpec> = {
         repoUrl: "https://github.com/ltdrdata/ComfyUI-Impact-Subpack.git",
       },
       {
+        name: "ComfyUI-Inspire-Pack",
+        repoUrl: "https://github.com/ltdrdata/ComfyUI-Inspire-Pack.git",
+      },
+      {
         name: "comfyui_controlnet_aux",
         repoUrl: "https://github.com/Fannovel16/comfyui_controlnet_aux.git",
       },
@@ -68,19 +75,123 @@ export const WORKER_PROFILES: Record<WorkerProfileId, WorkerProfileSpec> = {
         name: "ComfyUI_UltimateSDUpscale",
         repoUrl: "https://github.com/ssitu/ComfyUI_UltimateSDUpscale.git",
       },
+      {
+        name: "ComfyUI-ComfyCouple",
+        repoUrl: "https://github.com/Danand/ComfyUI-ComfyCouple.git",
+      },
+      {
+        name: "style_aligned_comfy",
+        repoUrl: "https://github.com/jasonphillips/style_aligned_comfy.git",
+      },
+      {
+        name: "ComfyUI-Inpaint-CropAndStitch",
+        repoUrl: "https://github.com/lquesada/ComfyUI-Inpaint-CropAndStitch.git",
+      },
+      {
+        name: "ComfyUI-RMBG",
+        repoUrl: "https://github.com/1038lab/ComfyUI-RMBG.git",
+      },
     ],
   },
   IMAGE_GGUF_EDIT: {
     id: "IMAGE_GGUF_EDIT",
-    label: "Flux & Qwen-Edit (GGUF 16GB)",
+    label: "Flux / Anima / Qwen-Edit (GGUF 16GB Single-T4)",
     shortTag: "GGUF-EDIT",
     description:
-      "Includes ComfyUI-GGUF for quantized Flux.1 Dev/Schnell and Qwen-Image-Edit 2511 fusion/relight/angle workflows.",
+      "16 GB single-T4 stack for Anima v1.0 GGUF + Ref Adapter v2, Flux.1 GGUF, Qwen-Image-Edit 2511, and LBM/Light-Migration relighting.",
     recommendedTargets: ["gpu2"],
+    multiGpuMode: "dual_process",
     customNodes: [
       {
         name: "ComfyUI-GGUF",
         repoUrl: "https://github.com/city96/ComfyUI-GGUF.git",
+      },
+      {
+        name: "ComfyUI-KJNodes",
+        repoUrl: "https://github.com/kijai/ComfyUI-KJNodes.git",
+      },
+      {
+        name: "ComfyUI-Anima-Ref-Adapter",
+        repoUrl: "https://github.com/ElectronGirl/ComfyUI-Anima-Ref-Adapter.git",
+      },
+      {
+        name: "ComfyUI-Anima-CharRef-LLLite",
+        repoUrl: "https://github.com/quinteroac/ComfyUI-Anima-CharRef-LLLite.git",
+      },
+      {
+        name: "ComfyUI-LBM",
+        repoUrl: "https://github.com/1038lab/ComfyUI-LBM.git",
+      },
+      {
+        name: "ComfyUI-RMBG",
+        repoUrl: "https://github.com/1038lab/ComfyUI-RMBG.git",
+      },
+      {
+        name: "ComfyUI-Inpaint-CropAndStitch",
+        repoUrl: "https://github.com/lquesada/ComfyUI-Inpaint-CropAndStitch.git",
+      },
+    ],
+  },
+  IMAGE_DIT_DUAL_T4: {
+    id: "IMAGE_DIT_DUAL_T4",
+    label: "Next-Gen DiT Split (Dual-T4 · FLUX 3 / MOSS / Qwen 2.1 / 360°)",
+    shortTag: "DIT-32G",
+    description:
+      "Runs 1 unified ComfyUI process spanning CUDA:0+CUDA:1 (32 GB total VRAM): DiT INT8 ConvRot/GGUF on cuda:0 and Qwen3.5-9B / Qwen3VL-8B Text Encoders on cuda:1. Supports FLUX 3 Klein, MOSS-Image 8-step DMD2, Qwen-Image 2.1, Anima Ref v2, and 360° Panoramas.",
+    recommendedTargets: ["gpu0", "gpu1"],
+    multiGpuMode: "single_dual_gpu",
+    customNodes: [
+      {
+        name: "ComfyUI-GGUF",
+        repoUrl: "https://github.com/city96/ComfyUI-GGUF.git",
+      },
+      {
+        name: "ComfyUI-KJNodes",
+        repoUrl: "https://github.com/kijai/ComfyUI-KJNodes.git",
+      },
+      {
+        name: "ComfyUI-Inspire-Pack",
+        repoUrl: "https://github.com/ltdrdata/ComfyUI-Inspire-Pack.git",
+      },
+      {
+        name: "comfyui_controlnet_aux",
+        repoUrl: "https://github.com/Fannovel16/comfyui_controlnet_aux.git",
+      },
+      {
+        name: "ComfyUI-Anima-Ref-Adapter",
+        repoUrl: "https://github.com/ElectronGirl/ComfyUI-Anima-Ref-Adapter.git",
+      },
+      {
+        name: "ComfyUI-Anima-CharRef-LLLite",
+        repoUrl: "https://github.com/quinteroac/ComfyUI-Anima-CharRef-LLLite.git",
+      },
+      {
+        name: "RES4LYF",
+        repoUrl: "https://github.com/ClownsharkBatwing/RES4LYF.git",
+      },
+      {
+        name: "ComfyUI-LBM",
+        repoUrl: "https://github.com/1038lab/ComfyUI-LBM.git",
+      },
+      {
+        name: "ComfyUI-RMBG",
+        repoUrl: "https://github.com/1038lab/ComfyUI-RMBG.git",
+      },
+      {
+        name: "ComfyUI-Inpaint-CropAndStitch",
+        repoUrl: "https://github.com/lquesada/ComfyUI-Inpaint-CropAndStitch.git",
+      },
+      {
+        name: "ComfyUI-Olm-DragCrop",
+        repoUrl: "https://github.com/o-l-l-i/ComfyUI-Olm-DragCrop.git",
+      },
+      {
+        name: "ComfyUI_pytorch360convert",
+        repoUrl: "https://github.com/ProGamerGov/ComfyUI_pytorch360convert.git",
+      },
+      {
+        name: "ComfyUI_preview360panorama",
+        repoUrl: "https://github.com/ProGamerGov/ComfyUI_preview360panorama.git",
       },
     ],
   },
@@ -208,6 +319,11 @@ export function isLlmWorkerProfile(id?: string | null): boolean {
     id === "LLM_LIGHTWEIGHT_SWARM" ||
     id === "TPU_QWEN27B_V5E"
   );
+}
+
+export function isSingleDualGpuProfile(id?: string | null): boolean {
+  if (!id || !(id in WORKER_PROFILES)) return false;
+  return WORKER_PROFILES[id as WorkerProfileId].multiGpuMode === "single_dual_gpu";
 }
 
 export function getWorkerProfile(id?: string | null): WorkerProfileSpec {

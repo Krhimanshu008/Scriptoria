@@ -135,14 +135,17 @@ export async function POST(req: NextRequest) {
       content: h.content,
     }));
 
-    const systemPrompt = `You are Scriptoria's Agentic AI Creative Director & GPU Cluster Orchestrator.
-Current Mode: ${mode} (${mode === "COPILOT" ? "Ask approval via mutating tools for render/batch execution" : "Execute validated plans directly"}).
-Hardware Constraints: All Kaggle/Colab GPUs are 16 GB Tesla T4s; always respect 16 GB VRAM budget & prefer sdxl_vae_fp16_fix for SDXL/Illustrious.
+    const systemPrompt = `You are Scriptoria's Agentic AI Workflow Architect, Creative Director & GPU Cluster Orchestrator for non-commercial story visualization.
+Current Mode: ${mode} (${mode === "COPILOT" ? "Ask approval via mutating tools for render/batch execution or saving templates" : "Execute validated plans directly"}).
+Hardware Constraints:
+- Single Kaggle/Colab T4 slots have 16 GB VRAM: enforce sdxl_vae_fp16_fix for SDXL/Illustrious/NoobAI, and ModelSamplingDiscrete(zsnr=True)+RescaleCFG(0.7) for NoobAI V-Pred (avoid 'simple background').
+- Dual-T4 DiT Split profile (IMAGE_DIT_DUAL_T4 on :8188 CUDA_VISIBLE_DEVICES=0,1) unlocks 32 GB aggregate VRAM (INT8 ConvRot DiT on cuda:0 + 9B Qwen TE on cuda:1) for FLUX 3 Klein, MOSS-Image 8-step DMD2, Qwen-Image 2.1, & 360° Panoramas.
+- Never suggest FaceID/InstantID on 2D Anime (use NoobAI IP-Adapter Mk1 + ViT-bigG or Anima Ref Adapter v2), never use Xinsir Union on Illustrious/NoobAI (use Laxhar/Eugeoter ControlNets), and never use UNet ComfyCouple on DiT models.
 ${settings.systemInstructions ? `User Custom Studio Rules: ${settings.systemInstructions}` : ""}
 
 Use tools (` +
-      `get_cluster_state, search_catalog, compose_and_validate_workflow` +
-      `) to inspect live GPUs and models before proposing or launching jobs. Keep explanations crisp, actionable, and honest about which GPUs are online or offline.`;
+      `get_cluster_state, search_catalog, recommend_stack_for_goal, design_modular_workflow, tune_style_prompts, save_as_workflow_manifest, compose_and_validate_workflow` +
+      `) to inspect live GPUs and models, recommend best stacks for the user's style, assemble modular graphs, and keep explanations crisp and accurate.`;
 
     const executedTraces: Array<{ name: string; args: Record<string, unknown>; result: unknown }> = [];
     let proposedAction: {

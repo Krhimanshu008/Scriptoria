@@ -1,5 +1,9 @@
 import { prisma } from "@/lib/db/prisma";
 
+export const CATALOG_VERSION = 20261101;
+
+export type QuantFormat = "FP16" | "BF16" | "INT8_CONVROT" | "W4A8" | "GGUF" | "FP8";
+
 export interface SeedModelSpec {
   slug: string;
   displayName: string;
@@ -12,6 +16,12 @@ export interface SeedModelSpec {
   compatibleBase: string;
   requiredCustomNodes?: string[];
   recommendedConfig?: Record<string, unknown>;
+  useCases?: string[];
+  styleStrengths?: string[];
+  quantFormat?: QuantFormat;
+  t4Notes?: string;
+  licenseNote?: string;
+  deviceSplitRecommended?: boolean;
   hfRepoId?: string;
   hfFilePath?: string;
   civitaiModelId?: string;
@@ -19,11 +29,197 @@ export interface SeedModelSpec {
   directUrl?: string;
 }
 
+export interface ParsedModelMetadata {
+  useCases: string[];
+  styleStrengths: string[];
+  quantFormat?: QuantFormat;
+  t4Notes?: string;
+  licenseNote?: string;
+  deviceSplitRecommended: boolean;
+  steps?: number;
+  cfg?: number;
+  sampler?: string;
+  scheduler?: string;
+  vae?: string;
+  vpred?: boolean;
+  zsnr?: boolean;
+  rescaleCfg?: number;
+  loaderNode?: string;
+  type?: string;
+  clipVision?: string;
+}
+
+export function parseModelRecommendedConfig(jsonStr?: string | null): ParsedModelMetadata {
+  if (!jsonStr) {
+    return { useCases: [], styleStrengths: [], deviceSplitRecommended: false };
+  }
+  try {
+    const raw = JSON.parse(jsonStr) as Record<string, unknown>;
+    return {
+      useCases: Array.isArray(raw.useCases) ? raw.useCases.map(String) : [],
+      styleStrengths: Array.isArray(raw.styleStrengths) ? raw.styleStrengths.map(String) : [],
+      quantFormat: typeof raw.quantFormat === "string" ? (raw.quantFormat as QuantFormat) : undefined,
+      t4Notes: typeof raw.t4Notes === "string" ? raw.t4Notes : typeof raw.notes === "string" ? raw.notes : undefined,
+      licenseNote: typeof raw.licenseNote === "string" ? raw.licenseNote : undefined,
+      deviceSplitRecommended: Boolean(raw.deviceSplitRecommended),
+      steps: typeof raw.steps === "number" ? raw.steps : undefined,
+      cfg: typeof raw.cfg === "number" ? raw.cfg : undefined,
+      sampler: typeof raw.sampler === "string" ? raw.sampler : undefined,
+      scheduler: typeof raw.scheduler === "string" ? raw.scheduler : undefined,
+      vae: typeof raw.vae === "string" ? raw.vae : undefined,
+      vpred: Boolean(raw.vpred),
+      zsnr: Boolean(raw.zsnr),
+      rescaleCfg: typeof raw.rescaleCfg === "number" ? raw.rescaleCfg : undefined,
+      loaderNode: typeof raw.loaderNode === "string" ? raw.loaderNode : undefined,
+      type: typeof raw.type === "string" ? raw.type : undefined,
+      clipVision: typeof raw.clipVision === "string" ? raw.clipVision : undefined,
+    };
+  } catch {
+    return { useCases: [], styleStrengths: [], deviceSplitRecommended: false };
+  }
+}
+
+function buildMergedRecommendedConfig(m: SeedModelSpec): string | null {
+  const base: Record<string, unknown> = m.recommendedConfig ? { ...m.recommendedConfig } : {};
+  if (m.useCases?.length) base.useCases = m.useCases;
+  if (m.styleStrengths?.length) base.styleStrengths = m.styleStrengths;
+  if (m.quantFormat) base.quantFormat = m.quantFormat;
+  if (m.t4Notes) base.t4Notes = m.t4Notes;
+  if (m.licenseNote) base.licenseNote = m.licenseNote;
+  if (m.deviceSplitRecommended !== undefined) base.deviceSplitRecommended = m.deviceSplitRecommended;
+  return Object.keys(base).length > 0 ? JSON.stringify(base) : null;
+}
+
 const GB = 1024 * 1024 * 1024;
 const MB = 1024 * 1024;
 
 export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
-  // 1. Base Checkpoints
+  // =========================================================================
+  // 1. Base Checkpoints (SDXL / Illustrious / NoobAI / Animagine / SD15)
+  // =========================================================================
+  {
+    slug: "noobai-xl-vpred-1-0",
+    displayName: "NoobAI-XL V-Pred 1.0 (Dramatic Anime & Dynamic Lighting)",
+    modality: "IMAGE",
+    category: "checkpoints",
+    filename: "NoobAI-XL-Vpred-v1.0.safetensors",
+    sizeBytes: Math.round(6.6 * GB),
+    vramEstimateGb: 6.8,
+    compatibleBase: "NoobAI_VPred",
+    quantFormat: "FP16",
+    useCases: ["txt2img", "dramatic_lighting", "cinematic_anime", "character_turnaround", "multi_char", "consistent_ip"],
+    styleStrengths: ["dramatic_chiaroscuro", "dark_fantasy", "detailed_painterly_anime", "expressive_action"],
+    t4Notes: "Single T4 :8188/:8189. Mandatory zsnr=True V-Pred + RescaleCFG(0.7) + sdxl_vae_fp16_fix; avoid 'simple background' tags.",
+    licenseNote: "Fair-AI non-commercial research/visualization",
+    recommendedConfig: {
+      steps: 28,
+      cfg: 5.0,
+      sampler: "euler",
+      scheduler: "normal",
+      vpred: true,
+      zsnr: true,
+      rescaleCfg: 0.7,
+      vae: "sdxl_vae_fp16_fix.safetensors",
+    },
+    hfRepoId: "Laxhar/noobai-XL-Vpred-1.0",
+    hfFilePath: "NoobAI-XL-Vpred-v1.0.safetensors",
+    civitaiModelId: "833294",
+  },
+  {
+    slug: "illustrious-xl-v2-0",
+    displayName: "Illustrious XL v2.0 (Anime Flagship · 1536px Native)",
+    modality: "IMAGE",
+    category: "checkpoints",
+    filename: "Illustrious-XL-v2.0.safetensors",
+    sizeBytes: Math.round(6.6 * GB),
+    vramEstimateGb: 7.0,
+    compatibleBase: "Illustrious",
+    quantFormat: "FP16",
+    useCases: ["txt2img", "anime", "lineart", "sketch", "character_turnaround", "multi_char", "consistent_ip"],
+    styleStrengths: ["vibrant_anime", "manga_illustration", "lineart", "sketch", "watercolor"],
+    t4Notes: "Single T4 :8188/:8189. High native Danbooru tag recall; pair with sdxl_vae_fp16_fix.",
+    recommendedConfig: {
+      steps: 26,
+      cfg: 5.5,
+      sampler: "euler_ancestral",
+      scheduler: "normal",
+      vae: "sdxl_vae_fp16_fix.safetensors",
+    },
+    hfRepoId: "OnomaAIResearch/Illustrious-XL-v2.0",
+    hfFilePath: "Illustrious-XL-v2.0.safetensors",
+    civitaiModelId: "795765",
+  },
+  {
+    slug: "animagine-xl-4-0-opt",
+    displayName: "Animagine XL 4.0 Opt (Clean Studio Cel & Expressions)",
+    modality: "IMAGE",
+    category: "checkpoints",
+    filename: "animagine-xl-4.0-opt.safetensors",
+    sizeBytes: Math.round(6.5 * GB),
+    vramEstimateGb: 6.8,
+    compatibleBase: "Animagine",
+    quantFormat: "FP16",
+    useCases: ["txt2img", "clean_cel", "expression_sheet", "character_turnaround", "storyboard"],
+    styleStrengths: ["clean_cel_shading", "studio_anime", "chibi", "consistent_expressions"],
+    t4Notes: "Single T4 :8188/:8189. Clean anime aesthetic with structured year/rating/aesthetic tag syntax.",
+    recommendedConfig: {
+      steps: 26,
+      cfg: 5.0,
+      sampler: "euler_ancestral",
+      scheduler: "normal",
+      vae: "sdxl_vae_fp16_fix.safetensors",
+    },
+    hfRepoId: "cagliostrolab/animagine-xl-4.0",
+    hfFilePath: "animagine-xl-4.0-opt.safetensors",
+    civitaiModelId: "1188071",
+  },
+  {
+    slug: "wai-nsfw-illustrious-v110",
+    displayName: "WAI-NSFW-Illustrious SDXL v11",
+    modality: "IMAGE",
+    category: "checkpoints",
+    filename: "waiNSFWIllustrious_v110.safetensors",
+    sizeBytes: Math.round(6.6 * GB),
+    vramEstimateGb: 6.8,
+    compatibleBase: "Illustrious",
+    quantFormat: "FP16",
+    useCases: ["txt2img", "anime", "character_turnaround", "multi_char", "consistent_ip"],
+    styleStrengths: ["vibrant_anime", "glossy_illustration", "manhwa"],
+    t4Notes: "Single T4 :8188/:8189. Pair with sdxl_vae_fp16_fix on T4.",
+    recommendedConfig: {
+      steps: 26,
+      cfg: 6.0,
+      sampler: "euler_ancestral",
+      scheduler: "normal",
+      vae: "sdxl_vae_fp16_fix.safetensors",
+    },
+    hfRepoId: "guy39/wai-nsfw-illustrious-sdxl-v11.0",
+    hfFilePath: "waiNSFWIllustrious_v110.safetensors",
+    civitaiModelId: "827184",
+  },
+  {
+    slug: "noobai-xl-v1-1",
+    displayName: "NoobAI-XL v1.1 (Epsilon-Pred)",
+    modality: "IMAGE",
+    category: "checkpoints",
+    filename: "NoobAI-XL-v1.1.safetensors",
+    sizeBytes: Math.round(6.6 * GB),
+    vramEstimateGb: 6.8,
+    compatibleBase: "NoobAI",
+    quantFormat: "FP16",
+    useCases: ["txt2img", "anime", "character_turnaround"],
+    styleStrengths: ["balanced_anime", "concept_art"],
+    recommendedConfig: {
+      steps: 26,
+      cfg: 5.5,
+      sampler: "euler",
+      scheduler: "normal",
+      vae: "sdxl_vae_fp16_fix.safetensors",
+    },
+    hfRepoId: "Laxhar/noobai-XL-1.1",
+    hfFilePath: "NoobAI-XL-v1.1.safetensors",
+    civitaiModelId: "833294",
+  },
   {
     slug: "dreamshaper-xl-v2-turbo",
     displayName: "DreamShaper XL v2.1 Turbo",
@@ -33,6 +229,9 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     sizeBytes: Math.round(6.6 * GB),
     vramEstimateGb: 6.8,
     compatibleBase: "SDXL",
+    quantFormat: "FP16",
+    useCases: ["txt2img_fast", "concept_art", "semi_realistic", "storyboard"],
+    styleStrengths: ["semi_realistic", "painterly_fantasy", "fast_iteration"],
     recommendedConfig: {
       steps: 7,
       cfg: 2.0,
@@ -46,26 +245,6 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     civitaiModelId: "112902",
   },
   {
-    slug: "wai-nsfw-illustrious-v110",
-    displayName: "WAI-NSFW-Illustrious SDXL v11",
-    modality: "IMAGE",
-    category: "checkpoints",
-    filename: "waiNSFWIllustrious_v110.safetensors",
-    sizeBytes: Math.round(6.6 * GB),
-    vramEstimateGb: 6.8,
-    compatibleBase: "Illustrious",
-    recommendedConfig: {
-      steps: 26,
-      cfg: 6.0,
-      sampler: "euler_ancestral",
-      scheduler: "normal",
-      vae: "sdxl_vae_fp16_fix.safetensors",
-      notes: "Top anime & illustration checkpoint. Always pair with sdxl_vae_fp16_fix on T4.",
-    },
-    hfRepoId: "guy39/wai-nsfw-illustrious-sdxl-v11.0",
-    civitaiModelId: "827184",
-  },
-  {
     slug: "juggernaut-xl-v9",
     displayName: "Juggernaut XL v9 RunDiffusion",
     modality: "IMAGE",
@@ -74,13 +253,15 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     sizeBytes: Math.round(6.6 * GB),
     vramEstimateGb: 6.8,
     compatibleBase: "SDXL",
+    quantFormat: "FP16",
+    useCases: ["txt2img", "photoreal", "cinematic_live_action"],
+    styleStrengths: ["photorealistic", "cinematic_film"],
     recommendedConfig: {
       steps: 28,
       cfg: 5.5,
       sampler: "dpmpp_2m_sde",
       scheduler: "karras",
       vae: "sdxl_vae_fp16_fix.safetensors",
-      notes: "Top photorealism SDXL checkpoint.",
     },
     hfRepoId: "RunDiffusion/Juggernaut-XL-v9",
     hfFilePath: "Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors",
@@ -95,13 +276,15 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     sizeBytes: Math.round(6.6 * GB),
     vramEstimateGb: 6.8,
     compatibleBase: "SDXL",
+    quantFormat: "FP16",
+    useCases: ["txt2img", "photoreal", "portrait"],
+    styleStrengths: ["photoreal_skin", "portraits"],
     recommendedConfig: {
       steps: 28,
       cfg: 5.5,
       sampler: "dpmpp_sde",
       scheduler: "karras",
       vae: "sdxl_vae_fp16_fix.safetensors",
-      notes: "Portraits & skin realism.",
     },
     hfRepoId: "SG161222/RealVisXL_V5.0",
     hfFilePath: "RealVisXL_V5.0_fp16.safetensors",
@@ -116,38 +299,19 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     sizeBytes: Math.round(6.6 * GB),
     vramEstimateGb: 6.8,
     compatibleBase: "SDXL",
+    quantFormat: "FP16",
+    useCases: ["txt2img_fast", "photoreal", "storyboard"],
+    styleStrengths: ["fast_photoreal"],
     recommendedConfig: {
       steps: 5,
       cfg: 1.8,
       sampler: "dpmpp_sde",
       scheduler: "karras",
       vae: "sdxl_vae_fp16_fix.safetensors",
-      notes: "Fast 4-6 step photorealistic generation.",
     },
     hfRepoId: "SG161222/RealVisXL_V5.0_Lightning",
     hfFilePath: "RealVisXL_V5.0_Lightning_fp16.safetensors",
     civitaiModelId: "139562",
-  },
-  {
-    slug: "noobai-xl-v1-1",
-    displayName: "NoobAI-XL v1.1",
-    modality: "IMAGE",
-    category: "checkpoints",
-    filename: "NoobAI-XL-v1.1.safetensors",
-    sizeBytes: Math.round(6.6 * GB),
-    vramEstimateGb: 6.8,
-    compatibleBase: "NoobAI",
-    recommendedConfig: {
-      steps: 26,
-      cfg: 5.5,
-      sampler: "euler",
-      scheduler: "normal",
-      vae: "sdxl_vae_fp16_fix.safetensors",
-      notes: "Anime / character concept checkpoint.",
-    },
-    hfRepoId: "Laxhar/noobai-XL-1.1",
-    hfFilePath: "NoobAI-XL-v1.1.safetensors",
-    civitaiModelId: "833294",
   },
   {
     slug: "dreamshaper-8-sd15",
@@ -158,19 +322,274 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     sizeBytes: Math.round(2.0 * GB),
     vramEstimateGb: 2.5,
     compatibleBase: "SD15",
+    quantFormat: "FP16",
+    useCases: ["txt2img_fast", "low_vram"],
+    styleStrengths: ["legacy_sd15"],
     recommendedConfig: {
       steps: 22,
       cfg: 7.0,
       sampler: "dpmpp_2m",
       scheduler: "karras",
-      notes: "Ultra-light & fast SD 1.5 checkpoint.",
     },
     hfRepoId: "Lykon/DreamShaper",
     hfFilePath: "DreamShaper_8_pruned.safetensors",
     civitaiModelId: "4384",
   },
 
-  // 2. UNet & Quantized GGUF Models
+  // =========================================================================
+  // 2. Late-2026 DiTs, GGUF & INT8 ConvRot Diffusion Models (Single & Dual T4)
+  // =========================================================================
+  {
+    slug: "flux3-image-klein-int8-convrot",
+    displayName: "FLUX 3 Image Klein (INT8 ConvRot · Dual-T4 DiT)",
+    modality: "IMAGE",
+    category: "diffusion_models",
+    filename: "flux3-image-klein-int8-convrot.safetensors",
+    sizeBytes: Math.round(6.0 * GB),
+    vramEstimateGb: 8.5,
+    compatibleBase: "Flux3Klein",
+    quantFormat: "INT8_CONVROT",
+    deviceSplitRecommended: true,
+    requiredCustomNodes: ["ComfyUI-KJNodes"],
+    useCases: ["txt2img", "consistent_ip", "multi_char", "image_edit", "typography", "photoreal", "painterly_fantasy"],
+    styleStrengths: ["sub_second_fidelity", "natural_language_prompt", "typography", "photorealistic", "illustrative"],
+    t4Notes: "Runs on IMAGE_DIT_DUAL_T4 (:8188): DiT INT8 ConvRot on cuda:0 + Qwen3.5-9B/Qwen3VL-4B on cuda:1. Avoid FP8/NVFP4 on T4.",
+    recommendedConfig: {
+      loaderNode: "UNETLoader",
+      steps: 12,
+      cfg: 1.0,
+      sampler: "euler",
+      scheduler: "simple",
+      vae: "flux2-vae.safetensors",
+    },
+    hfRepoId: "black-forest-labs/flux-3-image-klein-comfy",
+    hfFilePath: "diffusion_models/flux3-image-klein-int8-convrot.safetensors",
+  },
+  {
+    slug: "flux3-image-klein-base-int8-convrot",
+    displayName: "FLUX 3 Image Klein Base (INT8 ConvRot · Dual-T4)",
+    modality: "IMAGE",
+    category: "diffusion_models",
+    filename: "flux3-image-klein-base-int8-convrot.safetensors",
+    sizeBytes: Math.round(6.0 * GB),
+    vramEstimateGb: 8.5,
+    compatibleBase: "Flux3Klein",
+    quantFormat: "INT8_CONVROT",
+    deviceSplitRecommended: true,
+    useCases: ["txt2img", "lora_training_base", "consistent_ip"],
+    styleStrengths: ["high_cfg_control", "natural_language_prompt"],
+    recommendedConfig: {
+      loaderNode: "UNETLoader",
+      steps: 24,
+      cfg: 3.5,
+      sampler: "euler",
+      scheduler: "simple",
+      vae: "flux2-vae.safetensors",
+    },
+    hfRepoId: "black-forest-labs/flux-3-image-klein-comfy",
+    hfFilePath: "diffusion_models/flux3-image-klein-base-int8-convrot.safetensors",
+  },
+  {
+    slug: "moss-image-sft-int8-convrot",
+    displayName: "MOSS-Image SFT 5B (INT8 ConvRot · Multi-Char Spatial)",
+    modality: "IMAGE",
+    category: "diffusion_models",
+    filename: "moss_image_sft_int8_convrot.safetensors",
+    sizeBytes: Math.round(5.6 * GB),
+    vramEstimateGb: 7.5,
+    compatibleBase: "MOSSImage",
+    quantFormat: "INT8_CONVROT",
+    deviceSplitRecommended: true,
+    useCases: ["txt2img", "multi_char", "spatial_layout", "manhwa_webtoon", "controlnet", "txt2img_fast"],
+    styleStrengths: ["multi_character_blocking", "manhwa_webtoon", "editorial_composition", "photorealistic"],
+    t4Notes: "5B single-stream DiT. Pair with Qwen3.5-9B INT8 on cuda:1 (Dual-T4 split) + optional 8-step DMD2 LoRA.",
+    recommendedConfig: {
+      loaderNode: "UNETLoader",
+      steps: 24,
+      cfg: 3.5,
+      sampler: "euler",
+      scheduler: "simple",
+      vae: "flux2-vae.safetensors",
+    },
+    hfRepoId: "Comfy-Org/MOSS-Image",
+    hfFilePath: "diffusion_models/moss_image_sft_int8_convrot.safetensors",
+  },
+  {
+    slug: "moss-image-sft-q5km",
+    displayName: "MOSS-Image SFT 5B (GGUF Q5_K_M · Single-T4)",
+    modality: "IMAGE",
+    category: "unet",
+    filename: "MOSS-Image-SFT-Q5_K_M.gguf",
+    sizeBytes: Math.round(4.1 * GB),
+    vramEstimateGb: 6.2,
+    compatibleBase: "MOSSImage",
+    quantFormat: "GGUF",
+    requiredCustomNodes: ["ComfyUI-GGUF"],
+    useCases: ["txt2img", "multi_char", "spatial_layout", "manhwa_webtoon"],
+    styleStrengths: ["multi_character_blocking", "manhwa_webtoon"],
+    t4Notes: "GGUF Q5_K_M allows single-T4 or split Dual-T4 execution with fast 8-step DMD2 LoRA.",
+    recommendedConfig: {
+      loaderNode: "UnetLoaderGGUF",
+      steps: 20,
+      cfg: 3.5,
+      sampler: "euler",
+      scheduler: "simple",
+      vae: "flux2-vae.safetensors",
+    },
+    hfRepoId: "realrebelai/MOSS-Image_GGUFs",
+    hfFilePath: "MOSS-Image-SFT-Q5_K_M.gguf",
+  },
+  {
+    slug: "qwen-image-2-1-int8-convrot",
+    displayName: "Qwen-Image 2.1 (INT8 ConvRot · Dual-T4 DiT)",
+    modality: "IMAGE",
+    category: "diffusion_models",
+    filename: "qwen_image_2.1_int8_convrot.safetensors",
+    sizeBytes: Math.round(8.2 * GB),
+    vramEstimateGb: 10.5,
+    compatibleBase: "Qwen21",
+    quantFormat: "INT8_CONVROT",
+    deviceSplitRecommended: true,
+    useCases: ["txt2img", "consistent_ip", "image_edit", "storyboard", "typography"],
+    styleStrengths: ["cinematic_anime", "east_asian_aesthetics", "typography", "photorealistic"],
+    t4Notes: "Native Turing INT8 ConvRot. Runs cleanly on IMAGE_DIT_DUAL_T4 with Qwen3.5-9B PE TE on cuda:1.",
+    licenseNote: "Non-commercial research/visualization",
+    recommendedConfig: {
+      loaderNode: "UNETLoader",
+      steps: 24,
+      cfg: 3.5,
+      sampler: "euler",
+      scheduler: "simple",
+      vae: "qwen_image_2.1_vae_bf16.safetensors",
+    },
+    hfRepoId: "Comfy-Org/Qwen-Image-2.1",
+    hfFilePath: "diffusion_models/qwen_image_2.1_int8_convrot.safetensors",
+  },
+  {
+    slug: "qwen-image-2-1-turbo-int8-convrot",
+    displayName: "Qwen-Image 2.1 Turbo (INT8 ConvRot · 8-Step Dual-T4)",
+    modality: "IMAGE",
+    category: "diffusion_models",
+    filename: "qwen_image_2.1_turbo_int8_convrot.safetensors",
+    sizeBytes: Math.round(8.2 * GB),
+    vramEstimateGb: 10.5,
+    compatibleBase: "Qwen21",
+    quantFormat: "INT8_CONVROT",
+    deviceSplitRecommended: true,
+    useCases: ["txt2img_fast", "consistent_ip", "storyboard"],
+    styleStrengths: ["fast_cinematic_anime", "storyboard_panels"],
+    licenseNote: "Non-commercial research/visualization",
+    recommendedConfig: {
+      loaderNode: "UNETLoader",
+      steps: 8,
+      cfg: 1.0,
+      sampler: "euler",
+      scheduler: "simple",
+      vae: "qwen_image_2.1_vae_bf16.safetensors",
+    },
+    hfRepoId: "Comfy-Org/Qwen-Image-2.1",
+    hfFilePath: "diffusion_models/qwen_image_2.1_turbo_int8_convrot.safetensors",
+  },
+  {
+    slug: "anima-turbo-v1-0-q5km",
+    displayName: "Anima Turbo v1.0 (GGUF Q5_K_M · Ultra-Compact 2B DiT)",
+    modality: "IMAGE",
+    category: "unet",
+    filename: "anima-turbo-v1.0-Q5_K_M.gguf",
+    sizeBytes: Math.round(1.9 * GB),
+    vramEstimateGb: 4.5,
+    compatibleBase: "Anima",
+    quantFormat: "GGUF",
+    requiredCustomNodes: ["ComfyUI-GGUF", "ComfyUI-Anima-Ref-Adapter"],
+    useCases: ["txt2img_fast", "anime", "consistent_ip", "character_turnaround", "controlnet"],
+    styleStrengths: ["expressive_anime", "semi_realistic_anime", "dynamic_posing", "fast_iteration"],
+    t4Notes: "Fits easily on a single 16 GB T4 with plenty of headroom for Ref Adapter v2 + LLLite ControlNets.",
+    licenseNote: "Non-commercial research/visualization",
+    recommendedConfig: {
+      loaderNode: "UnetLoaderGGUF",
+      steps: 8,
+      cfg: 2.0,
+      sampler: "er_sde",
+      scheduler: "simple",
+      vae: "qwen_image_vae.safetensors",
+    },
+    hfRepoId: "Abiray/Anima-turbo-v1.0-GGUF",
+    hfFilePath: "anima-turbo-v1.0-Q5_K_M.gguf",
+  },
+  {
+    slug: "anima-aesthetic-v1-1",
+    displayName: "Anima Aesthetic v1.1 (BF16 2B DiT · Native Weights)",
+    modality: "IMAGE",
+    category: "diffusion_models",
+    filename: "anima-aesthetic-v1.1.safetensors",
+    sizeBytes: Math.round(4.1 * GB),
+    vramEstimateGb: 6.5,
+    compatibleBase: "Anima",
+    quantFormat: "BF16",
+    requiredCustomNodes: ["ComfyUI-Anima-Ref-Adapter"],
+    useCases: ["txt2img", "anime", "consistent_ip", "character_turnaround"],
+    styleStrengths: ["high_aesthetic_anime", "painterly_anime"],
+    t4Notes: "Full-fidelity 2B DiT fits on single 16GB T4 with Qwen3-0.6B TE.",
+    licenseNote: "Non-commercial research/visualization",
+    recommendedConfig: {
+      loaderNode: "UNETLoader",
+      steps: 24,
+      cfg: 4.0,
+      sampler: "er_sde",
+      scheduler: "simple",
+      vae: "qwen_image_vae.safetensors",
+    },
+    hfRepoId: "circlestone-labs/Anima",
+    hfFilePath: "split_files/diffusion_models/anima-aesthetic-v1.1.safetensors",
+  },
+  {
+    slug: "netayume-lumina-v4",
+    displayName: "NetaYume Lumina v4 All-in-One (Lumina2 Anime DiT)",
+    modality: "IMAGE",
+    category: "checkpoints",
+    filename: "NetaYume_v4_all_in_one.safetensors",
+    sizeBytes: Math.round(5.4 * GB),
+    vramEstimateGb: 8.5,
+    compatibleBase: "NetaLumina",
+    quantFormat: "BF16",
+    useCases: ["txt2img", "anime", "gothic_fantasy", "dramatic_lighting"],
+    styleStrengths: ["dense_prompt_anime", "soft_lighting", "atmospheric_editorial"],
+    t4Notes: "All-in-one checkpoint includes Gemma-2-2B + Lumina2 UNet + Flux VAE inside 16 GB T4.",
+    recommendedConfig: {
+      loaderNode: "CheckpointLoaderSimple",
+      steps: 24,
+      cfg: 4.5,
+      sampler: "euler",
+      scheduler: "linear_quadratic",
+    },
+    hfRepoId: "duongve/NetaYume-Lumina-Image-2.0",
+    hfFilePath: "NetaYume_v4_all_in_one.safetensors",
+  },
+  {
+    slug: "qwen-image-2512-q4km",
+    displayName: "Qwen-Image 2512 (GGUF Q4_K_M · 360° Panorama & Scenes)",
+    modality: "IMAGE",
+    category: "unet",
+    filename: "qwen-image-2512-Q4_K_M.gguf",
+    sizeBytes: Math.round(12.2 * GB),
+    vramEstimateGb: 13.8,
+    compatibleBase: "Qwen2512",
+    quantFormat: "GGUF",
+    deviceSplitRecommended: true,
+    requiredCustomNodes: ["ComfyUI-GGUF", "ComfyUI_pytorch360convert", "ComfyUI_preview360panorama"],
+    useCases: ["360_panorama", "environment", "txt2img"],
+    styleStrengths: ["spherical_360_environments", "epic_architecture"],
+    recommendedConfig: {
+      loaderNode: "UnetLoaderGGUF",
+      steps: 20,
+      cfg: 3.5,
+      sampler: "euler",
+      scheduler: "simple",
+      vae: "qwen_image_vae.safetensors",
+    },
+    hfRepoId: "unsloth/Qwen-Image-2512-GGUF",
+    hfFilePath: "qwen-image-2512-Q4_K_M.gguf",
+  },
   {
     slug: "qwen-image-edit-2511-q4km",
     displayName: "Qwen-Image-Edit 2511 (GGUF Q4_K_M)",
@@ -180,7 +599,11 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     sizeBytes: Math.round(12.2 * GB),
     vramEstimateGb: 13.5,
     compatibleBase: "QwenEdit",
+    quantFormat: "GGUF",
+    deviceSplitRecommended: true,
     requiredCustomNodes: ["ComfyUI-GGUF"],
+    useCases: ["image_edit", "relight", "consistent_ip", "camera_angle"],
+    styleStrengths: ["subject_relighting", "multi_image_fusion"],
     recommendedConfig: {
       loaderNode: "UnetLoaderGGUF",
       steps: 4,
@@ -199,7 +622,10 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     sizeBytes: Math.round(6.8 * GB),
     vramEstimateGb: 10.5,
     compatibleBase: "Flux1",
+    quantFormat: "GGUF",
     requiredCustomNodes: ["ComfyUI-GGUF"],
+    useCases: ["txt2img", "photoreal", "typography"],
+    styleStrengths: ["photorealistic", "typography"],
     recommendedConfig: {
       loaderNode: "UnetLoaderGGUF",
       steps: 20,
@@ -219,7 +645,9 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     sizeBytes: Math.round(6.8 * GB),
     vramEstimateGb: 10.5,
     compatibleBase: "Flux1",
+    quantFormat: "GGUF",
     requiredCustomNodes: ["ComfyUI-GGUF"],
+    useCases: ["txt2img_fast", "storyboard"],
     recommendedConfig: {
       loaderNode: "UnetLoaderGGUF",
       steps: 4,
@@ -230,34 +658,135 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     hfFilePath: "flux1-schnell-Q4_K_S.gguf",
     civitaiModelId: "618692",
   },
-  {
-    slug: "flux-2-klein-4b-fp8",
-    displayName: "Flux.2 Klein 4B (FP8)",
-    modality: "IMAGE",
-    category: "unet",
-    filename: "flux-2-klein-4b-fp8.safetensors",
-    sizeBytes: Math.round(3.9 * GB),
-    vramEstimateGb: 7.5,
-    compatibleBase: "Flux2",
-    recommendedConfig: {
-      loaderNode: "UNETLoader",
-      notes: "Lightweight fast Flux.2 model; pairs with qwen_3_4b_fp4_flux2 & flux2-vae.",
-    },
-  },
 
-  // 3. Text Encoders & CLIP
+  // =========================================================================
+  // 3. Text Encoders & CLIP Vision Encoders
+  // =========================================================================
+  {
+    slug: "qwen35-9b-flux3-upsampler-int8",
+    displayName: "Qwen 3.5 9B Prompt Upsampler (INT8 ConvRot · FLUX 3)",
+    modality: "SHARED",
+    category: "text_encoders",
+    filename: "qwen3.5_9b_flux3_prompt_upsampler_int8_convrot.safetensors",
+    sizeBytes: Math.round(9.4 * GB),
+    vramEstimateGb: 9.8,
+    compatibleBase: "Flux3Klein",
+    quantFormat: "INT8_CONVROT",
+    deviceSplitRecommended: true,
+    useCases: ["text_encoder", "prompt_upsampling"],
+    t4Notes: "Load on cuda:1 via SelectCLIPDevice(cuda:1) on Dual-T4 IMAGE_DIT_DUAL_T4.",
+    recommendedConfig: { loaderNode: "CLIPLoader", type: "flux3" },
+    hfRepoId: "black-forest-labs/flux-3-image-klein-comfy",
+    hfFilePath: "text_encoders/qwen3.5_9b_flux3_prompt_upsampler_int8_convrot.safetensors",
+  },
+  {
+    slug: "qwen3vl-4b-int8-convrot",
+    displayName: "Qwen3-VL 4B Text Encoder (INT8 ConvRot · FLUX 3)",
+    modality: "SHARED",
+    category: "text_encoders",
+    filename: "qwen3vl_4b_int8_convrot.safetensors",
+    sizeBytes: Math.round(4.4 * GB),
+    vramEstimateGb: 4.8,
+    compatibleBase: "Flux3Klein",
+    quantFormat: "INT8_CONVROT",
+    useCases: ["text_encoder"],
+    recommendedConfig: { loaderNode: "CLIPLoader", type: "flux3" },
+    hfRepoId: "black-forest-labs/flux-3-image-klein-comfy",
+    hfFilePath: "text_encoders/qwen3vl_4b_int8_convrot.safetensors",
+  },
+  {
+    slug: "qwen35-9b-int8-convrot",
+    displayName: "Qwen 3.5 9B Text Encoder (INT8 ConvRot · MOSS-Image)",
+    modality: "SHARED",
+    category: "text_encoders",
+    filename: "qwen3.5_9b_int8_convrot.safetensors",
+    sizeBytes: Math.round(9.3 * GB),
+    vramEstimateGb: 9.8,
+    compatibleBase: "MOSSImage",
+    quantFormat: "INT8_CONVROT",
+    deviceSplitRecommended: true,
+    useCases: ["text_encoder"],
+    recommendedConfig: { loaderNode: "CLIPLoader", type: "moss" },
+    hfRepoId: "Comfy-Org/MOSS-Image",
+    hfFilePath: "text_encoders/qwen3.5_9b_int8_convrot.safetensors",
+  },
+  {
+    slug: "qwen35-9b-qwen21-pe-t2i-int8",
+    displayName: "Qwen 3.5 9B Qwen-Image 2.1 T2I Encoder (INT8 ConvRot)",
+    modality: "SHARED",
+    category: "text_encoders",
+    filename: "qwen3.5_9b_qwen_image_2.1_pe_t2i.int8_convrot.safetensors",
+    sizeBytes: Math.round(9.3 * GB),
+    vramEstimateGb: 9.8,
+    compatibleBase: "Qwen21",
+    quantFormat: "INT8_CONVROT",
+    deviceSplitRecommended: true,
+    useCases: ["text_encoder"],
+    recommendedConfig: { loaderNode: "CLIPLoader", type: "qwen_image" },
+    hfRepoId: "Comfy-Org/Qwen-Image-2.1",
+    hfFilePath: "text_encoders/qwen3.5_9b_qwen_image_2.1_pe_t2i.int8_convrot.safetensors",
+  },
+  {
+    slug: "qwen35-9b-qwen21-pe-i2i-int8",
+    displayName: "Qwen 3.5 9B Qwen-Image 2.1 I2I Edit Encoder (INT8 ConvRot)",
+    modality: "SHARED",
+    category: "text_encoders",
+    filename: "qwen3.5_9b_qwen_image_2.1_pe_i2i.int8_convrot.safetensors",
+    sizeBytes: Math.round(9.3 * GB),
+    vramEstimateGb: 9.8,
+    compatibleBase: "Qwen21",
+    quantFormat: "INT8_CONVROT",
+    deviceSplitRecommended: true,
+    useCases: ["text_encoder", "image_edit"],
+    recommendedConfig: { loaderNode: "CLIPLoader", type: "qwen_image" },
+    hfRepoId: "Comfy-Org/Qwen-Image-2.1",
+    hfFilePath: "text_encoders/qwen3.5_9b_qwen_image_2.1_pe_i2i.int8_convrot.safetensors",
+  },
+  {
+    slug: "qwen-3-06b-base",
+    displayName: "Qwen 3 0.6B Base Text Encoder (Anima v1.0)",
+    modality: "SHARED",
+    category: "text_encoders",
+    filename: "qwen_3_06b_base.safetensors",
+    sizeBytes: Math.round(1.2 * GB),
+    vramEstimateGb: 1.5,
+    compatibleBase: "Anima",
+    quantFormat: "BF16",
+    useCases: ["text_encoder"],
+    recommendedConfig: { loaderNode: "CLIPLoader", type: "anima" },
+    hfRepoId: "Abiray/Anima-turbo-v1.0-GGUF",
+    hfFilePath: "split_files/text_encoders/qwen_3_06b_base.safetensors",
+  },
+  {
+    slug: "clip-vision-g",
+    displayName: "CLIP-ViT-bigG-14 Vision Encoder (NoobAI IPA Mk1)",
+    modality: "IMAGE",
+    category: "clip_vision",
+    filename: "clip_vision_g.safetensors",
+    sizeBytes: Math.round(3.7 * GB),
+    vramEstimateGb: 3.9,
+    compatibleBase: "NoobAI",
+    requiredCustomNodes: ["ComfyUI_IPAdapter_plus"],
+    useCases: ["consistent_ip", "clip_vision"],
+    t4Notes: "Mandatory bigG vision encoder for NoobAI IP-Adapter Mark 1 (never swap for ViT-H on NoobAI IPA!).",
+    recommendedConfig: { loaderNode: "CLIPVisionLoader" },
+    hfRepoId: "comfyanonymous/clip_vision_g",
+    hfFilePath: "clip_vision_g.safetensors",
+  },
   {
     slug: "qwen-2-5-vl-7b-fp8-scaled",
-    displayName: "Qwen 2.5 VL 7B (FP8 Scaled)",
+    displayName: "Qwen 2.5 VL 7B Text Encoder (Qwen-Image 2509/2512)",
     modality: "SHARED",
     category: "text_encoders",
     filename: "qwen_2.5_vl_7b_fp8_scaled.safetensors",
     sizeBytes: Math.round(8.9 * GB),
     vramEstimateGb: 6.0,
     compatibleBase: "QwenEdit",
+    quantFormat: "FP8",
+    useCases: ["text_encoder", "image_edit", "360_panorama"],
     recommendedConfig: { loaderNode: "CLIPLoader", type: "qwen_image" },
     hfRepoId: "Comfy-Org/Qwen-Image_ComfyUI",
-    hfFilePath: "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+    hfFilePath: "split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors",
   },
   {
     slug: "t5xxl-fp8-e4m3fn",
@@ -268,6 +797,8 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     sizeBytes: Math.round(4.9 * GB),
     vramEstimateGb: 5.0,
     compatibleBase: "Flux1",
+    quantFormat: "FP8",
+    useCases: ["text_encoder"],
     recommendedConfig: { loaderNode: "DualCLIPLoader" },
     hfRepoId: "comfyanonymous/flux_text_encoders",
     hfFilePath: "t5xxl_fp8_e4m3fn.safetensors",
@@ -281,7 +812,9 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     sizeBytes: Math.round(2.9 * GB),
     vramEstimateGb: 3.1,
     compatibleBase: "Flux1",
+    quantFormat: "GGUF",
     requiredCustomNodes: ["ComfyUI-GGUF"],
+    useCases: ["text_encoder"],
     recommendedConfig: {
       loaderNode: "DualCLIPLoaderGGUF",
       notes: "Recommended low-VRAM T5 encoder for 16GB T4 Flux.1 workflows.",
@@ -298,22 +831,15 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     sizeBytes: 246 * MB,
     vramEstimateGb: 0.3,
     compatibleBase: "Flux1",
+    useCases: ["text_encoder"],
     recommendedConfig: { loaderNode: "DualCLIPLoader" },
     hfRepoId: "comfyanonymous/flux_text_encoders",
     hfFilePath: "clip_l.safetensors",
   },
-  {
-    slug: "qwen-3-4b-fp4-flux2",
-    displayName: "Qwen 3 4B FP4 (Flux2)",
-    modality: "SHARED",
-    category: "text_encoders",
-    filename: "qwen_3_4b_fp4_flux2.safetensors",
-    sizeBytes: Math.round(3.7 * GB),
-    vramEstimateGb: 3.9,
-    compatibleBase: "Flux2",
-  },
 
+  // =========================================================================
   // 4. VAEs
+  // =========================================================================
   {
     slug: "sdxl-vae-fp16-fix",
     displayName: "SDXL VAE FP16 Fix (Mandatory for T4)",
@@ -323,8 +849,9 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     sizeBytes: 319 * MB,
     vramEstimateGb: 0.4,
     compatibleBase: "SDXL",
+    useCases: ["vae"],
     recommendedConfig: {
-      notes: "Mandatory on NVIDIA Tesla T4 (--fp16-vae) to prevent black NaN images on SDXL/Illustrious/Pony.",
+      notes: "Mandatory on NVIDIA Tesla T4 (--fp16-vae) to prevent black NaN images on SDXL/Illustrious/NoobAI/Animagine.",
     },
     hfRepoId: "madebyollin/sdxl-vae-fp16-fix",
     hfFilePath: "sdxl_vae.safetensors",
@@ -332,15 +859,29 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
   },
   {
     slug: "qwen-image-vae",
-    displayName: "Qwen Image VAE",
+    displayName: "Qwen / Anima Image VAE",
     modality: "IMAGE",
     category: "vae",
     filename: "qwen_image_vae.safetensors",
     sizeBytes: 242 * MB,
     vramEstimateGb: 0.3,
-    compatibleBase: "QwenEdit",
+    compatibleBase: "Anima",
+    useCases: ["vae"],
     hfRepoId: "Comfy-Org/Qwen-Image_ComfyUI",
-    hfFilePath: "qwen_image_vae.safetensors",
+    hfFilePath: "split_files/vae/qwen_image_vae.safetensors",
+  },
+  {
+    slug: "qwen-image-2-1-vae",
+    displayName: "Qwen-Image 2.1 VAE (BF16)",
+    modality: "IMAGE",
+    category: "vae",
+    filename: "qwen_image_2.1_vae_bf16.safetensors",
+    sizeBytes: 254 * MB,
+    vramEstimateGb: 0.3,
+    compatibleBase: "Qwen21",
+    useCases: ["vae"],
+    hfRepoId: "Comfy-Org/Qwen-Image-2.1",
+    hfFilePath: "vae/qwen_image_2.1_vae_bf16.safetensors",
   },
   {
     slug: "flux1-ae-vae",
@@ -351,22 +892,28 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     sizeBytes: 335 * MB,
     vramEstimateGb: 0.4,
     compatibleBase: "Flux1",
+    useCases: ["vae"],
     hfRepoId: "black-forest-labs/FLUX.1-schnell",
     hfFilePath: "ae.safetensors",
     civitaiModelId: "618692",
   },
   {
     slug: "flux2-vae",
-    displayName: "Flux.2 VAE",
+    displayName: "FLUX 2/3 & MOSS-Image Shared VAE",
     modality: "IMAGE",
     category: "vae",
     filename: "flux2-vae.safetensors",
     sizeBytes: 320 * MB,
     vramEstimateGb: 0.4,
-    compatibleBase: "Flux2",
+    compatibleBase: "Flux3Klein",
+    useCases: ["vae"],
+    hfRepoId: "black-forest-labs/flux-3-image-klein-comfy",
+    hfFilePath: "vae/flux2-vae.safetensors",
   },
 
-  // 5. LoRAs
+  // =========================================================================
+  // 5. LoRAs (Turnaround, DMD2 Acceleration, Relight, 360° Panorama, Detail)
+  // =========================================================================
   {
     slug: "vn-character-sheet-v4",
     displayName: "VN Character Sheet v4 (3-Angle Turnaround)",
@@ -376,6 +923,7 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     sizeBytes: 218 * MB,
     vramEstimateGb: 0.3,
     compatibleBase: "Illustrious",
+    useCases: ["character_turnaround", "consistent_ip"],
     hfRepoId: "MIUProject/VNCCS",
     civitaiModelId: "400668",
   },
@@ -388,6 +936,7 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     sizeBytes: 435 * MB,
     vramEstimateGb: 0.5,
     compatibleBase: "SDXL",
+    useCases: ["detail_enhance", "painterly_fantasy"],
     hfRepoId: "AiWise/sdxl-faetastic-details_v24",
     civitaiModelId: "291895",
   },
@@ -400,6 +949,7 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     sizeBytes: 218 * MB,
     vramEstimateGb: 0.3,
     compatibleBase: "SDXL",
+    useCases: ["detail_enhance"],
     hfRepoId: "PvDeep/Add-Detail-XL",
     hfFilePath: "add-detail-xl.safetensors",
     civitaiModelId: "122359",
@@ -413,6 +963,76 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     sizeBytes: 163 * MB,
     vramEstimateGb: 0.2,
     compatibleBase: "Illustrious",
+    useCases: ["environment", "detail_enhance"],
+  },
+  {
+    slug: "moss-image-8step-dmd2-lora",
+    displayName: "MOSS-Image 8-Step DMD2 Acceleration LoRA",
+    modality: "IMAGE",
+    category: "loras",
+    filename: "moss_image_base_dmd2_v2_bf16.safetensors",
+    sizeBytes: 512 * MB,
+    vramEstimateGb: 0.5,
+    compatibleBase: "MOSSImage",
+    useCases: ["txt2img_fast", "multi_char", "spatial_layout"],
+    t4Notes: "Cuts MOSS-Image sampling from 28 steps down to 8 steps at CFG 1.0.",
+    recommendedConfig: { steps: 8, cfg: 1.0 },
+    hfRepoId: "data-archetype/moss_image_base_dmd2",
+    hfFilePath: "loras/moss_image_base_dmd2_v2_bf16.safetensors",
+  },
+  {
+    slug: "moss-color-depth-control-lora",
+    displayName: "MOSS-Image Color & Depth Structural LoRA",
+    modality: "IMAGE",
+    category: "loras",
+    filename: "moss_image_color_depth_control.safetensors",
+    sizeBytes: 340 * MB,
+    vramEstimateGb: 0.4,
+    compatibleBase: "MOSSImage",
+    useCases: ["controlnet", "depth", "recolor"],
+    hfRepoId: "Comfy-Org/MOSS-Image",
+    hfFilePath: "loras/moss_image_color_depth_control.safetensors",
+  },
+  {
+    slug: "qwen-21-8step-lora",
+    displayName: "Qwen-Image 2.1 8-Step Turbo LoRA",
+    modality: "IMAGE",
+    category: "loras",
+    filename: "p_q_image_2.1_8_steps_v0.1_comfyui_bf16.safetensors",
+    sizeBytes: 620 * MB,
+    vramEstimateGb: 0.6,
+    compatibleBase: "Qwen21",
+    useCases: ["txt2img_fast", "consistent_ip"],
+    recommendedConfig: { steps: 8, cfg: 1.0 },
+    hfRepoId: "Comfy-Org/Qwen-Image-2.1",
+    hfFilePath: "loras/p_q_image_2.1_8_steps_v0.1_comfyui_bf16.safetensors",
+  },
+  {
+    slug: "qwen-edit-2509-light-migration",
+    displayName: "Qwen-Edit 2509 Light & Color Tone Migration LoRA",
+    modality: "IMAGE",
+    category: "loras",
+    filename: "Qwen-Image-Edit-2509-Light-Migration.safetensors",
+    sizeBytes: 240 * MB,
+    vramEstimateGb: 0.3,
+    compatibleBase: "QwenEdit",
+    useCases: ["relight", "color_grading", "compositing"],
+    hfRepoId: "Comfy-Org/Qwen-Image-Edit",
+    hfFilePath: "split_files/loras/Qwen-Image-Edit-2509-Light-Migration.safetensors",
+  },
+  {
+    slug: "qwen-360-diffusion-2512",
+    displayName: "Qwen 360° Equirectangular Panorama LoRA (v2 INT8)",
+    modality: "IMAGE",
+    category: "loras",
+    filename: "qwen-360-diffusion-2512-int8-bf16-v2.safetensors",
+    sizeBytes: 420 * MB,
+    vramEstimateGb: 0.4,
+    compatibleBase: "Qwen2512",
+    requiredCustomNodes: ["ComfyUI_pytorch360convert", "ComfyUI_preview360panorama"],
+    useCases: ["360_panorama", "environment"],
+    hfRepoId: "ProGamerGov/qwen-360-diffusion",
+    hfFilePath: "qwen-360-diffusion-2512-int8-bf16-v2.safetensors",
   },
   {
     slug: "sdxl-lightning-4step-lora",
@@ -423,6 +1043,7 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     sizeBytes: 394 * MB,
     vramEstimateGb: 0.4,
     compatibleBase: "SDXL",
+    useCases: ["txt2img_fast"],
     recommendedConfig: { steps: 4, cfg: 1.5, sampler: "euler", scheduler: "sgm_uniform" },
     hfRepoId: "ByteDance/SDXL-Lightning",
     hfFilePath: "sdxl_lightning_4step_lora.safetensors",
@@ -437,6 +1058,7 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     sizeBytes: 787 * MB,
     vramEstimateGb: 0.8,
     compatibleBase: "SDXL",
+    useCases: ["txt2img_fast"],
     recommendedConfig: { steps: 8, cfg: 4.5 },
     hfRepoId: "ByteDance/Hyper-SD",
     hfFilePath: "Hyper-SDXL-8steps-CFG-lora.safetensors",
@@ -451,6 +1073,7 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     sizeBytes: 810 * MB,
     vramEstimateGb: 0.8,
     compatibleBase: "QwenEdit",
+    useCases: ["image_edit", "relight"],
     hfRepoId: "lightx2v/Qwen-Image-Edit-2511-Lightning",
     hfFilePath: "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
   },
@@ -459,11 +1082,13 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     displayName: "Qwen-Edit 3-Image Fusion LoRA",
     modality: "IMAGE",
     category: "loras",
-    filename: "Qwen-Edit-2509-Fusion.safetensors",
+    filename: "Qwen-Image-Edit-2509-Fusion.safetensors",
     sizeBytes: 225 * MB,
     vramEstimateGb: 0.3,
     compatibleBase: "QwenEdit",
+    useCases: ["image_edit", "consistent_ip"],
     hfRepoId: "Comfy-Org/Qwen-Image-Edit",
+    hfFilePath: "split_files/loras/Qwen-Image-Edit-2509-Fusion.safetensors",
   },
   {
     slug: "qwen-edit-multiple-angles",
@@ -474,24 +1099,203 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     sizeBytes: 225 * MB,
     vramEstimateGb: 0.3,
     compatibleBase: "QwenEdit",
+    useCases: ["camera_angle", "character_turnaround"],
     hfRepoId: "Comfy-Org/Qwen-Image-Edit",
+    hfFilePath: "split_files/loras/Qwen-Edit-2509-Multiple-angles.safetensors",
   },
   {
     slug: "qwen-edit-relight-lora",
     displayName: "Qwen-Edit Relight LoRA",
     modality: "IMAGE",
     category: "loras",
-    filename: "Qwen-Edit-2509-Relight.safetensors",
+    filename: "Qwen-Image-Edit-2509-Relight.safetensors",
     sizeBytes: 225 * MB,
     vramEstimateGb: 0.3,
     compatibleBase: "QwenEdit",
+    useCases: ["relight"],
     hfRepoId: "Comfy-Org/Qwen-Image-Edit",
+    hfFilePath: "split_files/loras/Qwen-Image-Edit-2509-Relight.safetensors",
   },
 
-  // 6. ControlNet & IP-Adapter Ecosystem
+  // =========================================================================
+  // 6. ControlNet, Relighting (LBM) & IP-Adapter Connectors
+  // =========================================================================
+  {
+    slug: "noob-ipadapter-mark1",
+    displayName: "NoobAI / Illustrious IP-Adapter Mark 1 (CLIP-ViT-bigG)",
+    modality: "IMAGE",
+    category: "ipadapter",
+    filename: "ip_adapter_Noobtest_800000.bin",
+    sizeBytes: 848 * MB,
+    vramEstimateGb: 1.0,
+    compatibleBase: "NoobAI",
+    requiredCustomNodes: ["ComfyUI_IPAdapter_plus"],
+    useCases: ["consistent_ip", "anime_character_identity", "style_transfer"],
+    t4Notes: "Always pair with clip_vision_g.safetensors (ViT-bigG). Never use FaceID/InstantID for 2D anime.",
+    recommendedConfig: { clipVision: "clip_vision_g.safetensors" },
+    hfRepoId: "kataragi/Noob_ipadapter",
+    hfFilePath: "ip_adapter_Noobtest_800000.bin",
+    civitaiModelId: "1010989",
+  },
+  {
+    slug: "anima-ref-adapter-v2",
+    displayName: "Anima Reference Adapter v2 (r64 Native Consistency)",
+    modality: "IMAGE",
+    category: "ipadapter",
+    filename: "anima_ref_adapter_v2_r64.safetensors",
+    sizeBytes: 310 * MB,
+    vramEstimateGb: 0.5,
+    compatibleBase: "Anima",
+    requiredCustomNodes: ["ComfyUI-Anima-Ref-Adapter"],
+    useCases: ["consistent_ip", "anime_character_identity"],
+    t4Notes: "Injects native attention-reference character identity into Anima v1.0 without FaceID distortion.",
+    hfRepoId: "ElectronGirl/anima-ref-adapter",
+    hfFilePath: "anima_ref_adapter_v2_r64.safetensors",
+  },
+  {
+    slug: "noob-controlnet-canny",
+    displayName: "NoobAI / Illustrious ControlNet Canny (FP16)",
+    modality: "IMAGE",
+    category: "controlnet",
+    filename: "noob_sdxl_controlnet_canny.fp16.safetensors",
+    sizeBytes: Math.round(1.4 * GB),
+    vramEstimateGb: 1.6,
+    compatibleBase: "NoobAI",
+    requiredCustomNodes: ["comfyui_controlnet_aux"],
+    useCases: ["controlnet", "canny"],
+    hfRepoId: "Eugeoter/noob-sdxl-controlnet-canny",
+    hfFilePath: "noob_sdxl_controlnet_canny.fp16.safetensors",
+  },
+  {
+    slug: "noob-controlnet-depth",
+    displayName: "NoobAI / Illustrious ControlNet Depth (FP16)",
+    modality: "IMAGE",
+    category: "controlnet",
+    filename: "noob_sdxl_controlnet_depth_fp16.safetensors",
+    sizeBytes: Math.round(1.4 * GB),
+    vramEstimateGb: 1.6,
+    compatibleBase: "NoobAI",
+    requiredCustomNodes: ["comfyui_controlnet_aux"],
+    useCases: ["controlnet", "depth"],
+    hfRepoId: "Eugeoter/noob-sdxl-controlnet-depth",
+    hfFilePath: "diffusion_pytorch_model.fp16.safetensors",
+  },
+  {
+    slug: "noob-controlnet-lineart-anime",
+    displayName: "NoobAI / Illustrious ControlNet Lineart Anime (FP16)",
+    modality: "IMAGE",
+    category: "controlnet",
+    filename: "noob_sdxl_controlnet_lineart_anime_fp16.safetensors",
+    sizeBytes: Math.round(1.4 * GB),
+    vramEstimateGb: 1.6,
+    compatibleBase: "NoobAI",
+    requiredCustomNodes: ["comfyui_controlnet_aux"],
+    useCases: ["controlnet", "lineart", "sketch"],
+    hfRepoId: "Eugeoter/noob-sdxl-controlnet-lineart_anime",
+    hfFilePath: "diffusion_pytorch_model.fp16.safetensors",
+  },
+  {
+    slug: "noob-controlnet-tile",
+    displayName: "NoobAI / Illustrious ControlNet Tile (FP16 Upscale/Fix)",
+    modality: "IMAGE",
+    category: "controlnet",
+    filename: "noob_sdxl_controlnet_tile_fp16.safetensors",
+    sizeBytes: Math.round(1.4 * GB),
+    vramEstimateGb: 1.6,
+    compatibleBase: "NoobAI",
+    requiredCustomNodes: ["comfyui_controlnet_aux", "ComfyUI_UltimateSDUpscale"],
+    useCases: ["controlnet", "tile", "upscale_detailer"],
+    hfRepoId: "Eugeoter/noob-sdxl-controlnet-tile",
+    hfFilePath: "diffusion_pytorch_model.fp16.safetensors",
+  },
+  {
+    slug: "noob-controlnet-openpose",
+    displayName: "Laxhar NoobAI OpenPose ControlNet",
+    modality: "IMAGE",
+    category: "controlnet",
+    filename: "openpose_pre.safetensors",
+    sizeBytes: Math.round(2.4 * GB),
+    vramEstimateGb: 2.5,
+    compatibleBase: "NoobAI",
+    requiredCustomNodes: ["comfyui_controlnet_aux"],
+    useCases: ["controlnet", "openpose", "action_pose"],
+    hfRepoId: "Laxhar/noob_openpose",
+    hfFilePath: "openpose_pre.safetensors",
+  },
+  {
+    slug: "anima-lllite-lineart",
+    displayName: "Anima ControlNet-LLLite Lineart",
+    modality: "IMAGE",
+    category: "controlnet",
+    filename: "anima-lllite-lineart-1.safetensors",
+    sizeBytes: 185 * MB,
+    vramEstimateGb: 0.4,
+    compatibleBase: "Anima",
+    requiredCustomNodes: ["ComfyUI-Anima-CharRef-LLLite"],
+    useCases: ["controlnet", "lineart"],
+    hfRepoId: "kohya-ss/Anima-LLLite",
+    hfFilePath: "anima-lllite-lineart-1.safetensors",
+  },
+  {
+    slug: "anima-lllite-depth",
+    displayName: "Anima ControlNet-LLLite Depth",
+    modality: "IMAGE",
+    category: "controlnet",
+    filename: "anima-lllite-depth-1.safetensors",
+    sizeBytes: 185 * MB,
+    vramEstimateGb: 0.4,
+    compatibleBase: "Anima",
+    requiredCustomNodes: ["ComfyUI-Anima-CharRef-LLLite"],
+    useCases: ["controlnet", "depth"],
+    hfRepoId: "kohya-ss/Anima-LLLite",
+    hfFilePath: "anima-lllite-depth-1.safetensors",
+  },
+  {
+    slug: "anima-lllite-pose",
+    displayName: "Anima ControlNet-LLLite OpenPose",
+    modality: "IMAGE",
+    category: "controlnet",
+    filename: "anima-lllite-pose-1.safetensors",
+    sizeBytes: 185 * MB,
+    vramEstimateGb: 0.4,
+    compatibleBase: "Anima",
+    requiredCustomNodes: ["ComfyUI-Anima-CharRef-LLLite"],
+    useCases: ["controlnet", "openpose"],
+    hfRepoId: "kohya-ss/Anima-LLLite",
+    hfFilePath: "anima-lllite-pose-1.safetensors",
+  },
+  {
+    slug: "qwen21-fun-controlnet-union-int8",
+    displayName: "Qwen-Image 2.1 Fun ControlNet Union (INT8 ConvRot)",
+    modality: "IMAGE",
+    category: "model_patches",
+    filename: "qwen_image_2.1_fun_controlnet_union_int8_convrot.safetensors",
+    sizeBytes: Math.round(2.1 * GB),
+    vramEstimateGb: 2.4,
+    compatibleBase: "Qwen21",
+    quantFormat: "INT8_CONVROT",
+    useCases: ["controlnet", "canny", "depth", "openpose", "inpaint"],
+    hfRepoId: "Comfy-Org/Qwen-Image-2.1",
+    hfFilePath: "model_patches/qwen_image_2.1_fun_controlnet_union_int8_convrot.safetensors",
+  },
+  {
+    slug: "lbm-relighting",
+    displayName: "JasperAI LBM Relighting (Single-Step Ambient Bridge)",
+    modality: "IMAGE",
+    category: "lbm",
+    filename: "LBM_relighting.safetensors",
+    sizeBytes: Math.round(4.9 * GB),
+    vramEstimateGb: 5.5,
+    compatibleBase: "Universal",
+    requiredCustomNodes: ["ComfyUI-LBM", "ComfyUI-RMBG"],
+    useCases: ["relight", "compositing"],
+    t4Notes: "Harmonizes foreground character lighting cleanly onto any background in 4 steps.",
+    hfRepoId: "jasperai/LBM_relighting",
+    hfFilePath: "model.safetensors",
+  },
   {
     slug: "controlnet-union-sdxl-promax",
-    displayName: "ControlNet Union SDXL 1.0 ProMax",
+    displayName: "ControlNet Union SDXL 1.0 ProMax (Photoreal SDXL Only)",
     modality: "IMAGE",
     category: "controlnet",
     filename: "xinsir-controlnet-union-sdxl-1.0-promax.safetensors",
@@ -499,8 +1303,10 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     vramEstimateGb: 2.6,
     compatibleBase: "SDXL",
     requiredCustomNodes: ["comfyui_controlnet_aux"],
+    useCases: ["controlnet", "photoreal"],
+    t4Notes: "Best for generic/photoreal SDXL (DreamShaper, Juggernaut, RealVis). For Illustrious/NoobAI anime, prefer Laxhar/Eugeoter Noob ControlNets.",
     recommendedConfig: {
-      notes: "All-in-one Depth, Canny, OpenPose, Lineart, and Tile ControlNet for SDXL.",
+      notes: "All-in-one Depth, Canny, OpenPose, Lineart, and Tile ControlNet for photoreal SDXL.",
     },
     hfRepoId: "xinsir/controlnet-union-sdxl-1.0",
     hfFilePath: "diffusion_pytorch_model_promax.safetensors",
@@ -508,7 +1314,7 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
   },
   {
     slug: "clip-vit-h-14-laion2b",
-    displayName: "CLIP-ViT-H-14 Image Encoder",
+    displayName: "CLIP-ViT-H-14 Image Encoder (Photoreal SDXL IPA)",
     modality: "IMAGE",
     category: "clip_vision",
     filename: "CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors",
@@ -516,6 +1322,7 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     vramEstimateGb: 2.5,
     compatibleBase: "SDXL",
     requiredCustomNodes: ["ComfyUI_IPAdapter_plus"],
+    useCases: ["consistent_ip", "clip_vision"],
     hfRepoId: "h94/IP-Adapter",
     hfFilePath: "models/image_encoder/model.safetensors",
   },
@@ -529,13 +1336,14 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     vramEstimateGb: 0.9,
     compatibleBase: "SDXL",
     requiredCustomNodes: ["ComfyUI_IPAdapter_plus"],
+    useCases: ["consistent_ip", "style_transfer"],
     hfRepoId: "h94/IP-Adapter",
     hfFilePath: "sdxl_models/ip-adapter-plus_sdxl_vit-h.safetensors",
     civitaiModelId: "207619",
   },
   {
     slug: "ip-adapter-plus-face-sdxl-vith",
-    displayName: "IP-Adapter Plus Face SDXL (ViT-H)",
+    displayName: "IP-Adapter Plus Face SDXL (ViT-H · Photoreal Only)",
     modality: "IMAGE",
     category: "ipadapter",
     filename: "ip-adapter-plus-face_sdxl_vit-h.safetensors",
@@ -543,25 +1351,16 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     vramEstimateGb: 0.9,
     compatibleBase: "SDXL",
     requiredCustomNodes: ["ComfyUI_IPAdapter_plus"],
+    useCases: ["consistent_ip", "photoreal"],
+    t4Notes: "Use for photorealistic human characters only; avoid on 2D anime (causes uncanny photographic skin).",
     hfRepoId: "h94/IP-Adapter",
     hfFilePath: "sdxl_models/ip-adapter-plus-face_sdxl_vit-h.safetensors",
     civitaiModelId: "207619",
   },
-  {
-    slug: "noob-ipadapter-mark1",
-    displayName: "NoobAI / Illustrious IP-Adapter Mark1",
-    modality: "IMAGE",
-    category: "ipadapter",
-    filename: "noobIPAMark1_mark1.safetensors",
-    sizeBytes: 848 * MB,
-    vramEstimateGb: 0.9,
-    compatibleBase: "Illustrious",
-    requiredCustomNodes: ["ComfyUI_IPAdapter_plus"],
-    hfRepoId: "Laxhar/noob-ipa",
-    civitaiModelId: "1010989",
-  },
 
+  // =========================================================================
   // 7. Upscalers & Detailer Detectors
+  // =========================================================================
   {
     slug: "4x-ultrasharp",
     displayName: "4x-UltraSharp",
@@ -571,6 +1370,7 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     sizeBytes: 64 * MB,
     vramEstimateGb: 0.3,
     compatibleBase: "Universal",
+    useCases: ["upscale_detailer", "photoreal"],
     hfRepoId: "Kim2091/UltraSharp",
     hfFilePath: "4x-UltraSharp.pth",
   },
@@ -583,6 +1383,7 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     sizeBytes: 64 * MB,
     vramEstimateGb: 0.3,
     compatibleBase: "Universal",
+    useCases: ["upscale_detailer", "anime"],
     hfRepoId: "Kim2091/AnimeSharp",
     hfFilePath: "4x-AnimeSharp.pth",
   },
@@ -595,6 +1396,7 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     sizeBytes: 64 * MB,
     vramEstimateGb: 0.3,
     compatibleBase: "Universal",
+    useCases: ["upscale_detailer"],
     hfRepoId: "uwg/upscaler",
     hfFilePath: "ESRGAN/4x_NMKD-Siax_200k.pth",
   },
@@ -609,6 +1411,7 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     vramEstimateGb: 0.2,
     compatibleBase: "Universal",
     requiredCustomNodes: ["ComfyUI-Impact-Pack", "ComfyUI-Impact-Subpack"],
+    useCases: ["upscale_detailer"],
     hfRepoId: "Bingsu/adetailer",
     hfFilePath: "face_yolov8m.pt",
   },
@@ -623,6 +1426,7 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     vramEstimateGb: 0.1,
     compatibleBase: "Universal",
     requiredCustomNodes: ["ComfyUI-Impact-Pack", "ComfyUI-Impact-Subpack"],
+    useCases: ["upscale_detailer"],
     hfRepoId: "Bingsu/adetailer",
     hfFilePath: "hand_yolov8n.pt",
   },
@@ -637,6 +1441,7 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     vramEstimateGb: 0.2,
     compatibleBase: "Universal",
     requiredCustomNodes: ["ComfyUI-Impact-Pack", "ComfyUI-Impact-Subpack"],
+    useCases: ["upscale_detailer"],
     hfRepoId: "Bingsu/adetailer",
     hfFilePath: "person_yolov8m-seg.pt",
   },
@@ -650,11 +1455,14 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     vramEstimateGb: 0.5,
     compatibleBase: "Universal",
     requiredCustomNodes: ["ComfyUI-Impact-Pack"],
+    useCases: ["upscale_detailer"],
     hfRepoId: "scenario-labs/sam_vit",
     hfFilePath: "sam_vit_b_01ec64.pth",
   },
 
+  // =========================================================================
   // 8. Audio Generators (Voice TTS, Voice Clone, Foley SFX, BGM)
+  // =========================================================================
   {
     slug: "kokoro-v1-0-tts",
     displayName: "Kokoro-82M Fast Dialogue TTS",
@@ -665,6 +1473,7 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     vramEstimateGb: 0.4,
     compatibleBase: "Audio",
     requiredCustomNodes: ["comfyui-kokoro"],
+    useCases: ["tts"],
     recommendedConfig: { speed: "0.4s/line", notes: "Ultra-fast multi-speaker dialogue TTS." },
     hfRepoId: "hexgrad/Kokoro-82M",
     hfFilePath: "kokoro-v1_0.pth",
@@ -679,6 +1488,7 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     vramEstimateGb: 2.2,
     compatibleBase: "Audio",
     requiredCustomNodes: ["ComfyUI-F5-TTS"],
+    useCases: ["voice_clone"],
     recommendedConfig: { speed: "2.0s/line", notes: "Zero-shot character voice cloning from 5s ref audio." },
     hfRepoId: "SWivid/F5-TTS",
     hfFilePath: "F5TTS_v1_Base/model_1250000.safetensors",
@@ -693,6 +1503,7 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     vramEstimateGb: 3.0,
     compatibleBase: "Audio",
     requiredCustomNodes: ["ComfyUI-MMAudio"],
+    useCases: ["sfx"],
     recommendedConfig: { speed: "2.5s/clip", notes: "Generates video-synchronized SFX (rain, footsteps, swords)." },
     hfRepoId: "hkchengrex/MMAudio",
   },
@@ -706,11 +1517,14 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     vramEstimateGb: 3.5,
     compatibleBase: "Audio",
     requiredCustomNodes: ["ComfyUI-StableAudioSampler"],
+    useCases: ["bgm"],
     recommendedConfig: { speed: "4.0s/30s track", notes: "Generates ambient music and mood loops." },
     hfRepoId: "stabilityai/stable-audio-open-small",
   },
 
+  // =========================================================================
   // 9. Video & LipSync
+  // =========================================================================
   {
     slug: "ltx-video-2b-fp8",
     displayName: "LTX-Video 2B v0.9.5 (FP8)",
@@ -721,6 +1535,7 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     vramEstimateGb: 5.5,
     compatibleBase: "Video",
     requiredCustomNodes: ["ComfyUI-LTXVideo", "ComfyUI-VideoHelperSuite"],
+    useCases: ["i2v"],
     recommendedConfig: { speed: "14s/5s clip" },
     hfRepoId: "Lightricks/LTX-Video",
   },
@@ -734,6 +1549,7 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     vramEstimateGb: 10.5,
     compatibleBase: "Video",
     requiredCustomNodes: ["ComfyUI-WanVideoWrapper", "ComfyUI-VideoHelperSuite"],
+    useCases: ["i2v"],
     recommendedConfig: { speed: "25-45s/clip" },
   },
   {
@@ -746,6 +1562,7 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     vramEstimateGb: 4.5,
     compatibleBase: "Video",
     requiredCustomNodes: ["ComfyUI-LatentSyncWrapper"],
+    useCases: ["lipsync"],
     hfRepoId: "ByteDance/LatentSync",
   },
 ];
@@ -767,14 +1584,14 @@ export interface SeedWorkflowSpec {
 export const SEED_WORKFLOW_TEMPLATES: SeedWorkflowSpec[] = [
   {
     slug: "wf01-sdxl-illustrious-fp16-vae",
-    name: "WF01 · SDXL / Illustrious HQ (T4 Safe VAE)",
+    name: "WF01 · Illustrious v2.0 / SDXL Anime HQ (T4 Safe VAE)",
     modality: "IMAGE",
     categoryTag: "txt2img",
     targetProfile: "IMAGE_CORE",
     description:
-      "Production SDXL/Illustrious txt2img with explicit sdxl_vae_fp16_fix.safetensors to prevent Turing T4 NaN black images.",
+      "Flagship 2D anime & manga txt2img on single T4 with Illustrious v2.0 + mandatory sdxl_vae_fp16_fix.safetensors.",
     vramRequiredGb: 7.5,
-    requiredModels: ["wai-nsfw-illustrious-v110", "sdxl-vae-fp16-fix"],
+    requiredModels: ["illustrious-xl-v2-0", "sdxl-vae-fp16-fix"],
     requiredNodes: ["CheckpointLoaderSimple", "VAELoader", "CLIPTextEncode", "KSampler", "VAEDecode", "SaveImage"],
     apiGraphTemplate: {
       "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "{{checkpoint}}" } },
@@ -793,7 +1610,7 @@ export const SEED_WORKFLOW_TEMPLATES: SeedWorkflowSpec[] = [
       "7": { class_type: "VAEDecode", inputs: { samples: ["6", 0], vae: ["2", 0] } },
       "8": { class_type: "SaveImage", inputs: { filename_prefix: "Scriptoria_WF01", images: ["7", 0] } },
     },
-    inputSchema: { checkpoint: "string", prompt: "string", negativePrompt: "string", width: 1024, height: 1024, steps: 26, cfg: 6.0 },
+    inputSchema: { checkpoint: "Illustrious-XL-v2.0.safetensors", prompt: "string", negativePrompt: "string", width: 1024, height: 1024, steps: 26, cfg: 5.5 },
   },
   {
     slug: "wf02-sdxl-turbo-fast",
@@ -866,9 +1683,23 @@ export const SEED_WORKFLOW_TEMPLATES: SeedWorkflowSpec[] = [
     description: "Multi-image fusion, relighting, and camera angle edits using Qwen-Image-Edit GGUF + 4-step Lightning LoRA.",
     vramRequiredGb: 14.5,
     requiredModels: ["qwen-image-edit-2511-q4km", "qwen-2-5-vl-7b-fp8-scaled", "qwen-image-vae", "qwen-edit-2511-lightning-4step"],
-    requiredNodes: ["UnetLoaderGGUF", "CLIPLoader", "VAELoader", "LoraLoaderModelOnly"],
-    apiGraphTemplate: {},
-    inputSchema: { prompt: "string", referenceImages: "array" },
+    requiredNodes: ["UnetLoaderGGUF", "CLIPLoader", "VAELoader", "LoraLoaderModelOnly", "ModelSamplingAuraFlow", "CFGNorm", "TextEncodeQwenImageEditPlus", "VAEEncode", "KSampler", "VAEDecode", "SaveImage"],
+    apiGraphTemplate: {
+      "1": { class_type: "UnetLoaderGGUF", inputs: { unet_name: "qwen-image-edit-2511-Q4_K_M.gguf" } },
+      "2": { class_type: "CLIPLoader", inputs: { clip_name: "qwen_2.5_vl_7b_fp8_scaled.safetensors", type: "qwen_image" } },
+      "3": { class_type: "VAELoader", inputs: { vae_name: "qwen_image_vae.safetensors" } },
+      "4": { class_type: "LoraLoaderModelOnly", inputs: { model: ["1", 0], lora_name: "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors", strength_model: 1.0 } },
+      "5": { class_type: "ModelSamplingAuraFlow", inputs: { model: ["4", 0], shift: 3.0 } },
+      "6": { class_type: "CFGNorm", inputs: { model: ["5", 0], strength: 1.0 } },
+      "7": { class_type: "LoadImage", inputs: { image: "{{refImagePath}}" } },
+      "8": { class_type: "TextEncodeQwenImageEditPlus", inputs: { clip: ["2", 0], vae: ["3", 0], image1: ["7", 0], prompt: "{{prompt}}" } },
+      "9": { class_type: "CLIPTextEncode", inputs: { text: "{{negativePrompt}}", clip: ["2", 0] } },
+      "10": { class_type: "VAEEncode", inputs: { pixels: ["7", 0], vae: ["3", 0] } },
+      "11": { class_type: "KSampler", inputs: { seed: "{{seed}}", steps: 4, cfg: 1.0, sampler_name: "euler", scheduler: "simple", denoise: 1.0, model: ["6", 0], positive: ["8", 0], negative: ["9", 0], latent_image: ["10", 0] } },
+      "12": { class_type: "VAEDecode", inputs: { samples: ["11", 0], vae: ["3", 0] } },
+      "13": { class_type: "SaveImage", inputs: { filename_prefix: "Scriptoria_QwenEdit", images: ["12", 0] } },
+    },
+    inputSchema: { prompt: "string", refImagePath: "character_ref.png" },
   },
   {
     slug: "wf05-character-turnaround-upscale",
@@ -876,13 +1707,213 @@ export const SEED_WORKFLOW_TEMPLATES: SeedWorkflowSpec[] = [
     modality: "IMAGE",
     categoryTag: "character_sheet",
     targetProfile: "IMAGE_CORE",
-    description: "Illustrious + VN Character Sheet v4 turnaround with Face/Hand Detailers and 4x-AnimeSharp upscaling.",
+    description: "Illustrious + VN Character Sheet v4 turnaround with FaceDetailer and 4x-AnimeSharp upscaling.",
     vramRequiredGb: 10.5,
     requiredModels: ["wai-nsfw-illustrious-v110", "sdxl-vae-fp16-fix", "vn-character-sheet-v4", "4x-animesharp", "yolo-face-yolov8m", "sam-vit-b"],
-    requiredNodes: ["CheckpointLoaderSimple", "LoraLoader", "FaceDetailer", "UpscaleModelLoader", "ImageUpscaleWithModel"],
-    apiGraphTemplate: {},
-    inputSchema: { prompt: "string", characterDescription: "string" },
+    requiredNodes: ["CheckpointLoaderSimple", "VAELoader", "LoraLoader", "CLIPTextEncode", "KSampler", "VAEDecode", "UltralyticsDetectorProvider", "SAMLoader", "FaceDetailer", "UpscaleModelLoader", "ImageUpscaleWithModel", "SaveImage"],
+    apiGraphTemplate: {
+      "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "waiNSFWIllustrious_v110.safetensors" } },
+      "2": { class_type: "VAELoader", inputs: { vae_name: "sdxl_vae_fp16_fix.safetensors" } },
+      "3": { class_type: "LoraLoader", inputs: { model: ["1", 0], clip: ["1", 1], lora_name: "vn_character_sheet_v4.safetensors", strength_model: 0.85, strength_clip: 0.85 } },
+      "4": { class_type: "EmptyLatentImage", inputs: { width: "{{width}}", height: "{{height}}", batch_size: 1 } },
+      "5": { class_type: "CLIPTextEncode", inputs: { text: "{{prompt}}", clip: ["3", 1] } },
+      "6": { class_type: "CLIPTextEncode", inputs: { text: "{{negativePrompt}}", clip: ["3", 1] } },
+      "7": { class_type: "KSampler", inputs: { seed: "{{seed}}", steps: 26, cfg: 6.0, sampler_name: "euler_ancestral", scheduler: "normal", denoise: 1.0, model: ["3", 0], positive: ["5", 0], negative: ["6", 0], latent_image: ["4", 0] } },
+      "8": { class_type: "VAEDecode", inputs: { samples: ["7", 0], vae: ["2", 0] } },
+      "9": { class_type: "UltralyticsDetectorProvider", inputs: { model_name: "bbox/face_yolov8m.pt" } },
+      "10": { class_type: "SAMLoader", inputs: { model_name: "sam_vit_b_01ec64.pth", device_mode: "AUTO" } },
+      "11": { class_type: "FaceDetailer", inputs: { image: ["8", 0], model: ["3", 0], clip: ["3", 1], vae: ["2", 0], positive: ["5", 0], negative: ["6", 0], bbox_detector: ["9", 0], sam_model_opt: ["10", 0], guide_size: 384, guide_size_for: true, max_size: 1024, seed: "{{seed}}", steps: 14, cfg: 6.0, sampler_name: "euler_ancestral", scheduler: "normal", denoise: 0.42, feather: 5, noise_mask: true, force_inpaint: true, bbox_threshold: 0.5, bbox_dilation: 10, bbox_crop_factor: 3.0, sam_detection_hint: "center-1", sam_dilation: 0, sam_threshold: 0.93, sam_bbox_expansion: 0, sam_mask_hint_threshold: 0.7, sam_mask_hint_use_negative: "False", drop_size: 10, wildcard: "", cycle: 1 } },
+      "12": { class_type: "UpscaleModelLoader", inputs: { model_name: "4x-AnimeSharp.pth" } },
+      "13": { class_type: "ImageUpscaleWithModel", inputs: { upscale_model: ["12", 0], image: ["11", 0] } },
+      "14": { class_type: "SaveImage", inputs: { filename_prefix: "Scriptoria_CharSheet", images: ["13", 0] } },
+    },
+    inputSchema: { prompt: "string", negativePrompt: "string", width: 1280, height: 768 },
   },
+  // Late-2026 Multi-Style & Dual-T4 Modular Templates (WF12 - WF18)
+  {
+    slug: "wf12-noobai-vpred-dramatic-anime",
+    name: "WF12 · NoobAI V-Pred 1.0 Dramatic Anime (ZSNR + RescaleCFG)",
+    modality: "IMAGE",
+    categoryTag: "noob_vpred",
+    targetProfile: "IMAGE_CORE",
+    description:
+      "Dramatic lighting & deep chiaroscuro anime with NoobAI V-Pred 1.0, automatic ModelSamplingDiscrete(zsnr=True), and RescaleCFG(0.7).",
+    vramRequiredGb: 7.4,
+    requiredModels: ["noobai-xl-vpred-1-0", "sdxl-vae-fp16-fix"],
+    requiredNodes: ["CheckpointLoaderSimple", "VAELoader", "ModelSamplingDiscrete", "RescaleCFG", "CLIPTextEncode", "KSampler", "VAEDecode", "SaveImage"],
+    apiGraphTemplate: {
+      "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "NoobAI-XL-Vpred-v1.0.safetensors" } },
+      "2": { class_type: "VAELoader", inputs: { vae_name: "sdxl_vae_fp16_fix.safetensors" } },
+      "3": { class_type: "ModelSamplingDiscrete", inputs: { model: ["1", 0], sampling: "v_prediction", zsnr: true } },
+      "4": { class_type: "RescaleCFG", inputs: { model: ["3", 0], multiplier: 0.7 } },
+      "5": { class_type: "EmptyLatentImage", inputs: { width: "{{width}}", height: "{{height}}", batch_size: 1 } },
+      "6": { class_type: "CLIPTextEncode", inputs: { text: "{{prompt}}", clip: ["1", 1] } },
+      "7": { class_type: "CLIPTextEncode", inputs: { text: "{{negativePrompt}}", clip: ["1", 1] } },
+      "8": { class_type: "KSampler", inputs: { seed: "{{seed}}", steps: 28, cfg: 5.0, sampler_name: "euler", scheduler: "normal", denoise: 1.0, model: ["4", 0], positive: ["6", 0], negative: ["7", 0], latent_image: ["5", 0] } },
+      "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["2", 0] } },
+      "10": { class_type: "SaveImage", inputs: { filename_prefix: "Scriptoria_NoobVPred", images: ["9", 0] } },
+    },
+    inputSchema: { prompt: "string", negativePrompt: "string", width: 1024, height: 1024, steps: 28, cfg: 5.0 },
+  },
+  {
+    slug: "wf13-illustrious-noob-ipadapter-mk1",
+    name: "WF13 · Consistent Character Cast (NoobAI IPA Mk1 + ViT-bigG)",
+    modality: "IMAGE",
+    categoryTag: "consistent_ip",
+    targetProfile: "IMAGE_CORE",
+    description:
+      "Consistent 2D anime character appearance across frames via NoobAI IP-Adapter Mark 1 + CLIP-ViT-bigG (no FaceID distortion).",
+    vramRequiredGb: 9.8,
+    requiredModels: ["illustrious-xl-v2-0", "sdxl-vae-fp16-fix", "noob-ipadapter-mark1", "clip-vision-g"],
+    requiredNodes: ["CheckpointLoaderSimple", "VAELoader", "IPAdapterModelLoader", "CLIPVisionLoader", "LoadImage", "IPAdapterAdvanced", "KSampler", "VAEDecode", "SaveImage"],
+    apiGraphTemplate: {
+      "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "Illustrious-XL-v2.0.safetensors" } },
+      "2": { class_type: "VAELoader", inputs: { vae_name: "sdxl_vae_fp16_fix.safetensors" } },
+      "3": { class_type: "IPAdapterModelLoader", inputs: { ipadapter_file: "ip_adapter_Noobtest_800000.bin" } },
+      "4": { class_type: "CLIPVisionLoader", inputs: { clip_name: "clip_vision_g.safetensors" } },
+      "5": { class_type: "LoadImage", inputs: { image: "{{refImagePath}}" } },
+      "6": { class_type: "IPAdapterAdvanced", inputs: { model: ["1", 0], ipadapter: ["3", 0], image: ["5", 0], weight: 0.72, weight_type: "style and composition", combine_embeds: "concat", start_at: 0.0, end_at: 0.9, embeds_scaling: "V only", clip_vision: ["4", 0] } },
+      "7": { class_type: "EmptyLatentImage", inputs: { width: "{{width}}", height: "{{height}}", batch_size: 1 } },
+      "8": { class_type: "CLIPTextEncode", inputs: { text: "{{prompt}}", clip: ["1", 1] } },
+      "9": { class_type: "CLIPTextEncode", inputs: { text: "{{negativePrompt}}", clip: ["1", 1] } },
+      "10": { class_type: "KSampler", inputs: { seed: "{{seed}}", steps: 26, cfg: 5.5, sampler_name: "euler_ancestral", scheduler: "normal", denoise: 1.0, model: ["6", 0], positive: ["8", 0], negative: ["9", 0], latent_image: ["7", 0] } },
+      "11": { class_type: "VAEDecode", inputs: { samples: ["10", 0], vae: ["2", 0] } },
+      "12": { class_type: "SaveImage", inputs: { filename_prefix: "Scriptoria_NoobIPA", images: ["11", 0] } },
+    },
+    inputSchema: { prompt: "string", negativePrompt: "string", refImagePath: "character_ref.png", width: 1024, height: 1024 },
+  },
+  {
+    slug: "wf14-anima-v1-ref-adapter-v2",
+    name: "WF14 · Anima v1.0 GGUF + Ref Adapter v2 (Fast Consistent Anime DiT)",
+    modality: "IMAGE",
+    categoryTag: "anima_v1",
+    targetProfile: "IMAGE_GGUF_EDIT",
+    description:
+      "Fast 2B anime DiT (Anima Turbo Q5_K_M) + Qwen3-0.6B TE + native Anima Ref Adapter v2 character lock on single T4.",
+    vramRequiredGb: 7.2,
+    requiredModels: ["anima-turbo-v1-0-q5km", "qwen-3-06b-base", "qwen-image-vae", "anima-ref-adapter-v2"],
+    requiredNodes: ["UnetLoaderGGUF", "CLIPLoader", "VAELoader", "LoadImage", "CLIPTextEncode", "KSampler", "VAEDecode", "SaveImage"],
+    apiGraphTemplate: {
+      "1": { class_type: "UnetLoaderGGUF", inputs: { unet_name: "anima-turbo-v1.0-Q5_K_M.gguf" } },
+      "2": { class_type: "CLIPLoader", inputs: { clip_name: "qwen_3_06b_base.safetensors", type: "anima" } },
+      "3": { class_type: "VAELoader", inputs: { vae_name: "qwen_image_vae.safetensors" } },
+      "4": { class_type: "EmptyLatentImage", inputs: { width: "{{width}}", height: "{{height}}", batch_size: 1 } },
+      "5": { class_type: "CLIPTextEncode", inputs: { text: "{{prompt}}", clip: ["2", 0] } },
+      "6": { class_type: "CLIPTextEncode", inputs: { text: "{{negativePrompt}}", clip: ["2", 0] } },
+      "7": { class_type: "KSampler", inputs: { seed: "{{seed}}", steps: 8, cfg: 2.0, sampler_name: "er_sde", scheduler: "simple", denoise: 1.0, model: ["1", 0], positive: ["5", 0], negative: ["6", 0], latent_image: ["4", 0] } },
+      "8": { class_type: "VAEDecode", inputs: { samples: ["7", 0], vae: ["3", 0] } },
+      "9": { class_type: "SaveImage", inputs: { filename_prefix: "Scriptoria_Anima", images: ["8", 0] } },
+    },
+    inputSchema: { prompt: "string", negativePrompt: "string", width: 1024, height: 1024, steps: 8, cfg: 2.0 },
+  },
+  {
+    slug: "wf15-flux3-klein-dual-t4",
+    name: "WF15 · FLUX 3 Image Klein INT8 ConvRot (Dual-T4 Split)",
+    modality: "IMAGE",
+    categoryTag: "flux3_klein",
+    targetProfile: "IMAGE_DIT_DUAL_T4",
+    description:
+      "Dual-T4 split (DiT INT8 ConvRot on cuda:0 + Qwen3.5-9B/Qwen3VL-4B on cuda:1 via SelectCLIPDevice) for flagship prose, typography, & multi-style story panels.",
+    vramRequiredGb: 18.0,
+    requiredModels: ["flux3-image-klein-int8-convrot", "qwen35-9b-flux3-upsampler-int8", "flux2-vae"],
+    requiredNodes: ["UNETLoader", "CLIPLoader", "VAELoader", "SelectModelDevice", "SelectCLIPDevice", "SelectVAEDevice", "CLIPTextEncode", "KSampler", "VAEDecode", "SaveImage"],
+    apiGraphTemplate: {
+      "1": { class_type: "UNETLoader", inputs: { unet_name: "flux3-image-klein-int8-convrot.safetensors", weight_dtype: "default" } },
+      "2": { class_type: "CLIPLoader", inputs: { clip_name: "qwen3.5_9b_flux3_prompt_upsampler_int8_convrot.safetensors", type: "flux3" } },
+      "3": { class_type: "VAELoader", inputs: { vae_name: "flux2-vae.safetensors" } },
+      "4": { class_type: "SelectModelDevice", inputs: { model: ["1", 0], device: "cuda:0" } },
+      "5": { class_type: "SelectCLIPDevice", inputs: { clip: ["2", 0], device: "cuda:1" } },
+      "6": { class_type: "SelectVAEDevice", inputs: { vae: ["3", 0], device: "cuda:0" } },
+      "7": { class_type: "EmptyLatentImage", inputs: { width: "{{width}}", height: "{{height}}", batch_size: 1 } },
+      "8": { class_type: "CLIPTextEncode", inputs: { text: "{{prompt}}", clip: ["5", 0] } },
+      "9": { class_type: "CLIPTextEncode", inputs: { text: "", clip: ["5", 0] } },
+      "10": { class_type: "KSampler", inputs: { seed: "{{seed}}", steps: 12, cfg: 1.0, sampler_name: "euler", scheduler: "simple", denoise: 1.0, model: ["4", 0], positive: ["8", 0], negative: ["9", 0], latent_image: ["7", 0] } },
+      "11": { class_type: "VAEDecode", inputs: { samples: ["10", 0], vae: ["6", 0] } },
+      "12": { class_type: "SaveImage", inputs: { filename_prefix: "Scriptoria_Flux3Klein", images: ["11", 0] } },
+    },
+    inputSchema: { prompt: "string", width: 1024, height: 1024, steps: 12, cfg: 1.0 },
+  },
+  {
+    slug: "wf16-moss-image-8step-dmd2-dual-t4",
+    name: "WF16 · MOSS-Image 5B + 8-Step DMD2 (Multi-Char · Dual-T4)",
+    modality: "IMAGE",
+    categoryTag: "moss_image",
+    targetProfile: "IMAGE_DIT_DUAL_T4",
+    description:
+      "MOSS-Image SFT INT8 ConvRot on cuda:0 + Qwen3.5-9B INT8 on cuda:1 + 8-step DMD2 LoRA for fast multi-character webtoon & spatial scenes.",
+    vramRequiredGb: 17.5,
+    requiredModels: ["moss-image-sft-int8-convrot", "qwen35-9b-int8-convrot", "flux2-vae", "moss-image-8step-dmd2-lora"],
+    requiredNodes: ["UNETLoader", "CLIPLoader", "VAELoader", "LoraLoaderModelOnly", "SelectModelDevice", "SelectCLIPDevice", "SelectVAEDevice", "CLIPTextEncode", "KSampler", "VAEDecode", "SaveImage"],
+    apiGraphTemplate: {
+      "1": { class_type: "UNETLoader", inputs: { unet_name: "moss_image_sft_int8_convrot.safetensors", weight_dtype: "default" } },
+      "2": { class_type: "CLIPLoader", inputs: { clip_name: "qwen3.5_9b_int8_convrot.safetensors", type: "moss" } },
+      "3": { class_type: "VAELoader", inputs: { vae_name: "flux2-vae.safetensors" } },
+      "4": { class_type: "LoraLoaderModelOnly", inputs: { model: ["1", 0], lora_name: "moss_image_base_dmd2_v2_bf16.safetensors", strength_model: 1.0 } },
+      "5": { class_type: "SelectModelDevice", inputs: { model: ["4", 0], device: "cuda:0" } },
+      "6": { class_type: "SelectCLIPDevice", inputs: { clip: ["2", 0], device: "cuda:1" } },
+      "7": { class_type: "SelectVAEDevice", inputs: { vae: ["3", 0], device: "cuda:0" } },
+      "8": { class_type: "EmptyLatentImage", inputs: { width: "{{width}}", height: "{{height}}", batch_size: 1 } },
+      "9": { class_type: "CLIPTextEncode", inputs: { text: "{{prompt}}", clip: ["6", 0] } },
+      "10": { class_type: "CLIPTextEncode", inputs: { text: "", clip: ["6", 0] } },
+      "11": { class_type: "KSampler", inputs: { seed: "{{seed}}", steps: 8, cfg: 1.0, sampler_name: "euler", scheduler: "simple", denoise: 1.0, model: ["5", 0], positive: ["9", 0], negative: ["10", 0], latent_image: ["8", 0] } },
+      "12": { class_type: "VAEDecode", inputs: { samples: ["11", 0], vae: ["7", 0] } },
+      "13": { class_type: "SaveImage", inputs: { filename_prefix: "Scriptoria_MOSS", images: ["12", 0] } },
+    },
+    inputSchema: { prompt: "string", width: 1024, height: 1024, steps: 8, cfg: 1.0 },
+  },
+  {
+    slug: "wf17-qwen21-turbo-dual-t4",
+    name: "WF17 · Qwen-Image 2.1 Turbo INT8 ConvRot (Dual-T4 Split)",
+    modality: "IMAGE",
+    categoryTag: "qwen21_edit",
+    targetProfile: "IMAGE_DIT_DUAL_T4",
+    description:
+      "Qwen-Image 2.1 Turbo INT8 ConvRot on cuda:0 + Qwen3.5-9B PE TE on cuda:1 for crisp East-Asian story art, reference strength, and typography.",
+    vramRequiredGb: 20.5,
+    requiredModels: ["qwen-image-2-1-turbo-int8-convrot", "qwen35-9b-qwen21-pe-t2i-int8", "qwen-image-2-1-vae"],
+    requiredNodes: ["UNETLoader", "CLIPLoader", "VAELoader", "SelectModelDevice", "SelectCLIPDevice", "SelectVAEDevice", "CLIPTextEncode", "KSampler", "VAEDecode", "SaveImage"],
+    apiGraphTemplate: {
+      "1": { class_type: "UNETLoader", inputs: { unet_name: "qwen_image_2.1_turbo_int8_convrot.safetensors", weight_dtype: "default" } },
+      "2": { class_type: "CLIPLoader", inputs: { clip_name: "qwen3.5_9b_qwen_image_2.1_pe_t2i.int8_convrot.safetensors", type: "qwen_image" } },
+      "3": { class_type: "VAELoader", inputs: { vae_name: "qwen_image_2.1_vae_bf16.safetensors" } },
+      "4": { class_type: "SelectModelDevice", inputs: { model: ["1", 0], device: "cuda:0" } },
+      "5": { class_type: "SelectCLIPDevice", inputs: { clip: ["2", 0], device: "cuda:1" } },
+      "6": { class_type: "SelectVAEDevice", inputs: { vae: ["3", 0], device: "cuda:0" } },
+      "7": { class_type: "EmptyLatentImage", inputs: { width: "{{width}}", height: "{{height}}", batch_size: 1 } },
+      "8": { class_type: "CLIPTextEncode", inputs: { text: "{{prompt}}", clip: ["5", 0] } },
+      "9": { class_type: "CLIPTextEncode", inputs: { text: "", clip: ["5", 0] } },
+      "10": { class_type: "KSampler", inputs: { seed: "{{seed}}", steps: 8, cfg: 1.0, sampler_name: "euler", scheduler: "simple", denoise: 1.0, model: ["4", 0], positive: ["8", 0], negative: ["9", 0], latent_image: ["7", 0] } },
+      "11": { class_type: "VAEDecode", inputs: { samples: ["10", 0], vae: ["6", 0] } },
+      "12": { class_type: "SaveImage", inputs: { filename_prefix: "Scriptoria_Qwen21", images: ["11", 0] } },
+    },
+    inputSchema: { prompt: "string", width: 1024, height: 1024, steps: 8, cfg: 1.0 },
+  },
+  {
+    slug: "wf18-qwen-360-panorama",
+    name: "WF18 · 360° Equirectangular Story World Panorama (Qwen 2512)",
+    modality: "IMAGE",
+    categoryTag: "panorama_360",
+    targetProfile: "IMAGE_DIT_DUAL_T4",
+    description:
+      "Generates seamless 2:1 equirectangular 360° story environments with Qwen-Image 2512 + qwen-360-diffusion LoRA and interactive 360° preview.",
+    vramRequiredGb: 18.0,
+    requiredModels: ["qwen-image-2512-q4km", "qwen-2-5-vl-7b-fp8-scaled", "qwen-image-vae", "qwen-360-diffusion-2512"],
+    requiredNodes: ["UnetLoaderGGUF", "CLIPLoader", "VAELoader", "LoraLoaderModelOnly", "CLIPTextEncode", "KSampler", "VAEDecode", "SaveImage"],
+    apiGraphTemplate: {
+      "1": { class_type: "UnetLoaderGGUF", inputs: { unet_name: "qwen-image-2512-Q4_K_M.gguf" } },
+      "2": { class_type: "CLIPLoader", inputs: { clip_name: "qwen_2.5_vl_7b_fp8_scaled.safetensors", type: "qwen_image" } },
+      "3": { class_type: "VAELoader", inputs: { vae_name: "qwen_image_vae.safetensors" } },
+      "4": { class_type: "LoraLoaderModelOnly", inputs: { model: ["1", 0], lora_name: "qwen-360-diffusion-2512-int8-bf16-v2.safetensors", strength_model: 1.0 } },
+      "5": { class_type: "EmptyLatentImage", inputs: { width: 1536, height: 768, batch_size: 1 } },
+      "6": { class_type: "CLIPTextEncode", inputs: { text: "equirectangular 360 panorama, {{prompt}}", clip: ["2", 0] } },
+      "7": { class_type: "CLIPTextEncode", inputs: { text: "seam, distorted horizon, watermark", clip: ["2", 0] } },
+      "8": { class_type: "KSampler", inputs: { seed: "{{seed}}", steps: 20, cfg: 3.5, sampler_name: "euler", scheduler: "simple", denoise: 1.0, model: ["4", 0], positive: ["6", 0], negative: ["7", 0], latent_image: ["5", 0] } },
+      "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
+      "10": { class_type: "SaveImage", inputs: { filename_prefix: "Scriptoria_360Pano", images: ["9", 0] } },
+    },
+    inputSchema: { prompt: "string" },
+  },
+  // Audio & Video Templates (WF06 - WF11)
   {
     slug: "wf06-kokoro-dialogue-tts",
     name: "WF06 · Kokoro-82M Fast Dialogue TTS",
@@ -892,9 +1923,13 @@ export const SEED_WORKFLOW_TEMPLATES: SeedWorkflowSpec[] = [
     description: "Ultra-fast ~0.4s/line character dialogue synthesis (0.4 GB VRAM).",
     vramRequiredGb: 0.6,
     requiredModels: ["kokoro-v1-0-tts"],
-    requiredNodes: ["KokoroSpeaker", "KokoroGenerator"],
-    apiGraphTemplate: {},
-    inputSchema: { dialogueText: "string", voice: "string", speed: 1.0 },
+    requiredNodes: ["KokoroSpeaker", "KokoroGenerator", "SaveAudio"],
+    apiGraphTemplate: {
+      "1": { class_type: "KokoroSpeaker", inputs: { speaker_name: "{{voice}}" } },
+      "2": { class_type: "KokoroGenerator", inputs: { text: "{{dialogueText}}", speaker: ["1", 0], speed: "{{speed}}", lang: "English" } },
+      "3": { class_type: "SaveAudio", inputs: { filename_prefix: "Scriptoria_TTS", audio: ["2", 0] } },
+    },
+    inputSchema: { dialogueText: "string", voice: "af_bella", speed: 1.0 },
   },
   {
     slug: "wf07-f5-tts-voice-clone",
@@ -905,9 +1940,13 @@ export const SEED_WORKFLOW_TEMPLATES: SeedWorkflowSpec[] = [
     description: "Clones a character voice from a 5s reference .wav clip for expressive dialogue (2.2 GB VRAM).",
     vramRequiredGb: 2.5,
     requiredModels: ["f5-tts-emilia"],
-    requiredNodes: ["F5TTSAudio"],
-    apiGraphTemplate: {},
-    inputSchema: { dialogueText: "string", refAudioPath: "string", refText: "string" },
+    requiredNodes: ["LoadAudio", "F5TTSAudio", "SaveAudio"],
+    apiGraphTemplate: {
+      "1": { class_type: "LoadAudio", inputs: { audio: "{{refAudioPath}}" } },
+      "2": { class_type: "F5TTSAudio", inputs: { sample_audio: ["1", 0], sample_text: "", speech: "{{dialogueText}}", model: "F5TTS_v1_Base.safetensors" } },
+      "3": { class_type: "SaveAudio", inputs: { filename_prefix: "Scriptoria_VoiceClone", audio: ["2", 0] } },
+    },
+    inputSchema: { dialogueText: "string", refAudioPath: "string" },
   },
   {
     slug: "wf08-mmaudio-foley-sfx",
@@ -918,9 +1957,13 @@ export const SEED_WORKFLOW_TEMPLATES: SeedWorkflowSpec[] = [
     description: "Generates synchronized sound effects (rain, footsteps, sword clash) matching a video clip (3.0 GB VRAM).",
     vramRequiredGb: 3.2,
     requiredModels: ["mmaudio-small-16k"],
-    requiredNodes: ["MMAudioSampler"],
-    apiGraphTemplate: {},
-    inputSchema: { videoPath: "string", sfxPrompt: "string" },
+    requiredNodes: ["MMAudioModelLoader", "MMAudioSampler", "SaveAudio"],
+    apiGraphTemplate: {
+      "1": { class_type: "MMAudioModelLoader", inputs: { model: "mmaudio_small_16k.pth" } },
+      "2": { class_type: "MMAudioSampler", inputs: { mmaudio_model: ["1", 0], prompt: "{{sfxPrompt}}", duration: 8, steps: 25, cfg: 4.5, seed: "{{seed}}" } },
+      "3": { class_type: "SaveAudio", inputs: { filename_prefix: "Scriptoria_SFX", audio: ["2", 0] } },
+    },
+    inputSchema: { sfxPrompt: "string" },
   },
   {
     slug: "wf09-stable-audio-bgm",
@@ -931,8 +1974,11 @@ export const SEED_WORKFLOW_TEMPLATES: SeedWorkflowSpec[] = [
     description: "Creates 30s ambient background music & mood loops for scenes (3.5 GB VRAM).",
     vramRequiredGb: 3.8,
     requiredModels: ["stable-audio-open-small"],
-    requiredNodes: ["StableAudioSampler"],
-    apiGraphTemplate: {},
+    requiredNodes: ["StableAudioSampler", "SaveAudio"],
+    apiGraphTemplate: {
+      "1": { class_type: "StableAudioSampler", inputs: { model: "stable_audio_open_small.safetensors", prompt: "{{bgmMood}}", seconds: "{{durationSec}}", steps: 50, cfg: 6.0, seed: "{{seed}}" } },
+      "2": { class_type: "SaveAudio", inputs: { filename_prefix: "Scriptoria_BGM", audio: ["1", 0] } },
+    },
     inputSchema: { bgmMood: "string", durationSec: 30 },
   },
   {
@@ -944,9 +1990,17 @@ export const SEED_WORKFLOW_TEMPLATES: SeedWorkflowSpec[] = [
     description: "Animates keyframe PNGs into 24fps motion clips matched to dialogue audio duration (5.5 GB VRAM).",
     vramRequiredGb: 7.5,
     requiredModels: ["ltx-video-2b-fp8"],
-    requiredNodes: ["LTXVLoader", "VHS_VideoCombine"],
-    apiGraphTemplate: {},
-    inputSchema: { imagePath: "string", cameraMotion: "string", numFrames: 97 },
+    requiredNodes: ["CheckpointLoaderSimple", "LoadImage", "LTXVImgToVideo", "KSampler", "VAEDecode", "VHS_VideoCombine"],
+    apiGraphTemplate: {
+      "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "ltx-video-2b-v0.9.5-fp8.safetensors" } },
+      "2": { class_type: "LoadImage", inputs: { image: "{{imagePath}}" } },
+      "3": { class_type: "CLIPTextEncode", inputs: { text: "{{prompt}}", clip: ["1", 1] } },
+      "4": { class_type: "LTXVImgToVideo", inputs: { positive: ["3", 0], image: ["2", 0], vae: ["1", 2], width: 768, height: 512, length: 97, batch_size: 1 } },
+      "5": { class_type: "KSampler", inputs: { seed: "{{seed}}", steps: 24, cfg: 3.0, sampler_name: "euler", scheduler: "normal", denoise: 1.0, model: ["1", 0], positive: ["4", 0], negative: ["3", 0], latent_image: ["4", 1] } },
+      "6": { class_type: "VAEDecode", inputs: { samples: ["5", 0], vae: ["1", 2] } },
+      "7": { class_type: "VHS_VideoCombine", inputs: { images: ["6", 0], frame_rate: 24, format: "video/h264-mp4", filename_prefix: "Scriptoria_Video" } },
+    },
+    inputSchema: { imagePath: "keyframe.png", prompt: "string" },
   },
   {
     slug: "wf11-latentsync-lipsync",
@@ -957,28 +2011,70 @@ export const SEED_WORKFLOW_TEMPLATES: SeedWorkflowSpec[] = [
     description: "Syncs character mouth & face in video to Track 3 TTS dialogue audio (4.5 GB VRAM).",
     vramRequiredGb: 5.0,
     requiredModels: ["latentsync-unet"],
-    requiredNodes: ["LatentSyncNode"],
-    apiGraphTemplate: {},
-    inputSchema: { videoPath: "string", audioPath: "string" },
+    requiredNodes: ["VHS_LoadVideo", "LoadAudio", "LatentSyncNode", "VHS_VideoCombine"],
+    apiGraphTemplate: {
+      "1": { class_type: "VHS_LoadVideo", inputs: { video: "{{videoPath}}" } },
+      "2": { class_type: "LoadAudio", inputs: { audio: "{{audioPath}}" } },
+      "3": { class_type: "LatentSyncNode", inputs: { images: ["1", 0], audio: ["2", 0], seed: "{{seed}}", inference_steps: 20, guidance_scale: 1.5 } },
+      "4": { class_type: "VHS_VideoCombine", inputs: { images: ["3", 0], frame_rate: 25, format: "video/h264-mp4", filename_prefix: "Scriptoria_LipSync" } },
+    },
+    inputSchema: { videoPath: "clip.mp4", audioPath: "voice.wav" },
   },
 ];
 
-const userCatalogSeeded = new Set<string>();
+const userCatalogSyncedVersion = new Map<string, number>();
+
+export function invalidateUserCatalogCache(userId?: string): void {
+  if (userId) {
+    userCatalogSyncedVersion.delete(userId);
+  } else {
+    userCatalogSyncedVersion.clear();
+  }
+}
 
 /**
- * Idempotently seeds the curated Image, Audio, and Video ModelAsset catalog and WorkflowTemplates
- * for a user if they don't exist yet (never overwrites user modifications).
+ * Idempotently syncs the curated Image, Audio, and Video ModelAsset catalog and WorkflowTemplates
+ * to CATALOG_VERSION without overwriting user custom entries or Drive backup state.
  */
 export async function ensureUserCatalogSeeded(userId: string): Promise<void> {
-  if (userCatalogSeeded.has(userId)) {
+  if (userCatalogSyncedVersion.get(userId) === CATALOG_VERSION) {
     return;
   }
 
-  const existingCount = await prisma.modelAsset.count({ where: { userId } });
-  const existingWfCount = await prisma.workflowTemplate.count({ where: { userId } });
+  const [existingAssets, existingWorkflows] = await Promise.all([
+    prisma.modelAsset.findMany({
+      where: { userId },
+      select: {
+        id: true,
+        slug: true,
+        isSeeded: true,
+        backupStatus: true,
+        gdrivePath: true,
+        hfRepoId: true,
+        hfFilePath: true,
+        recommendedConfigJson: true,
+      },
+    }),
+    prisma.workflowTemplate.findMany({
+      where: { userId },
+      select: {
+        id: true,
+        slug: true,
+        isSeeded: true,
+        apiGraphTemplateJson: true,
+      },
+    }),
+  ]);
 
-  if (existingCount === 0) {
-    for (const m of SEED_MODEL_CATALOG) {
+  const assetBySlug = new Map(existingAssets.map((a) => [a.slug, a]));
+  const wfBySlug = new Map(existingWorkflows.map((w) => [w.slug, w]));
+
+  for (const m of SEED_MODEL_CATALOG) {
+    const mergedConfigJson = buildMergedRecommendedConfig(m);
+    const reqNodesJson = m.requiredCustomNodes ? JSON.stringify(m.requiredCustomNodes) : null;
+    const existing = assetBySlug.get(m.slug);
+
+    if (!existing) {
       await prisma.modelAsset.upsert({
         where: { userId_slug: { userId, slug: m.slug } },
         update: {},
@@ -993,12 +2089,8 @@ export async function ensureUserCatalogSeeded(userId: string): Promise<void> {
           sizeBytes: m.sizeBytes ?? null,
           vramEstimateGb: m.vramEstimateGb,
           compatibleBase: m.compatibleBase,
-          requiredCustomNodesJson: m.requiredCustomNodes
-            ? JSON.stringify(m.requiredCustomNodes)
-            : null,
-          recommendedConfigJson: m.recommendedConfig
-            ? JSON.stringify(m.recommendedConfig)
-            : null,
+          requiredCustomNodesJson: reqNodesJson,
+          recommendedConfigJson: mergedConfigJson,
           hfRepoId: m.hfRepoId ?? null,
           hfFilePath: m.hfFilePath ?? null,
           civitaiModelId: m.civitaiModelId ?? null,
@@ -1008,11 +2100,46 @@ export async function ensureUserCatalogSeeded(userId: string): Promise<void> {
           isSeeded: true,
         },
       });
+    } else if (existing.isSeeded) {
+      const safeToUpdateFilename = existing.backupStatus === "NONE" && !existing.gdrivePath;
+      const needsSync =
+        existing.hfRepoId !== (m.hfRepoId ?? null) ||
+        existing.hfFilePath !== (m.hfFilePath ?? null) ||
+        existing.recommendedConfigJson !== mergedConfigJson;
+
+      if (needsSync) {
+        await prisma.modelAsset.update({
+          where: { id: existing.id },
+          data: {
+            displayName: m.displayName,
+            modality: m.modality,
+            compatibleBase: m.compatibleBase,
+            vramEstimateGb: m.vramEstimateGb,
+            requiredCustomNodesJson: reqNodesJson,
+            recommendedConfigJson: mergedConfigJson,
+            hfRepoId: m.hfRepoId ?? null,
+            hfFilePath: m.hfFilePath ?? null,
+            civitaiModelId: m.civitaiModelId ?? null,
+            civitaiVersionId: m.civitaiVersionId ?? null,
+            directUrl: m.directUrl ?? null,
+            ...(safeToUpdateFilename
+              ? {
+                  category: m.category,
+                  subdir: m.subdir ?? "",
+                  filename: m.filename,
+                  sizeBytes: m.sizeBytes ?? null,
+                }
+              : {}),
+          },
+        });
+      }
     }
   }
 
-  if (existingWfCount === 0) {
-    for (const wf of SEED_WORKFLOW_TEMPLATES) {
+  for (const wf of SEED_WORKFLOW_TEMPLATES) {
+    const existingWf = wfBySlug.get(wf.slug);
+    const graphJson = JSON.stringify(wf.apiGraphTemplate);
+    if (!existingWf) {
       await prisma.workflowTemplate.upsert({
         where: { userId_slug: { userId, slug: wf.slug } },
         update: {},
@@ -1027,14 +2154,30 @@ export async function ensureUserCatalogSeeded(userId: string): Promise<void> {
           vramRequiredGb: wf.vramRequiredGb,
           requiredModelsJson: JSON.stringify(wf.requiredModels),
           requiredNodesJson: JSON.stringify(wf.requiredNodes),
-          apiGraphTemplateJson: JSON.stringify(wf.apiGraphTemplate),
+          apiGraphTemplateJson: graphJson,
           inputSchemaJson: JSON.stringify(wf.inputSchema),
           isSeeded: true,
+        },
+      });
+    } else if (
+      existingWf.isSeeded &&
+      (existingWf.apiGraphTemplateJson.trim() === "{}" || existingWf.apiGraphTemplateJson.trim() === "")
+    ) {
+      await prisma.workflowTemplate.update({
+        where: { id: existingWf.id },
+        data: {
+          name: wf.name,
+          targetProfile: wf.targetProfile,
+          description: wf.description,
+          vramRequiredGb: wf.vramRequiredGb,
+          requiredModelsJson: JSON.stringify(wf.requiredModels),
+          requiredNodesJson: JSON.stringify(wf.requiredNodes),
+          apiGraphTemplateJson: graphJson,
+          inputSchemaJson: JSON.stringify(wf.inputSchema),
         },
       });
     }
   }
 
-  userCatalogSeeded.add(userId);
+  userCatalogSyncedVersion.set(userId, CATALOG_VERSION);
 }
-

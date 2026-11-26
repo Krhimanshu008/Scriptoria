@@ -278,7 +278,6 @@ export function buildUnifiedNotebookPythonCode(cfg: NotebookBuildConfig): string
   const isKaggle = cfg.provider === "kaggle";
   const workDir = isKaggle ? "/kaggle/working" : "/content";
   const idleSeconds = cfg.idleTimeoutSeconds ?? 900;
-  const ports = isKaggle && cfg.gpuTargets.length > 1 ? [8188, 8189] : [8188];
   const rcloneStreams = isKaggle ? "8" : "10";
   const rcloneBuffer = isKaggle ? "16M" : "8M";
   const rcloneTransfers = isKaggle ? "2" : "1";
@@ -287,6 +286,12 @@ export function buildUnifiedNotebookPythonCode(cfg: NotebookBuildConfig): string
   const gpuProfiles = (cfg.gpuProfiles?.length ? cfg.gpuProfiles : cfg.gpuTargets.map(() => profileId)).map((p) =>
     p.replace(/[^a-zA-Z0-9_-]/g, "_")
   );
+  const singleDualGpu =
+    isKaggle &&
+    cfg.gpuTargets.length > 1 &&
+    !profileId.startsWith("LLM_") &&
+    (profileId === "IMAGE_DIT_DUAL_T4" || gpuProfiles.includes("IMAGE_DIT_DUAL_T4"));
+  const ports = isKaggle && cfg.gpuTargets.length > 1 && !singleDualGpu ? [8188, 8189] : [8188];
   const uniqueNonLlm = Array.from(new Set(gpuProfiles.filter((p) => !p.startsWith("LLM_"))));
   const effectiveCacheProfile =
     !profileId.startsWith("LLM_") && uniqueNonLlm.length > 1
@@ -320,6 +325,7 @@ PROVIDER = ${JSON.stringify(cfg.provider)}
 ACCOUNT_ALIAS = ${JSON.stringify(cfg.accountAlias)}
 PROFILE_ID = ${JSON.stringify(profileId)}
 GPU_PROFILES = ${JSON.stringify(gpuProfiles)}
+SINGLE_DUAL_GPU = ${singleDualGpu ? "True" : "False"}
 FASTBOOT_CACHE_KEY = ${JSON.stringify(fastbootCacheKey)}
 CUSTOM_NODES = ${JSON.stringify(customNodes)}
 TARGETS = ${JSON.stringify(cfg.gpuTargets)}
@@ -457,7 +463,8 @@ post_heartbeat(2, "STARTING")
 CATEGORIES = [
     "checkpoints", "loras", "vae", "unet", "clip",
     "clip_vision", "controlnet", "ipadapter", "text_encoders",
-    "upscale_models", "diffusion_models", "ultralytics", "sams",
+    "upscale_models", "diffusion_models", "model_patches", "lbm",
+    "ultralytics", "sams",
     "tts", "audio_sfx", "audio_bgm", "lipsync"
 ]
 
@@ -496,6 +503,8 @@ with open("/tmp/extra_model_paths.yaml", "w", encoding="utf-8") as f:
     text_encoders: text_encoders/
     upscale_models: upscale_models/
     diffusion_models: diffusion_models/
+    model_patches: model_patches/
+    lbm: lbm/
     ultralytics: ultralytics/
     sams: sams/
     tts: tts/
@@ -961,7 +970,14 @@ with RCLONE_LOCK:
 
 with open("/tmp/Caddyfile", "w", encoding="utf-8") as f:
     f.write(f"""(sc_dispatch) {{
-    @has_header header X-Target-Port *
+    ${singleDualGpu ? `@is_8189_single header X-Target-Port 8189
+    handle @is_8189_single {{
+        reverse_proxy 127.0.0.1:8188 {{
+            header_up Host 127.0.0.1
+            flush_interval -1
+        }}
+    }}
+    ` : ""}@has_header header X-Target-Port *
     handle @has_header {{
         @badport not header_regexp X-Target-Port ^(8188|8189|8190|8191|8192|8193|8194|5572|9999)$
         handle @badport {{
@@ -976,7 +992,7 @@ with open("/tmp/Caddyfile", "w", encoding="utf-8") as f:
     }}
     @want8189 header_regexp Cookie (^|;\\\\s*)sc_vm_port=8189(;|$)
     handle @want8189 {{
-        reverse_proxy 127.0.0.1:8189 {{
+        reverse_proxy 127.0.0.1:${singleDualGpu ? "8188" : "8189"} {{
             header_up Host 127.0.0.1
             flush_interval -1
         }}
@@ -2088,7 +2104,10 @@ try:
 except Exception:
     gpu_count = 1
 
-active_ports = PORTS[:max(1, gpu_count)] if PROVIDER == "kaggle" else PORTS[:1]
+if SINGLE_DUAL_GPU:
+    active_ports = PORTS[:1]
+else:
+    active_ports = PORTS[:max(1, gpu_count)] if PROVIDER == "kaggle" else PORTS[:1]
 COMFY_PROCS = {}
 COMFY_LOG_OFFSETS = {}
 
@@ -2135,7 +2154,8 @@ for idx, port in enumerate(active_ports):
     except Exception:
         pass
     env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = str(idx)
+    cuda_vis = ",".join(str(i) for i in range(max(1, gpu_count))) if SINGLE_DUAL_GPU else str(idx)
+    env["CUDA_VISIBLE_DEVICES"] = cuda_vis
     env["PYTHONUNBUFFERED"] = "1"
     env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
     if os.path.isdir(FASTBOOT_SITE):
@@ -2152,7 +2172,8 @@ for idx, port in enumerate(active_ports):
         "--preview-method", "auto"
     ], cwd=COMFY_DIR, env=env, stdout=c_log, stderr=c_log)
     COMFY_PROCS[port] = proc
-    log_event(f"Launched ComfyUI on CUDA:{idx} -> 127.0.0.1:{port}", category="COMFYUI")
+    mode_suffix = " (Dual-T4 Split DiT+TE)" if SINGLE_DUAL_GPU else ""
+    log_event(f"Launched ComfyUI on CUDA:{cuda_vis} -> 127.0.0.1:{port}{mode_suffix}", category="COMFYUI")
 
 def _upload_fastboot_snapshot():
     try:
@@ -2214,9 +2235,71 @@ def _upload_fastboot_snapshot():
 # -------------------------------------------------------------
 # 6. Wait for Tunnel + ComfyUI Readiness & Run Heartbeat Loop
 # -------------------------------------------------------------
+def _query_comfy_nvidia_smi():
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=name,memory.total,memory.used", "--format=csv,noheader,nounits"],
+            text=True,
+            timeout=3,
+        )
+        devs = []
+        for ln in out.strip().splitlines():
+            parts = [p.strip() for p in ln.split(",")]
+            if len(parts) >= 3:
+                tot_b = int(float(parts[1]) * 1024 * 1024)
+                used_b = int(float(parts[2]) * 1024 * 1024)
+                devs.append({
+                    "name": parts[0],
+                    "vram_total": tot_b,
+                    "vram_free": max(0, tot_b - used_b),
+                })
+        return devs
+    except Exception:
+        return []
+
 def probe_comfy_stats():
     global LAST_ACTIVE
     stats = {}
+    if SINGLE_DUAL_GPU and active_ports:
+        port = active_ports[0]
+        comfy_ok = False
+        devs = []
+        q_running = 0
+        q_pending = 0
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/system_stats", timeout=2) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                devs = data.get("devices", [])
+                comfy_ok = bool(devs)
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/queue", timeout=1.5) as qresp:
+                    qdata = json.loads(qresp.read().decode("utf-8"))
+                    q_running = len(qdata.get("queue_running") or [])
+                    q_pending = len(qdata.get("queue_pending") or [])
+                    if q_running > 0 or q_pending > 0:
+                        LAST_ACTIVE = time.time()
+            except Exception:
+                pass
+        except Exception:
+            comfy_ok = False
+        smi_devs = _query_comfy_nvidia_smi()
+        for idx_t, t_name in enumerate(TARGETS):
+            if not comfy_ok:
+                stats[t_name] = {"ready": False}
+                continue
+            d = smi_devs[min(idx_t, len(smi_devs) - 1)] if smi_devs else (devs[min(idx_t, len(devs) - 1)] if devs else {})
+            vt = round(d.get("vram_total", 16 * (1024**3)) / (1024**3), 2)
+            vf = round(d.get("vram_free", 0) / (1024**3), 2)
+            role_tag = "DiT CUDA:0" if idx_t == 0 else "TE CUDA:1"
+            stats[t_name] = {
+                "ready": True,
+                "gpuName": f"{d.get('name', 'NVIDIA T4')} ({role_tag})",
+                "vramTotalGb": vt,
+                "vramUsedGb": round(max(0.0, vt - vf), 2),
+                "queueRunning": q_running,
+                "queuePending": q_pending,
+            }
+        return stats
     for t_name, port in zip(TARGETS, active_ports):
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/system_stats", timeout=2) as resp:

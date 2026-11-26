@@ -52,6 +52,8 @@ const VALID_CATEGORIES = new Set([
   "text_encoders",
   "upscale_models",
   "diffusion_models",
+  "model_patches",
+  "lbm",
   "ultralytics",
   "sams",
   "tts",
@@ -63,6 +65,7 @@ const VALID_CATEGORIES = new Set([
 const CATEGORY_ALIASES: Record<string, string> = {
   kokoro: "tts",
   mmaudio: "audio_sfx",
+  lora_clip: "loras",
 };
 
 export function sanitizeModelCategory(category: string): string {

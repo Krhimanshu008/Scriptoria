@@ -3,7 +3,9 @@ import { getAuthUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { ComfyClient } from "@/lib/orchestrator/comfy-client";
 import { compileResourceAwareWorkflow, type WorkflowBuildSpec } from "@/lib/workflow/compiler";
-import { callLlmJson } from "@/lib/agent/llm-client";
+import { saveCompiledWorkflowTemplate } from "@/lib/workflow/registry";
+import { recommendWorkflowStacks, type RecommendWorkflowInput } from "@/lib/workflow/recommender";
+import { callLlmJson, resolveCandidateLlmConfigs } from "@/lib/agent/llm-client";
 import { ensureModelReadyOnVm } from "@/lib/catalog/ensure-helper";
 import { appendSystemLog } from "@/lib/logs/logger";
 
@@ -15,8 +17,11 @@ export async function POST(req: NextRequest) {
     }
 
     const body = (await req.json()) as {
-      action?: "compile" | "optimize_with_ai" | "save_template" | "compile_and_run";
+      action?: "compile" | "optimize_with_ai" | "architect" | "save_template" | "compile_and_run";
       spec?: WorkflowBuildSpec;
+      goal?: string;
+      architectInput?: RecommendWorkflowInput;
+      autoSave?: boolean;
       target?: string;
       templateName?: string;
       templateDescription?: string;
@@ -24,6 +29,65 @@ export async function POST(req: NextRequest) {
 
     const action = body.action || "compile";
     const spec: WorkflowBuildSpec = body.spec || { pipeline: "sdxl_txt2img" };
+
+    // AI Workflow Architect: recommends stack + designs modular graph + optionally refines via LLM & saves
+    if (action === "architect") {
+      const recInput: RecommendWorkflowInput = {
+        ...(body.architectInput || {}),
+        goal: body.goal || body.architectInput?.goal || body.spec?.prompt || "anime story scene",
+      };
+      const rec = await recommendWorkflowStacks(user.userId, recInput);
+      const top = rec.recommendations[0];
+      if (!top) {
+        return NextResponse.json({ error: "No matching workflow stack found." }, { status: 400 });
+      }
+
+      let designedSpec: WorkflowBuildSpec = {
+        ...top.recommendedSpec,
+        ...(body.spec || {}),
+      };
+      let reasoning = `Selected ${top.title} (${top.whyRecommended.join(" ")})`;
+
+      const llmCandidates = await resolveCandidateLlmConfigs(user.userId).catch(() => []);
+      if (llmCandidates.length > 0 && body.goal) {
+        const refined = await callLlmJson<{ specUpdates?: Partial<WorkflowBuildSpec>; reasoning?: string }>({
+          userId: user.userId,
+          systemPrompt:
+            "Given a recommended Kaggle T4 WorkflowBuildSpec JSON and a user's visual goal, return optional fine-tuning JSON { specUpdates: { prompt?, negativePrompt?, width?, height?, steps?, cfg? }, reasoning: string }.",
+          userPrompt: JSON.stringify({ goal: body.goal, recommendedSpec: designedSpec }),
+        }).catch(() => null);
+        if (refined?.data?.specUpdates) {
+          designedSpec = { ...designedSpec, ...refined.data.specUpdates };
+          if (refined.data.reasoning) reasoning = refined.data.reasoning;
+        }
+      }
+
+      const compiled = await compileResourceAwareWorkflow(user.userId, designedSpec, body.target);
+      let saved: { id: string; slug: string; name: string } | null = null;
+      if (body.autoSave) {
+        saved = await saveCompiledWorkflowTemplate({
+          userId: user.userId,
+          name: body.templateName || `Architect · ${top.title.split("(")[0].trim()}`,
+          description: body.templateDescription || reasoning,
+          compiled,
+          inputDefaults: {
+            width: designedSpec.width || 1024,
+            height: designedSpec.height || 1024,
+          },
+        });
+      }
+
+      return NextResponse.json({
+        ok: true,
+        inferredIntent: rec.inferredIntent,
+        topRecommendation: top,
+        alternatives: rec.recommendations.slice(1),
+        designedSpec,
+        reasoning,
+        compiled,
+        ...(saved ? { savedTemplateId: saved.id, slug: saved.slug } : {}),
+      });
+    }
 
     // Optional AI optimization pass before compiling
     if (action === "optimize_with_ai") {
@@ -56,49 +120,12 @@ export async function POST(req: NextRequest) {
     const compiled = await compileResourceAwareWorkflow(user.userId, spec, body.target);
 
     if (action === "save_template") {
-      const name = String(body.templateName || `Custom · ${compiled.pipeline}`).trim();
-      const slug = `custom-${name}`
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/^-+|-+$/g, "")
-        .slice(0, 60);
-
-      const saved = await prisma.workflowTemplate.upsert({
-        where: { userId_slug: { userId: user.userId, slug } },
-        update: {
-          name,
-          modality: compiled.modality,
-          targetProfile: compiled.recommendedProfile,
-          description:
-            body.templateDescription?.trim() ||
-            `Custom resource-aware ${compiled.pipeline} template (${compiled.vramEstimateGb} GB T4)`,
-          vramRequiredGb: compiled.vramEstimateGb,
-          requiredModelsJson: JSON.stringify(
-            compiled.requiredModels.map((m) => m.slug || m.filename)
-          ),
-          requiredNodesJson: JSON.stringify(compiled.requiredNodes),
-          apiGraphTemplateJson: JSON.stringify(compiled.graph),
-          inputSchemaJson: JSON.stringify({ prompt: "string", width: spec.width || 1024, height: spec.height || 1024 }),
-        },
-        create: {
-          userId: user.userId,
-          slug,
-          name,
-          modality: compiled.modality,
-          categoryTag: compiled.pipeline,
-          targetProfile: compiled.recommendedProfile,
-          description:
-            body.templateDescription?.trim() ||
-            `Custom resource-aware ${compiled.pipeline} template (${compiled.vramEstimateGb} GB T4)`,
-          vramRequiredGb: compiled.vramEstimateGb,
-          requiredModelsJson: JSON.stringify(
-            compiled.requiredModels.map((m) => m.slug || m.filename)
-          ),
-          requiredNodesJson: JSON.stringify(compiled.requiredNodes),
-          apiGraphTemplateJson: JSON.stringify(compiled.graph),
-          inputSchemaJson: JSON.stringify({ prompt: "string", width: spec.width || 1024, height: spec.height || 1024 }),
-          isSeeded: false,
-        },
+      const saved = await saveCompiledWorkflowTemplate({
+        userId: user.userId,
+        name: String(body.templateName || `Custom · ${compiled.pipeline}`).trim(),
+        description: body.templateDescription,
+        compiled,
+        inputDefaults: { width: spec.width || 1024, height: spec.height || 1024 },
       });
 
       return NextResponse.json({ ok: true, compiled, savedTemplateId: saved.id, slug: saved.slug });

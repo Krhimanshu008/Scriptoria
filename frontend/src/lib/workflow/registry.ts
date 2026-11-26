@@ -64,8 +64,11 @@ const NODE_MODEL_KEY_CATEGORY: Record<string, string> = {
   clip_name3: "text_encoders",
   clip_name4: "text_encoders",
   control_net_name: "controlnet",
+  lllite_name: "controlnet",
   ipadapter_file: "ipadapter",
+  adapter_name: "ipadapter",
   model_name: "upscale_models",
+  name: "model_patches",
 };
 
 export function extractModelRefsFromGraph(graph: Record<string, unknown>): RequiredModelRef[] {
@@ -88,6 +91,9 @@ export function extractModelRefsFromGraph(graph: Record<string, unknown>): Requi
       }
       if (field === "model_name" && trimmed.endsWith(".gguf")) {
         category = "unet";
+      }
+      if (field === "model_name" && cls.toLowerCase().includes("lbm")) {
+        category = "lbm";
       }
       if (/\.(safetensors|ckpt|gguf|pt|pth|onnx|bin)$/i.test(trimmed)) {
         const key = `${category}:${trimmed}`;
@@ -387,6 +393,10 @@ export async function compileStandaloneMediaRequest(
     scheduler: typeof inputs.scheduler === "string" ? inputs.scheduler : req.spec?.scheduler,
     batchSize: typeof inputs.batchSize === "number" ? inputs.batchSize : req.spec?.batchSize,
     seed,
+    stylePreset: typeof inputs.stylePreset === "string" ? (inputs.stylePreset as WorkflowBuildSpec["stylePreset"]) : req.spec?.stylePreset,
+    dualGpuSplit: typeof inputs.dualGpuSplit === "boolean" ? inputs.dualGpuSplit : req.spec?.dualGpuSplit,
+    enableFaceDetailer: typeof inputs.enableFaceDetailer === "boolean" ? inputs.enableFaceDetailer : req.spec?.enableFaceDetailer,
+    upscalerModel: typeof inputs.upscalerModel === "string" ? inputs.upscalerModel : req.spec?.upscalerModel,
     dialogueText:
       typeof inputs.dialogueText === "string" ? inputs.dialogueText : req.spec?.dialogueText,
     voice: typeof inputs.voice === "string" ? inputs.voice : req.spec?.voice,
@@ -454,4 +464,79 @@ export async function pickBestOnlineVmForProfile(
   });
 
   return comfyVms[0];
+}
+
+export async function saveCompiledWorkflowTemplate(params: {
+  userId: string;
+  name: string;
+  slug?: string;
+  description?: string;
+  compiled: {
+    pipeline: string;
+    modality: string;
+    recommendedProfile: string;
+    vramEstimateGb: number;
+    requiredModels: RequiredModelRef[];
+    requiredNodes: string[];
+    graph: Record<string, unknown>;
+  };
+  inputDefaults?: Record<string, unknown>;
+}): Promise<{ id: string; slug: string; name: string }> {
+  const cleanName = String(params.name || `Custom · ${params.compiled.pipeline}`).trim();
+  const rawSlug = params.slug || `custom-${cleanName}`;
+  const slug = rawSlug
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64) || `custom-${Date.now()}`;
+
+  const desc =
+    params.description?.trim() ||
+    `Custom modular ${params.compiled.pipeline} template (${params.compiled.vramEstimateGb} GB T4)`;
+
+  const requiredModelsJson = JSON.stringify(
+    params.compiled.requiredModels.map((m) => m.slug || m.filename)
+  );
+  const requiredNodesJson = JSON.stringify(params.compiled.requiredNodes);
+  const apiGraphTemplateJson = JSON.stringify(params.compiled.graph);
+  const inputSchemaJson = JSON.stringify({
+    prompt: "string",
+    width: 1024,
+    height: 1024,
+    ...(params.inputDefaults || {}),
+  });
+
+  const saved = await prisma.workflowTemplate.upsert({
+    where: { userId_slug: { userId: params.userId, slug } },
+    update: {
+      name: cleanName,
+      modality: params.compiled.modality,
+      categoryTag: params.compiled.pipeline,
+      targetProfile: params.compiled.recommendedProfile,
+      description: desc,
+      vramRequiredGb: params.compiled.vramEstimateGb,
+      requiredModelsJson,
+      requiredNodesJson,
+      apiGraphTemplateJson,
+      inputSchemaJson,
+    },
+    create: {
+      userId: params.userId,
+      slug,
+      name: cleanName,
+      modality: params.compiled.modality,
+      categoryTag: params.compiled.pipeline,
+      targetProfile: params.compiled.recommendedProfile,
+      description: desc,
+      vramRequiredGb: params.compiled.vramEstimateGb,
+      requiredModelsJson,
+      requiredNodesJson,
+      apiGraphTemplateJson,
+      inputSchemaJson,
+      isSeeded: false,
+    },
+    select: { id: true, slug: true, name: true },
+  });
+
+  return saved;
 }

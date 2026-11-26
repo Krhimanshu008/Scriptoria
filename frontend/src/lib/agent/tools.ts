@@ -2,6 +2,17 @@ import { prisma } from "@/lib/db/prisma";
 import { ComfyClient } from "@/lib/orchestrator/comfy-client";
 import { ensureUserCatalogSeeded } from "@/lib/catalog/seed-catalog";
 import { compileResourceAwareWorkflow, type WorkflowBuildSpec } from "@/lib/workflow/compiler";
+import { saveCompiledWorkflowTemplate } from "@/lib/workflow/registry";
+import { recommendWorkflowStacks, type RecommendWorkflowInput } from "@/lib/workflow/recommender";
+import {
+  tunePromptForArchitecture,
+  type ArchitectureFamily,
+  type ControlNetModuleInput,
+  type IpConnectorModuleInput,
+  type MultiCharRegionInput,
+  type RelightMode,
+  type StylePresetId,
+} from "@/lib/workflow/modules";
 import { ensureModelReadyOnVm } from "@/lib/catalog/ensure-helper";
 import { normalizeExternalPayload } from "@/lib/batch/ingestion-spec";
 import { createBatchFromSpec, tickBatchScheduler } from "@/lib/batch/scheduler";
@@ -26,7 +37,7 @@ export const AGENT_TOOL_DEFINITIONS: LlmToolDefinition[] = [
   {
     name: "search_catalog",
     description:
-      "Search the user's Master Model Catalog (Image, Audio, Video checkpoints, LoRAs, VAEs, TTS, upscalers) and saved WorkflowTemplates.",
+      "Search the user's Master Model Catalog (Image, Audio, Video checkpoints, LoRAs, VAEs, IP-Adapters, ControlNets, TTS, upscalers) and saved WorkflowTemplates.",
     parameters: {
       type: "object",
       properties: {
@@ -39,19 +50,123 @@ export const AGENT_TOOL_DEFINITIONS: LlmToolDefinition[] = [
     },
   },
   {
-    name: "compose_and_validate_workflow",
+    name: "recommend_stack_for_goal",
     description:
-      "Compile a declarative multi-modal ComfyUI workflow spec with 16 GB T4 VRAM budget estimation and automatic sdxl_vae_fp16_fix injection.",
+      "Rank the Top 3 Kaggle Dual-T4 model+workflow stacks for a user's style/story idea across Task, Style Preset, IP-Connector consistency, ControlNet, and Drive/GPU cache readiness.",
+    parameters: {
+      type: "object",
+      properties: {
+        goal: { type: "string", description: "Natural-language story/art style description" },
+        task: {
+          type: "string",
+          description:
+            "txt2img | character_turnaround | consistent_ip | multi_char_scene | controlnet_guided | relight_composite | image_edit | panorama_360 | storyboard_fast | portrait",
+        },
+        stylePreset: {
+          type: "string",
+          description:
+            "anime_vibrant | anime_dramatic_vpred | anime_clean_cel | manhwa_webtoon | painterly_fantasy | lineart_sketch | gothic_dark | photoreal_cinematic | panorama_360",
+        },
+        consistencyMode: {
+          type: "string",
+          description:
+            "auto | none | noob_ipa_mk1 | style_aligned | anima_ref_v2 | flux3_ref_latent | qwen21_ref_strength | sdxl_ipa_photoreal",
+        },
+        controlNetMode: {
+          type: "string",
+          description: "none | canny | depth | lineart_anime | openpose | tile | qwen_fun_union | moss_color_depth",
+        },
+        characterCount: { type: "number", description: "Number of distinct characters in the scene (default 1)" },
+        speedPriority: { type: "string", description: "quality | balanced | fast" },
+      },
+      required: ["goal"],
+    },
+  },
+  {
+    name: "design_modular_workflow",
+    description:
+      "Design & compile a custom modular ComfyUI graph combining Base Loader (Illustrious, NoobAI V-Pred, Animagine 4.0, Anima v1.0, NetaYume Lumina, FLUX 3 Klein Dual-T4, MOSS 8-Step DMD2 Dual-T4, Qwen 2.1 Dual-T4, 360° Panorama), IP-Connectors, ControlNets, Multi-Char Isolation, Relight, Detailers, & T4 Guardrails.",
     parameters: {
       type: "object",
       properties: {
         pipeline: {
           type: "string",
           description:
-            "sdxl_txt2img | sdxl_detailer_upscale | flux_gguf | qwen_edit | audio_kokoro | audio_f5 | audio_mmaudio | audio_stable | video_ltx | video_latentsync",
+            "modular | sdxl_txt2img | sdxl_detailer_upscale | noob_vpred | animagine_v4 | neta_lumina | anima_v1 | flux3_klein | moss_image | qwen21_edit | qwen_edit | flux_gguf | panorama_360",
+        },
+        architecture: {
+          type: "string",
+          description:
+            "sdxl_illustrious | noobai_vpred | animagine | neta_lumina | anima_v1 | flux1_gguf | flux3_klein | moss_image | qwen21 | qwen_edit | qwen_360",
+        },
+        stylePreset: { type: "string" },
+        baseModel: { type: "string" },
+        prompt: { type: "string" },
+        negativePrompt: { type: "string" },
+        dualGpuSplit: { type: "boolean", description: "Set true to split DiT onto cuda:0 and 9B TE onto cuda:1 on IMAGE_DIT_DUAL_T4" },
+        enableFaceDetailer: { type: "boolean" },
+        upscalerModel: { type: "string", description: "e.g. '4x-AnimeSharp.pth' or 'auto'" },
+        width: { type: "number" },
+        height: { type: "number" },
+        target: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "tune_style_prompts",
+    description:
+      "Translate and format raw visual descriptions into architecture-native positive & negative prompts (strips V-Pred hazards like 'simple background', applies Animagine quality tags or natural-language DiT cues).",
+    parameters: {
+      type: "object",
+      properties: {
+        rawPrompt: { type: "string" },
+        rawNegativePrompt: { type: "string" },
+        architecture: {
+          type: "string",
+          description:
+            "sdxl_illustrious | noobai_vpred | animagine | neta_lumina | anima_v1 | flux1_gguf | flux3_klein | moss_image | qwen21 | qwen_edit | qwen_360",
+        },
+        stylePreset: { type: "string" },
+      },
+      required: ["rawPrompt", "architecture"],
+    },
+  },
+  {
+    name: "save_as_workflow_manifest",
+    description:
+      "Compile a modular workflow spec and save it permanently as a runnable WorkflowManifest v1 template for Studio and Book Graph.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Human-readable template name" },
+        slug: { type: "string", description: "Optional URL-safe slug" },
+        description: { type: "string" },
+        pipeline: { type: "string" },
+        architecture: { type: "string" },
+        stylePreset: { type: "string" },
+        baseModel: { type: "string" },
+        prompt: { type: "string" },
+        dualGpuSplit: { type: "boolean" },
+      },
+      required: ["name"],
+    },
+  },
+  {
+    name: "compose_and_validate_workflow",
+    description:
+      "Compile a declarative multi-modal ComfyUI workflow spec with 16 GB Single-T4 / 32 GB Dual-T4 VRAM budget estimation and automatic T4 safety guardrails.",
+    parameters: {
+      type: "object",
+      properties: {
+        pipeline: {
+          type: "string",
+          description:
+            "sdxl_txt2img | sdxl_detailer_upscale | noob_vpred | animagine_v4 | anima_v1 | flux3_klein | moss_image | qwen21_edit | panorama_360 | flux_gguf | qwen_edit | audio_kokoro | audio_f5 | audio_mmaudio | audio_stable | video_ltx | video_latentsync",
         },
         baseModel: { type: "string" },
         vaeModel: { type: "string" },
+        stylePreset: { type: "string" },
+        dualGpuSplit: { type: "boolean" },
         prompt: { type: "string" },
         negativePrompt: { type: "string" },
         width: { type: "number" },
@@ -152,6 +267,7 @@ export const MUTATING_AGENT_TOOLS = new Set([
   "run_compiled_workflow",
   "create_multi_gpu_batch",
   "dispatch_multi_gpu_prompt",
+  "save_as_workflow_manifest",
 ]);
 
 export async function executeAgentTool(
@@ -243,11 +359,48 @@ export async function executeAgentTool(
     return { models: filtered.slice(0, 25), workflows };
   }
 
-  if (name === "compose_and_validate_workflow") {
+  if (name === "recommend_stack_for_goal") {
+    const recInput: RecommendWorkflowInput = {
+      goal: args.goal ? String(args.goal) : undefined,
+      task: args.task ? (String(args.task) as RecommendWorkflowInput["task"]) : undefined,
+      stylePreset: args.stylePreset ? (String(args.stylePreset) as StylePresetId) : undefined,
+      consistencyMode: args.consistencyMode
+        ? (String(args.consistencyMode) as RecommendWorkflowInput["consistencyMode"])
+        : undefined,
+      controlNetMode: args.controlNetMode
+        ? (String(args.controlNetMode) as RecommendWorkflowInput["controlNetMode"])
+        : undefined,
+      characterCount: typeof args.characterCount === "number" ? args.characterCount : undefined,
+      speedPriority: args.speedPriority
+        ? (String(args.speedPriority) as RecommendWorkflowInput["speedPriority"])
+        : undefined,
+    };
+    return await recommendWorkflowStacks(userId, recInput);
+  }
+
+  if (name === "tune_style_prompts") {
+    return tunePromptForArchitecture(
+      String(args.rawPrompt || ""),
+      String(args.rawNegativePrompt || ""),
+      (String(args.architecture || "sdxl_illustrious") as ArchitectureFamily),
+      args.stylePreset ? (String(args.stylePreset) as StylePresetId) : undefined
+    );
+  }
+
+  if (name === "design_modular_workflow" || name === "compose_and_validate_workflow") {
     const spec: WorkflowBuildSpec = {
-      pipeline: (String(args.pipeline || "sdxl_txt2img") as WorkflowBuildSpec["pipeline"]),
+      pipeline: (String(args.pipeline || "modular") as WorkflowBuildSpec["pipeline"]),
+      architecture: args.architecture ? (String(args.architecture) as ArchitectureFamily) : undefined,
+      stylePreset: args.stylePreset ? (String(args.stylePreset) as StylePresetId) : undefined,
       baseModel: args.baseModel ? String(args.baseModel) : undefined,
       vaeModel: args.vaeModel ? String(args.vaeModel) : undefined,
+      ipConnectors: Array.isArray(args.ipConnectors) ? (args.ipConnectors as IpConnectorModuleInput[]) : undefined,
+      controlNets: Array.isArray(args.controlNets) ? (args.controlNets as ControlNetModuleInput[]) : undefined,
+      characters: Array.isArray(args.characters) ? (args.characters as MultiCharRegionInput[]) : undefined,
+      relight: args.relight ? (String(args.relight) as RelightMode) : undefined,
+      enableFaceDetailer: typeof args.enableFaceDetailer === "boolean" ? args.enableFaceDetailer : undefined,
+      upscalerModel: args.upscalerModel ? String(args.upscalerModel) : undefined,
+      dualGpuSplit: typeof args.dualGpuSplit === "boolean" ? args.dualGpuSplit : undefined,
       prompt: args.prompt ? String(args.prompt) : undefined,
       negativePrompt: args.negativePrompt ? String(args.negativePrompt) : undefined,
       width: typeof args.width === "number" ? args.width : undefined,
@@ -267,10 +420,40 @@ export async function executeAgentTool(
       modality: compiled.modality,
       recommendedProfile: compiled.recommendedProfile,
       requiredModels: compiled.requiredModels,
+      requiredNodes: compiled.requiredNodes,
       vramEstimateGb: compiled.vramEstimateGb,
       vramStatus: compiled.vramStatus,
       t4GuardrailsApplied: compiled.t4GuardrailsApplied,
       warnings: compiled.warnings,
+      ...(name === "design_modular_workflow" ? { graph: compiled.graph } : {}),
+    };
+  }
+
+  if (name === "save_as_workflow_manifest") {
+    const spec: WorkflowBuildSpec = {
+      pipeline: (String(args.pipeline || "modular") as WorkflowBuildSpec["pipeline"]),
+      architecture: args.architecture ? (String(args.architecture) as ArchitectureFamily) : undefined,
+      stylePreset: args.stylePreset ? (String(args.stylePreset) as StylePresetId) : undefined,
+      baseModel: args.baseModel ? String(args.baseModel) : undefined,
+      prompt: args.prompt ? String(args.prompt) : "{{prompt}}",
+      dualGpuSplit: typeof args.dualGpuSplit === "boolean" ? args.dualGpuSplit : undefined,
+    };
+    const compiled = await compileResourceAwareWorkflow(userId, spec);
+    const saved = await saveCompiledWorkflowTemplate({
+      userId,
+      name: String(args.name || `Architect · ${compiled.pipeline}`),
+      slug: args.slug ? String(args.slug) : undefined,
+      description: args.description ? String(args.description) : undefined,
+      compiled,
+    });
+    return {
+      ok: true,
+      savedTemplateId: saved.id,
+      slug: saved.slug,
+      name: saved.name,
+      recommendedProfile: compiled.recommendedProfile,
+      vramEstimateGb: compiled.vramEstimateGb,
+      t4GuardrailsApplied: compiled.t4GuardrailsApplied,
     };
   }
 
@@ -395,7 +578,14 @@ export async function executeAgentTool(
         userId,
         status: "ONLINE",
         workerProfile: {
-          notIn: ["LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B", "TPU_QWEN27B_V5E"],
+          notIn: [
+            "LLM_QWEN_VLM",
+            "LLM_QWEN_TEXT_TURBO",
+            "LLM_QWEN_MOE_35B",
+            "LLM_QWEN_FAST_8B",
+            "LLM_LIGHTWEIGHT_SWARM",
+            "TPU_QWEN27B_V5E",
+          ],
         },
       },
     });
