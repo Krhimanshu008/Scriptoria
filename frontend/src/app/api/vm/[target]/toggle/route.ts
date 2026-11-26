@@ -1,17 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { getAuthUser, signVmRegistrationToken } from "@/lib/auth/session";
+import { getAuthUser, signVmClaimToken } from "@/lib/auth/session";
 import { generateVmSecret } from "@/lib/crypto/vault";
 import { getDecryptedCredential, saveUserCredential } from "@/lib/crypto/credentials";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
-import { buildUnifiedNotebookPythonCode } from "@/lib/orchestrator/notebook-builder";
-import { buildTpuNotebookPythonCode } from "@/lib/orchestrator/tpu-notebook-builder";
+import { buildKaggleThinClaimStubCode } from "@/lib/orchestrator/notebook-builder";
 import { getWorkerProfile, isLlmWorkerProfile } from "@/lib/catalog/worker-profiles";
-import { getOrCreateWorkspaceSettings } from "@/lib/settings/workspace-settings";
 import { KaggleOrchestrator } from "@/lib/orchestrator/kaggle-client";
 import { VmGateway } from "@/lib/orchestrator/vm-gateway";
 import { resolveReachableWebhookBaseUrl } from "@/lib/orchestrator/webhook-tunnel";
 import {
+  getKaggleKernelSlug,
   sanitizeVmForClient,
   sortVmsByCanonicalTarget,
 } from "@/lib/orchestrator/vm-helpers";
@@ -85,9 +84,7 @@ export async function POST(
             }
 
             // 2. Override runner notebook with CPU to release GPU allocation on Kaggle
-            const kernelSlug = isTpu
-              ? `kaggle-tpu-runner-${vm.accountAlias}`
-              : `kaggle-dual-gpu-runner-${vm.accountAlias}`;
+            const kernelSlug = getKaggleKernelSlug(vm.accountAlias, isTpu);
             await KaggleOrchestrator.releaseKernelGpu(
               {
                 username: kaggleCred.username,
@@ -166,13 +163,7 @@ export async function POST(
       );
     }
 
-    const vmSecret = generateVmSecret();
-    const registrationJwt = signVmRegistrationToken({
-      userId: user.userId,
-      sessionGroup: vm.sessionGroup,
-      targets: groupTargets,
-      vmSecret,
-    });
+    const claimSecret = generateVmSecret();
 
     const webhook = await resolveReachableWebhookBaseUrl(req);
     if (webhook.mode === "unreachable") {
@@ -213,92 +204,45 @@ export async function POST(
 
       const sortedGroupVms = sortVmsByCanonicalTarget(groupVms);
       const profileSpec = getWorkerProfile(vm.workerProfile);
-      const workspaceSettings = await getOrCreateWorkspaceSettings(user.userId);
-      const effectiveIdleMinutes =
-        vm.idleTimeoutMinutes ?? workspaceSettings.idleTimeoutMinutes ?? 15;
-
-      // Support asymmetric Dual-T4 slots by merging custom nodes, prewarm models, and Kaggle datasets across the group
-      const gpuProfiles = sortedGroupVms.map((gv) => gv.workerProfile || profileSpec.id);
-      const mergedNodeMap = new Map<string, { name: string; repoUrl: string }>();
-      for (const pId of gpuProfiles) {
-        for (const cn of getWorkerProfile(pId).customNodes) {
-          mergedNodeMap.set(cn.repoUrl, cn);
-        }
-      }
-      const mergedCustomNodes = Array.from(mergedNodeMap.values());
-
-      const prewarmMap = new Map<string, { category: string; filename: string }>();
-      const datasetSet = new Set<string>();
-      for (const gv of sortedGroupVms) {
-        if (gv.prewarmModelsJson) {
-          try {
-            const parsed = JSON.parse(gv.prewarmModelsJson);
-            if (Array.isArray(parsed)) {
-              for (const item of parsed) {
-                if (item && typeof item.category === "string" && typeof item.filename === "string") {
-                  prewarmMap.set(`${item.category}/${item.filename}`, {
-                    category: item.category,
-                    filename: item.filename,
-                  });
-                }
-              }
+      const customDatasets = Array.from(
+        new Set(
+          sortedGroupVms.flatMap((gv) => {
+            if (!gv.kaggleDatasetsJson) return [] as string[];
+            try {
+              const parsedDs = JSON.parse(gv.kaggleDatasetsJson);
+              return Array.isArray(parsedDs)
+                ? parsedDs.filter((ds): ds is string => typeof ds === "string" && ds.trim().includes("/")).map((ds) => ds.trim())
+                : [];
+            } catch {
+              return [];
             }
-          } catch {
-            // ignore
-          }
-        }
-        if (gv.kaggleDatasetsJson) {
-          try {
-            const parsedDs = JSON.parse(gv.kaggleDatasetsJson);
-            if (Array.isArray(parsedDs)) {
-              for (const ds of parsedDs) {
-                if (typeof ds === "string" && ds.trim().includes("/")) {
-                  datasetSet.add(ds.trim());
-                }
-              }
-            }
-          } catch {
-            // ignore
-          }
-        }
-      }
-      const prewarmModels = Array.from(prewarmMap.values());
-      const customDatasets = Array.from(datasetSet);
+          })
+        )
+      );
 
       const isTpu = profileSpec.accelerator === "tpu";
-      const pythonCode = isTpu
-        ? buildTpuNotebookPythonCode({
-            appWebhookUrl,
-            registrationJwt,
-            vmSecret,
-            accountAlias: vm.accountAlias,
-            gpuTargets: groupTargets,
-            idleTimeoutSeconds: effectiveIdleMinutes * 60,
-          })
-        : buildUnifiedNotebookPythonCode({
-            provider: "kaggle",
-            appWebhookUrl,
-            registrationJwt,
-            vmSecret,
-            gdriveTokenJson: gdriveCred?.rawTokenJson || "",
-            gdriveBaseFolder: gdriveCred?.baseFolder || workspaceSettings.gdriveBaseFolder,
-            gpuTargets: groupTargets,
-            gpuProfiles,
-            accountAlias: vm.accountAlias,
-            workerProfile: profileSpec.id,
-            customNodes: mergedCustomNodes,
-            idleTimeoutSeconds: effectiveIdleMinutes * 60,
-            prewarmModels,
-            enableOfflineDatasetScan: vm.accountAlias === "acc1" || customDatasets.length > 0,
-            headlessMode: !isLlmProfile && requestedWorkerMode === "headless_safe",
-          });
+      const claimToken = signVmClaimToken({
+        userId: user.userId,
+        sessionGroup: vm.sessionGroup,
+        targets: groupTargets,
+        claimSecret,
+        workerMode: requestedWorkerMode,
+        isTpu,
+        customDatasets,
+      });
+      // Push only a ~22-line dynamic claim stub (zero model lists, ComfyUI setup, or Vault secrets)
+      const pythonCode = buildKaggleThinClaimStubCode({
+        appWebhookUrl,
+        target: groupTargets[0] || target,
+        claimToken,
+      });
 
       await prisma.vmInstance.updateMany({
         where: { userId: user.userId, sessionGroup: vm.sessionGroup },
         data: {
           status: "STARTING",
           stepProgress: 1,
-          vmSecret,
+          vmSecret: claimSecret,
           publicUrl: "",
           lastError: null,
         },
@@ -327,9 +271,7 @@ export async function POST(
       }
 
       try {
-        const kernelSlug = isTpu
-          ? `kaggle-tpu-runner-${vm.accountAlias}`
-          : `kaggle-dual-gpu-runner-${vm.accountAlias}`;
+        const kernelSlug = getKaggleKernelSlug(vm.accountAlias, isTpu);
 
         const pushRes = await KaggleOrchestrator.pushKernel({
           credentials: {
@@ -406,7 +348,7 @@ export async function POST(
         data: {
           status: "STARTING",
           stepProgress: 1,
-          vmSecret,
+          vmSecret: claimSecret,
           publicUrl: "",
           lastError: null,
         },

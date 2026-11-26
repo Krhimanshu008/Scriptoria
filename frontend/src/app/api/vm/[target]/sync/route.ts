@@ -4,6 +4,9 @@ import { getAuthUser } from "@/lib/auth/session";
 import { getDecryptedCredential } from "@/lib/crypto/credentials";
 import { KaggleOrchestrator } from "@/lib/orchestrator/kaggle-client";
 import { VmGateway } from "@/lib/orchestrator/vm-gateway";
+import {
+  getKaggleKernelSlug,
+} from "@/lib/orchestrator/vm-helpers";
 import { appendSystemLog } from "@/lib/logs/logger";
 
 export async function POST(
@@ -67,9 +70,7 @@ export async function POST(
         const kaggleCred = await getDecryptedCredential(user.userId, "kaggle", vm.accountAlias);
         if (kaggleCred && kaggleCred.username) {
           const isTpu = vm.target.startsWith("tpu");
-          const kernelSlug = isTpu
-            ? `kaggle-tpu-runner-${vm.accountAlias}`
-            : `kaggle-dual-gpu-runner-${vm.accountAlias}`;
+          const kernelSlug = getKaggleKernelSlug(vm.accountAlias, isTpu);
           const kStatus = await KaggleOrchestrator.getKernelStatus(
             {
               username: kaggleCred.username,
@@ -93,8 +94,8 @@ export async function POST(
             });
           }
         }
-      } catch (e: any) {
-        kaggleState = `error: ${e.message}`;
+      } catch (e: unknown) {
+        kaggleState = `error: ${e instanceof Error ? e.message : "unknown"}`;
       }
     }
 
@@ -111,7 +112,10 @@ export async function POST(
       tunnelAlive,
       kaggleState,
     });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message || "Sync failed" }, { status: 500 });
+  } catch (err: unknown) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Sync failed" },
+      { status: 500 }
+    );
   }
 }

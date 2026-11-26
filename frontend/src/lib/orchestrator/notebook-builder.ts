@@ -26,6 +26,7 @@ export interface NotebookBuildConfig {
   enableOfflineDatasetScan?: boolean;
   prewarmModels?: PrewarmModelItem[];
   headlessMode?: boolean;
+  quietStdout?: boolean;
 }
 
 export interface CpuMirrorSourceItem {
@@ -266,6 +267,45 @@ def apply_synced_gdrive_token(payload_dict, updated_at_ms=None):
 `;
 }
 
+export interface KaggleThinStubConfig {
+  appWebhookUrl: string;
+  target: string;
+  claimToken: string;
+}
+
+/**
+ * Generates a clean ~22-line Kaggle claim stub so static SaveKernel payloads contain
+ * zero ComfyUI code, model lists, or Vault credentials.
+ */
+export function buildKaggleThinClaimStubCode(cfg: KaggleThinStubConfig): string {
+  const cleanUrl = cfg.appWebhookUrl.replace(/\/$/, "");
+  return `import json, sys, urllib.request, urllib.error
+
+APP_URL = ${JSON.stringify(cleanUrl)}
+TARGET = ${JSON.stringify(cfg.target)}
+CLAIM_TOKEN = ${JSON.stringify(cfg.claimToken)}
+
+print("Claiming compute session...", flush=True)
+req = urllib.request.Request(
+    f"{APP_URL}/api/vm/kaggle/claim",
+    data=json.dumps({"target": TARGET, "claimToken": CLAIM_TOKEN}).encode("utf-8"),
+    headers={"Content-Type": "application/json", "User-Agent": "Scriptoria-Worker/1.0"},
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+except urllib.error.HTTPError as err:
+    if err.code in (401, 410):
+        print(f"Session inactive ({err.code}); exiting cleanly.", flush=True)
+        sys.exit(0)
+    raise RuntimeError(f"Session claim error ({err.code})")
+
+print("Runtime active.", flush=True)
+exec(compile(payload["pythonCode"], "runtime_worker.py", "exec"), {"__name__": "__main__"})
+`;
+}
+
 /**
  * Generates an executable Python bootstrapper for either Kaggle Dual-T4 or Colab Single-T4.
  * Runs:
@@ -338,6 +378,7 @@ IDLE_TIMEOUT_SEC = ${idleSeconds}
 ENABLE_OFFLINE_SCAN = ${cfg.enableOfflineDatasetScan ? "True" : "False"}
 PREWARM_MODELS = ${JSON.stringify(prewarmModels)}
 HEADLESS_MODE = ${cfg.headlessMode ? "True" : "False"}
+QUIET_STDOUT = ${cfg.quietStdout ? "True" : "False"}
 
 LAST_ACTIVE = time.time()
 BOOT_LOGS = deque(maxlen=150)
@@ -375,7 +416,13 @@ except Exception:
 
 def log_event(msg, category="SYSTEM", level="INFO"):
     line = f"[{category}] {msg}"
-    print(line, flush=True)
+    try:
+        with open("/tmp/scriptoria_worker.log", "a", encoding="utf-8") as _wl:
+            _wl.write(line + "\\n")
+    except Exception:
+        pass
+    if not QUIET_STDOUT:
+        print(line, flush=True)
     with LOG_LOCK:
         entry = {"category": category, "level": level, "message": msg}
         BOOT_LOGS.append(entry)
@@ -436,14 +483,17 @@ def post_heartbeat(step, status="STARTING", telemetry=None):
         HEARTBEAT_FAIL_STREAK = 0
     except urllib.error.HTTPError as he:
         if he.code == 410:
-            print("[HEARTBEAT] Session notification: 410 received. Retrying...", flush=True)
+            if not QUIET_STDOUT:
+                print("[HEARTBEAT] Session notification: 410 received. Retrying...", flush=True)
             time.sleep(2)
         else:
             HEARTBEAT_FAIL_STREAK += 1
-            print(f"[HEARTBEAT] HTTP {he.code}: {he.reason}", flush=True)
+            if not QUIET_STDOUT:
+                print(f"[HEARTBEAT] HTTP {he.code}: {he.reason}", flush=True)
     except Exception as e:
         HEARTBEAT_FAIL_STREAK += 1
-        print(f"[HEARTBEAT] Warning: {e}", flush=True)
+        if not QUIET_STDOUT:
+            print(f"[HEARTBEAT] Warning: {e}", flush=True)
 
 def _crash_hook(exc_type, exc_val, exc_tb):
     import traceback

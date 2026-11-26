@@ -61,7 +61,6 @@ export async function POST(req: NextRequest) {
       // and the runner is active (STARTING or ONLINE), adopt this runner session.
       // This seamlessly supports manual interactive runs in Kaggle or Colab notebooks without 410 session mismatch kills!
       const isRunnerActive = requestedStatus === "STARTING" || requestedStatus === "ONLINE";
-      const isMismatch = Boolean(vm.vmSecret && payload.vmSecret && vm.vmSecret !== payload.vmSecret);
 
       // Only reject if the VM was marked OFFLINE and the runner is not actively checking in
       if (!isRunnerActive && vm.status === "OFFLINE") {

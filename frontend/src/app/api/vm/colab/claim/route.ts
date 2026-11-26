@@ -1,13 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { signVmRegistrationToken } from "@/lib/auth/session";
 import { generateVmSecret } from "@/lib/crypto/vault";
-import { getUserGDriveCredential } from "@/lib/gdrive/client";
-import { buildUnifiedNotebookPythonCode } from "@/lib/orchestrator/notebook-builder";
-import { getWorkerProfile } from "@/lib/catalog/worker-profiles";
-import { getOrCreateWorkspaceSettings } from "@/lib/settings/workspace-settings";
 import { verifyColabRunnerToken } from "@/lib/orchestrator/colab-runner";
-import { resolveReachableWebhookBaseUrl } from "@/lib/orchestrator/webhook-tunnel";
+import {
+  assembleWorkerRuntimePayload,
+  WorkerPayloadError,
+} from "@/lib/orchestrator/worker-payload";
 import { appendSystemLog } from "@/lib/logs/logger";
 
 export async function POST(req: NextRequest) {
@@ -38,51 +36,18 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `Colab slot '${target}' not found.` }, { status: 404 });
     }
 
-    const gdriveCred = await getUserGDriveCredential(verified.userId, undefined, { ensureFresh: true });
-    if (!gdriveCred) {
-      return NextResponse.json(
-        { error: "Google Drive credential is missing in Scriptoria Settings Vault." },
-        { status: 400 }
-      );
-    }
-
-    const vmSecret = generateVmSecret();
-    const registrationJwt = signVmRegistrationToken({
-      userId: verified.userId,
-      sessionGroup: vm.sessionGroup,
-      targets: [vm.target],
-      vmSecret,
+    const groupVms = await prisma.vmInstance.findMany({
+      where: { userId: verified.userId, sessionGroup: vm.sessionGroup },
     });
 
-    const webhook = await resolveReachableWebhookBaseUrl(req);
-    const appWebhookUrl = webhook.url;
-    const profileSpec = getWorkerProfile(vm.workerProfile);
-    const workspaceSettings = await getOrCreateWorkspaceSettings(verified.userId);
-    const effectiveIdleMinutes =
-      vm.idleTimeoutMinutes ?? workspaceSettings.idleTimeoutMinutes ?? 15;
-    let prewarmModels: Array<{ category: string; filename: string }> = [];
-    if (vm.prewarmModelsJson) {
-      try {
-        const parsed = JSON.parse(vm.prewarmModelsJson);
-        if (Array.isArray(parsed)) prewarmModels = parsed;
-      } catch {
-        prewarmModels = [];
-      }
-    }
-
-    const pythonCode = buildUnifiedNotebookPythonCode({
-      provider: "colab",
-      appWebhookUrl,
-      registrationJwt,
-      vmSecret,
-      gdriveTokenJson: gdriveCred.rawTokenJson,
-      gdriveBaseFolder: gdriveCred.baseFolder || workspaceSettings.gdriveBaseFolder,
-      gpuTargets: [vm.target],
-      accountAlias: vm.accountAlias,
-      workerProfile: profileSpec.id,
-      customNodes: profileSpec.customNodes,
-      idleTimeoutSeconds: effectiveIdleMinutes * 60,
-      prewarmModels,
+    const vmSecret = generateVmSecret();
+    const assembled = await assembleWorkerRuntimePayload({
+      userId: verified.userId,
+      vm,
+      groupVms,
+      req,
+      runtimeVmSecret: vmSecret,
+      workerMode: "interactive_tunnel",
     });
 
     await prisma.vmInstance.updateMany({
@@ -108,9 +73,12 @@ export async function POST(req: NextRequest) {
       ok: true,
       target: vm.target,
       accountAlias: vm.accountAlias,
-      pythonCode,
+      pythonCode: assembled.pythonCode,
     });
   } catch (error) {
+    if (error instanceof WorkerPayloadError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
     const message = error instanceof Error ? error.message : "Failed to claim Colab session";
     return NextResponse.json({ error: message }, { status: 500 });
   }

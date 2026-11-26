@@ -20,6 +20,16 @@ export interface VmRegistrationPayload {
   vmSecret: string;
 }
 
+export interface VmClaimPayload {
+  userId: string;
+  sessionGroup: string;
+  targets: string[];
+  claimSecret: string;
+  workerMode?: "headless_safe" | "interactive_tunnel";
+  isTpu?: boolean;
+  customDatasets?: string[];
+}
+
 export interface DefaultVmSlotSpec {
   target: string;
   displayName: string;
@@ -198,6 +208,28 @@ export function verifyVmRegistrationToken(token: string): VmRegistrationPayload 
   try {
     const decoded = jwt.verify(token, getJwtSecret()) as VmRegistrationPayload;
     if (!decoded?.userId || !decoded?.sessionGroup || !Array.isArray(decoded?.targets)) {
+      return null;
+    }
+    return decoded;
+  } catch {
+    return null;
+  }
+}
+
+export function signVmClaimToken(payload: VmClaimPayload): string {
+  return jwt.sign({ ...payload, kind: "vm_claim" }, getJwtSecret(), { expiresIn: "15m" });
+}
+
+export function verifyVmClaimToken(token: string): VmClaimPayload | null {
+  try {
+    const decoded = jwt.verify(token, getJwtSecret()) as VmClaimPayload & { kind?: string };
+    if (
+      decoded?.kind !== "vm_claim" ||
+      !decoded?.userId ||
+      !decoded?.sessionGroup ||
+      !decoded?.claimSecret ||
+      !Array.isArray(decoded?.targets)
+    ) {
       return null;
     }
     return decoded;

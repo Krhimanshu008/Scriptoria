@@ -69,8 +69,8 @@ export class KaggleOrchestrator {
           cell_type: "markdown",
           metadata: {},
           source: [
-            "# Scriptoria Literary Storyboard & Diffusion Benchmark\n",
-            "Automated non-commercial academic & story-illustration pipeline.\n",
+            "# Literary Storyboard & Compute Benchmark\n",
+            "Automated non-commercial academic & literary illustration environment.\n",
           ],
         },
         {

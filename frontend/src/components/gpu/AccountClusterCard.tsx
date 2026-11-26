@@ -24,7 +24,10 @@ import {
   ChevronRight,
   Sparkles,
 } from "lucide-react";
-import type { PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
+import {
+  getKaggleKernelSlug,
+  type PublicVmInstance,
+} from "@/lib/orchestrator/vm-helpers";
 import type { KaggleAccountSummary, ColabAccountSummary } from "@/app/api/vm/accounts/route";
 import { WORKER_PROFILE_LIST, getWorkerProfile } from "@/lib/catalog/worker-profiles";
 import { VmLogsDialog } from "@/components/gpu/VmLogsDialog";
@@ -105,9 +108,7 @@ export const AccountClusterCard: React.FC<AccountClusterCardProps> = ({
       : "gcgpu");
 
   const isTpu = primaryTarget.startsWith("tpu");
-  const kaggleSlug = isTpu
-    ? `kaggle-tpu-runner-${kaggleAccount?.accountAlias || "acc1"}`
-    : `kaggle-dual-gpu-runner-${kaggleAccount?.accountAlias || "acc1"}`;
+  const kaggleSlug = getKaggleKernelSlug(kaggleAccount?.accountAlias || "acc1", isTpu);
   const kaggleNotebookUrl = kaggleAccount?.username
     ? `https://www.kaggle.com/code/${kaggleAccount.username}/${kaggleSlug}`
     : null;
@@ -204,8 +205,8 @@ export const AccountClusterCard: React.FC<AccountClusterCardProps> = ({
         toast.success(`VM status synced: ${data.status}`);
       }
       onRefresh();
-    } catch (err: any) {
-      toast.error(err.message || "Failed to sync VM status");
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to sync VM status");
     } finally {
       setSyncLoading(false);
     }
@@ -226,8 +227,8 @@ export const AccountClusterCard: React.FC<AccountClusterCardProps> = ({
       }
       toast.success("Worker hot-reloaded! Restarting in-container (<3s)...");
       onRefresh();
-    } catch (err: any) {
-      toast.error(err.message || "Failed to hot reload worker");
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to hot reload worker");
     } finally {
       setHotReloadLoading(false);
     }

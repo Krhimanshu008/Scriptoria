@@ -5,7 +5,11 @@ import { getDecryptedCredential } from "@/lib/crypto/credentials";
 import { appendSystemLog } from "@/lib/logs/logger";
 import { ComfyClient } from "@/lib/orchestrator/comfy-client";
 import { KaggleOrchestrator } from "@/lib/orchestrator/kaggle-client";
-import { sanitizeVmForClient, sortVmsByCanonicalTarget } from "@/lib/orchestrator/vm-helpers";
+import {
+  getKaggleKernelSlug,
+  sanitizeVmForClient,
+  sortVmsByCanonicalTarget,
+} from "@/lib/orchestrator/vm-helpers";
 
 const HEARTBEAT_STALE_MS = 90_000;
 const KAGGLE_PRE_HEARTBEAT_POLL_MS = 8_000;
@@ -134,9 +138,7 @@ export async function GET(req: NextRequest) {
             authType: (kc.authType === "bearer" ? "bearer" : "basic") as "bearer" | "basic",
           };
 
-          const kernelSlug = group.isTpu
-            ? `kaggle-tpu-runner-${group.alias}`
-            : `kaggle-dual-gpu-runner-${group.alias}`;
+          const kernelSlug = getKaggleKernelSlug(group.alias, group.isTpu);
 
           try {
             const st = await KaggleOrchestrator.getKernelStatus(creds, kernelSlug);

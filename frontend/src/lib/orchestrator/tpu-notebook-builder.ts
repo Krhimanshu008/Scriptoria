@@ -13,6 +13,7 @@ export interface BuildTpuNotebookOptions {
   accountAlias: string;
   gpuTargets: string[];
   idleTimeoutSeconds?: number;
+  quietStdout?: boolean;
 }
 
 export function buildTpuNotebookPythonCode(opts: BuildTpuNotebookOptions): string {
@@ -30,6 +31,7 @@ VM_SECRET = ${JSON.stringify(opts.vmSecret)}
 ACCOUNT_ALIAS = ${JSON.stringify(opts.accountAlias)}
 TARGETS = ${JSON.stringify(targets)}
 IDLE_TIMEOUT_SEC = ${idleSeconds}
+QUIET_STDOUT = ${opts.quietStdout ? "True" : "False"}
 
 LAST_ACTIVE = time.time()
 BOOT_LOGS = deque(maxlen=200)
@@ -54,7 +56,13 @@ MTP_PATCH_B64 = "H4sIANqJmGoC/+097XLbOJL//RQop66WWlGKJfl7V1PjTTK7c5NkUoln9+p8Lpo
 
 def log_event(msg, category="SYSTEM", level="INFO"):
     line = f"[{category}] {msg}"
-    print(line, flush=True)
+    try:
+        with open("/tmp/scriptoria_worker.log", "a", encoding="utf-8") as _wl:
+            _wl.write(line + "\\n")
+    except Exception:
+        pass
+    if not QUIET_STDOUT:
+        print(line, flush=True)
     with LOG_LOCK:
         entry = {"category": category, "level": level, "message": msg}
         BOOT_LOGS.append(entry)
@@ -192,9 +200,10 @@ def heartbeat_sender_loop():
         time.sleep(15)
         post_heartbeat(CURRENT_STEP, status="ONLINE" if TUNNEL_URL else "STARTING")
 
-print("=" * 70, flush=True)
-print(f" FastBoot starting KAGGLE TPU worker ({ACCOUNT_ALIAS}, targets={TARGETS})", flush=True)
-print("=" * 70, flush=True)
+if not QUIET_STDOUT:
+    print("=" * 70, flush=True)
+    print(f" FastBoot starting KAGGLE TPU worker ({ACCOUNT_ALIAS}, targets={TARGETS})", flush=True)
+    print("=" * 70, flush=True)
 
 # -------------------------------------------------------------
 # STEP 1: Topology & Device Verification

@@ -45,6 +45,11 @@ const TARGET_ORDER = [
   "tpu0", "tpu1", "tpu2", "tpu3"
 ];
 
+export function getKaggleKernelSlug(accountAlias: string, isTpu = false): string {
+  const safeAlias = (accountAlias || "acc1").trim() || "acc1";
+  return isTpu ? `scriptoria-tpu-worker-${safeAlias}` : `scriptoria-batch-worker-${safeAlias}`;
+}
+
 export function sortVmsByCanonicalTarget(vms: VmInstance[]): VmInstance[] {
   return [...vms].sort((a, b) => {
     const ia = TARGET_ORDER.indexOf(a.target);
