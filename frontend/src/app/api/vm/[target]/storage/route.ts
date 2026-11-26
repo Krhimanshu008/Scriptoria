@@ -32,8 +32,18 @@ export async function GET(
       where: { userId_target: { userId: user.userId, target } },
     });
 
-    if (!vm || vm.status !== "ONLINE" || !vm.publicUrl) {
+    if (!vm || vm.status !== "ONLINE") {
       return NextResponse.json({ error: `VM ${target} is offline.` }, { status: 400 });
+    }
+
+    if (!vm.publicUrl) {
+      return NextResponse.json({
+        headless: true,
+        target,
+        disk: null,
+        files: [],
+        source: "headless",
+      });
     }
 
     // Strategy 1: Sidecar :9999 /storage (provides both /tmp disk usage and files)
@@ -89,8 +99,18 @@ export async function DELETE(
     const vm = await prisma.vmInstance.findUnique({
       where: { userId_target: { userId: user.userId, target } },
     });
-    if (!vm || vm.status !== "ONLINE" || !vm.publicUrl) {
+    if (!vm || vm.status !== "ONLINE") {
       return NextResponse.json({ error: `VM ${target} is offline.` }, { status: 400 });
+    }
+
+    if (!vm.publicUrl) {
+      return NextResponse.json({
+        headless: true,
+        target,
+        disk: null,
+        files: [],
+        source: "headless",
+      });
     }
 
     if (vm.useRouteLess) {

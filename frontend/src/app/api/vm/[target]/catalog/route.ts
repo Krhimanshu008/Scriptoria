@@ -19,8 +19,25 @@ export async function GET(
       where: { userId_target: { userId: user.userId, target } },
     });
 
-    if (!vm || !vm.publicUrl || vm.status === "OFFLINE") {
+    if (!vm || vm.status === "OFFLINE") {
       return NextResponse.json({ error: `VM ${target} is offline.` }, { status: 400 });
+    }
+
+    if (!vm.publicUrl) {
+      return NextResponse.json({
+        headless: true,
+        target,
+        totalNodesAvailable: 0,
+        models: {
+          checkpoints: [],
+          loras: [],
+          vaes: [],
+          controlnets: [],
+          ipadapters: [],
+          clip_visions: [],
+          upscale_models: [],
+        },
+      });
     }
 
     if (isLlmWorkerProfile(vm.workerProfile)) {

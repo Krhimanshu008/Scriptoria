@@ -2507,14 +2507,25 @@ def _headless_worker_loop(worker_target, port):
             if not isinstance(graph, dict):
                 raise RuntimeError("Claimed task missing compiledGraph JSON")
 
-            # Ensure required models from Google Drive (zero CivitAI hits on Kaggle)
-            if RCLONE_READY:
-                for cat, fn in _extract_graph_models(graph, task.get("requiredModels")):
-                    sub_dir = "bbox" if cat == "ultralytics" else ""
-                    clean_cat, _, dst_path = _safe_model_target(cat, fn, sub_dir)
-                    if dst_path and not os.path.exists(dst_path):
-                        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-                        remote_dir = f"{GDRIVE_BASE}/models/{clean_cat}" + (f"/{sub_dir}" if sub_dir else "")
+            # Ensure required models: Google Drive first, then safe HF mirror fallback
+            mirror_by_key = {}
+            for _rm in (task.get("requiredModels") or []):
+                if isinstance(_rm, dict) and _rm.get("filename"):
+                    _mr = _rm.get("mirrors") or []
+                    mirror_by_key[(_rm.get("category") or "", _rm["filename"])] = _mr
+                    mirror_by_key[("", _rm["filename"])] = _mr
+
+            drive_ok = bool(RCLONE_READY)
+            for cat, fn in _extract_graph_models(graph, task.get("requiredModels")):
+                sub_dir = "bbox" if cat == "ultralytics" else ""
+                clean_cat, _, dst_path = _safe_model_target(cat, fn, sub_dir)
+                if not dst_path or os.path.exists(dst_path):
+                    continue
+                os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+                remote_dir = f"{GDRIVE_BASE}/models/{clean_cat}" + (f"/{sub_dir}" if sub_dir else "")
+                got_model = False
+                if drive_ok:
+                    try:
                         log_event(f"[{worker_target}] Streaming {fn} from Drive...", category="RCLONE")
                         rc_copy_async({
                             "srcFs": f"gdrive:{remote_dir}",
@@ -2522,6 +2533,21 @@ def _headless_worker_loop(worker_target, port):
                             "dstFs": os.path.dirname(dst_path),
                             "dstRemote": fn,
                         }, max_wait=600, label=f"Drive {fn}")
+                        got_model = os.path.exists(dst_path) and os.path.getsize(dst_path) > 0
+                    except Exception as d_err:
+                        log_event(f"[{worker_target}] Drive unavailable for {fn}: {str(d_err)[:140]}", category="RCLONE", level="WARN")
+                        if "accessNotConfigured" in str(d_err) or "403" in str(d_err):
+                            drive_ok = False
+                if not got_model:
+                    mirrors = mirror_by_key.get((cat, fn)) or mirror_by_key.get((clean_cat, fn)) or mirror_by_key.get(("", fn)) or []
+                    if not mirrors:
+                        raise RuntimeError(f"Model {fn} unavailable in Drive and no HF mirror found.")
+                    tmp_part = dst_path + ".part"
+                    with FETCH_SEMAPHORE:
+                        log_event(f"[{worker_target}] Fetching {fn} via HF mirror fallback...", category="RCLONE")
+                        _download_with_mirrors(mirrors, tmp_part)
+                        os.replace(tmp_part, dst_path)
+                        log_event(f"[{worker_target}] Cached {fn} via mirror fallback.", category="RCLONE", level="SUCCESS")
 
             # Stage any inline base64 data:image LoadImage inputs into COMFY_DIR/input
             in_dir = os.path.join(COMFY_DIR, "input")
@@ -2573,18 +2599,38 @@ def _headless_worker_loop(worker_target, port):
                                 continue
                             src_dir = f"/tmp/outputs/{sub}" if sub else "/tmp/outputs"
                             file_id = ""
+                            b64_preview = ""
                             if RCLONE_READY:
-                                rc_copy_async({
-                                    "srcFs": src_dir, "srcRemote": fn,
-                                    "dstFs": f"gdrive:{remote_out}", "dstRemote": fn,
-                                }, max_wait=240, label=f"Upload {fn}")
-                                stat = rc_post("operations/stat", {"fs": f"gdrive:{remote_out}", "remote": fn}, timeout=15)
-                                file_id = (stat.get("item") or {}).get("ID", "")
+                                try:
+                                    rc_copy_async({
+                                        "srcFs": src_dir, "srcRemote": fn,
+                                        "dstFs": f"gdrive:{remote_out}", "dstRemote": fn,
+                                    }, max_wait=240, label=f"Upload {fn}")
+                                    stat = rc_post("operations/stat", {"fs": f"gdrive:{remote_out}", "remote": fn}, timeout=15)
+                                    file_id = (stat.get("item") or {}).get("ID", "")
+                                except Exception as up_err:
+                                    log_event(f"[{worker_target}] Drive upload failed ({str(up_err)[:120]}); encoding inline preview fallback.", category="RCLONE", level="WARN")
+                            if not file_id:
+                                src_file = os.path.join(src_dir, fn)
+                                if os.path.exists(src_file):
+                                    try:
+                                        from PIL import Image as _PILImage
+                                        import io as _io
+                                        _im = _PILImage.open(src_file).convert("RGB")
+                                        _im.thumbnail((896, 896))
+                                        _buf = _io.BytesIO()
+                                        _im.save(_buf, format="JPEG", quality=84)
+                                        b64_preview = "data:image/jpeg;base64," + base64.b64encode(_buf.getvalue()).decode("ascii")
+                                    except Exception:
+                                        with open(src_file, "rb") as _rf:
+                                            _raw_b = _rf.read()
+                                        if len(_raw_b) <= 190000:
+                                            b64_preview = "data:image/png;base64," + base64.b64encode(_raw_b).decode("ascii")
                             outputs_uploaded.append({
                                 "filename": fn,
                                 "gdriveFileId": file_id,
-                                "gdrivePath": f"{remote_out}/{fn}",
-                                "previewUrl": f"/api/outputs/{file_id}" if file_id else "",
+                                "gdrivePath": f"{remote_out}/{fn}" if file_id else "",
+                                "previewUrl": f"/api/outputs/{file_id}" if file_id else b64_preview,
                             })
                     break
 

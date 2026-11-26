@@ -149,11 +149,14 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
   );
   const { configuredAccounts, bestOfflineAccount, refreshCluster } = useKaggleClusterAccounts(vms);
 
-  const [target, setTarget] = useState(onlineVms[0]?.target || "gpu0");
+  const [target, setTarget] = useState(
+    () => onlineVms[0]?.target || bestOfflineAccount?.primaryTarget || "gpu4"
+  );
   const [launcherOpen, setLauncherOpen] = useState(false);
   const [bootingTarget, setBootingTarget] = useState(false);
   const [showAllGpuSlots, setShowAllGpuSlots] = useState(false);
   const [showRawJson, setShowRawJson] = useState(false);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [pipeline, setPipeline] = useState<WorkflowPipelineKind>("sdxl_txt2img");
   const [baseModel, setBaseModel] = useState("Illustrious-XL-v2.0.safetensors");
   const [vaeModel, setVaeModel] = useState("sdxl_vae_fp16_fix.safetensors");
@@ -203,6 +206,25 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
       return res.json();
     },
     staleTime: 20000,
+  });
+
+  const { data: activeJobStatus } = useQuery<{
+    jobId: string;
+    status: "QUEUED" | "PROCESSING" | "COMPLETED" | "FAILED";
+    outputs: Array<{ filename: string; previewUrl?: string; gdrivePath?: string }>;
+    errorMessage?: string | null;
+  }>({
+    queryKey: ["creator-job", activeJobId],
+    enabled: Boolean(activeJobId),
+    queryFn: async () => {
+      const res = await fetch(`/api/workflow/${encodeURIComponent(activeJobId!)}/status`);
+      if (!res.ok) throw new Error("Failed to poll job status");
+      return res.json();
+    },
+    refetchInterval: (q) => {
+      const st = q.state.data?.status;
+      return st === "COMPLETED" || st === "FAILED" ? false : 2500;
+    },
   });
 
   // Fetch cached models on currently selected ONLINE VM so picker shows ON GPU badge
@@ -501,6 +523,7 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
         toast.success("Saved custom workflow into Workflow Gallery!");
         refetchCatalog();
       } else if (action === "compile_and_run") {
+        if (data.jobId) setActiveJobId(data.jobId);
         toast.success(
           data.status === "TRANSFERRING_MODELS"
             ? data.message
@@ -993,6 +1016,55 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
               </div>
             )}
 
+            {activeJobStatus && (
+              <div
+                className={`space-y-2 rounded-lg border p-2.5 text-[11px] ${
+                  activeJobStatus.status === "COMPLETED"
+                    ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-200"
+                    : activeJobStatus.status === "FAILED"
+                    ? "border-rose-500/35 bg-rose-500/10 text-rose-200"
+                    : "border-indigo-500/35 bg-indigo-500/10 text-indigo-200"
+                }`}
+              >
+                <div className="flex items-center justify-between font-mono text-[10px] font-semibold">
+                  <span className="flex items-center gap-1.5">
+                    {(activeJobStatus.status === "QUEUED" || activeJobStatus.status === "PROCESSING") && (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    )}
+                    JOB {activeJobStatus.jobId.slice(-8)} · {activeJobStatus.status}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setActiveJobId(null)}
+                    className="text-zinc-400 hover:text-white"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+                {activeJobStatus.status === "FAILED" && activeJobStatus.errorMessage && (
+                  <p className="text-rose-200">{activeJobStatus.errorMessage}</p>
+                )}
+                {activeJobStatus.status === "COMPLETED" && activeJobStatus.outputs?.length > 0 && (
+                  <div className="grid grid-cols-1 gap-2 pt-1">
+                    {activeJobStatus.outputs.map((out, idx) => (
+                      <div key={idx} className="space-y-1">
+                        {out.previewUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={out.previewUrl}
+                            alt={out.filename}
+                            className="max-h-72 w-full rounded border border-zinc-800 object-contain bg-black/40"
+                          />
+                        ) : (
+                          <span className="font-mono text-[10px]">Generated: {out.filename}</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
             {!compiled ? (
               <p className="rounded-md border border-zinc-800 bg-zinc-950 p-3 text-xs text-zinc-500">
                 Click <strong>Compile &amp; Check T4 VRAM</strong> or <strong>AI Architect</strong> to inspect required models, safety guardrails, and ComfyUI graph.
@@ -1004,7 +1076,7 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
                     <span className="text-[10px] font-medium uppercase text-zinc-500">
                       Required Models ({compiled.requiredModels.length}) · {compiled.recommendedProfile}
                     </span>
-                    {selectedVmOnline && compiled.requiredModels.length > 0 && (
+                    {selectedVmOnline && activeVm?.publicUrl && compiled.requiredModels.length > 0 && (
                       <button
                         type="button"
                         disabled={streamingMissing}

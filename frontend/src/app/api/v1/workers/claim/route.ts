@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getWorkerAuthContext } from "@/lib/auth/api-token";
+import { resolveAllModelDownloadSources } from "@/lib/catalog/source-resolver";
 import { ensureDbSchemaReady } from "@/lib/db/ensure-schema";
 
 export async function POST(req: NextRequest) {
@@ -163,12 +164,36 @@ export async function POST(req: NextRequest) {
       } catch {}
     }
 
-    let requiredModels: Array<{ category: string; filename: string; slug?: string }> = [];
+    let requiredModels: Array<{
+      category: string;
+      filename: string;
+      slug?: string;
+      mirrors?: Array<{ url: string; authHeader?: string; expectedSizeBytes?: number; sha256?: string; sourceKind: string }>;
+    }> = [];
     if (nextTask.requiredModelsJson) {
       try {
         const parsed = JSON.parse(nextTask.requiredModelsJson);
         if (Array.isArray(parsed)) requiredModels = parsed;
       } catch {}
+    }
+
+    if (requiredModels.length > 0) {
+      const filenames = requiredModels.map((m) => m.filename).filter(Boolean);
+      const assets = filenames.length
+        ? await prisma.modelAsset.findMany({
+            where: { userId: auth.userId, filename: { in: filenames } },
+          })
+        : [];
+      const byName = new Map(assets.map((a) => [a.filename.toLowerCase(), a]));
+      requiredModels = await Promise.all(
+        requiredModels.map(async (rm) => {
+          const asset = byName.get((rm.filename || "").toLowerCase());
+          if (!asset) return rm;
+          const rawMirrors = await resolveAllModelDownloadSources(auth.userId, asset).catch(() => []);
+          const safeMirrors = rawMirrors.filter((m) => m.sourceKind !== "civitai");
+          return { ...rm, mirrors: safeMirrors };
+        })
+      );
     }
 
     return NextResponse.json({
