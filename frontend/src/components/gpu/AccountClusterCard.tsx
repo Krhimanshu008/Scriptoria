@@ -152,7 +152,7 @@ export const AccountClusterCard: React.FC<AccountClusterCardProps> = ({
   async function handleBootOrKill(confirmKill = false) {
     const label =
       kind === "kaggle"
-        ? `Kaggle ${kaggleAccount?.accountAlias}`
+        ? (kaggleAccount?.displayName || "Personal Kaggle")
         : `Colab ${colabAccount?.accountAlias}`;
     const isKillAction = confirmKill || anyActive || isError;
     if (confirmKill && !isError && !confirm(`Trigger immediate Zero-Quota kill for ${label}?`)) {
@@ -283,7 +283,7 @@ export const AccountClusterCard: React.FC<AccountClusterCardProps> = ({
               }`}
             >
               {kind === "kaggle"
-                ? `Kaggle ${kaggleAccount?.accountAlias || "acc1"}`
+                ? (kaggleAccount?.displayName || "Personal Kaggle")
                 : `Colab ${colabAccount?.accountAlias || "acc1"}`}
             </span>
             <span className="truncate font-mono text-[11px] text-zinc-200">
@@ -640,7 +640,7 @@ export const AccountClusterCard: React.FC<AccountClusterCardProps> = ({
         <div className="flex items-center justify-between border-b border-white/10 pb-2">
           <span className="font-mono text-xs font-bold uppercase text-white">
             {kind === "kaggle"
-              ? `${kaggleAccount?.accountAlias} · Dual T4 Telemetry`
+              ? `${kaggleAccount?.displayName || "Kaggle"} · Dual T4 Telemetry`
               : `${primaryTarget} · T4 Telemetry`}
           </span>
           <span className="font-mono text-[10px] text-zinc-400">

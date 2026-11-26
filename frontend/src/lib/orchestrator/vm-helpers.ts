@@ -47,6 +47,7 @@ const TARGET_ORDER = [
 
 export function getKaggleKernelSlug(accountAlias: string, isTpu = false): string {
   const safeAlias = (accountAlias || "acc1").trim() || "acc1";
+  if (safeAlias === "personal") return isTpu ? "scriptoria-tpu-worker" : "scriptoria-batch-worker";
   return isTpu ? `scriptoria-tpu-worker-${safeAlias}` : `scriptoria-batch-worker-${safeAlias}`;
 }
 

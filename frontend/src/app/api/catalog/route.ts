@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getAuthUser } from "@/lib/auth/session";
 import { ensureUserCatalogSeeded } from "@/lib/catalog/seed-catalog";
-import { inspectRemoteModelUrl } from "@/lib/catalog/source-resolver";
+import { inspectRemoteModelUrl, resolveAllModelDownloadSources } from "@/lib/catalog/source-resolver";
 import { WORKER_PROFILE_LIST } from "@/lib/catalog/worker-profiles";
 import { sanitizeModelCategory } from "@/lib/orchestrator/rclone-client";
 
@@ -77,6 +77,27 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json();
 
+    if (body.action === "review_file" || body.action === "confirm_review") {
+      const asset = await prisma.modelAsset.findFirst({ where: { id: String(body.modelId), userId: user.userId } });
+      if (!asset) return NextResponse.json({ error: "Catalog model not found" }, { status: 404 });
+      const [source] = (await resolveAllModelDownloadSources(user.userId, asset))
+        .filter((s) => s.sourceKind !== "direct" && s.sha256);
+      if (!source?.sha256) return NextResponse.json({ error: "No verifiable HF or Civitai file." }, { status: 422 });
+      if (body.action === "confirm_review") {
+        if (body.sha256 !== source.sha256) return NextResponse.json({ error: "File changed. Review again." }, { status: 409 });
+        const update = await prisma.modelAsset.updateMany({
+          where: { id: asset.id, userId: user.userId, updatedAt: asset.updatedAt },
+          data: {
+            reviewedSha256: source.sha256,
+            ...(source.sourceKind === "huggingface" && (!asset.directUrl || asset.directUrl.startsWith("https://huggingface.co/"))
+              ? { directUrl: source.url } : {}),
+          },
+        });
+        if (!update.count) return NextResponse.json({ error: "Catalog entry changed. Review again." }, { status: 409 });
+      }
+      return NextResponse.json({ source: source.sourceKind, location: source.url, sha256: source.sha256 });
+    }
+
     if (body.action === "inspect_url") {
       const rawUrl = String(body.url || "").trim();
       if (!rawUrl) {
@@ -111,6 +132,7 @@ export async function POST(req: NextRequest) {
     const asset = await prisma.modelAsset.upsert({
       where: { userId_slug: { userId: user.userId, slug } },
       update: {
+        reviewedSha256: null,
         displayName,
         modality,
         category,

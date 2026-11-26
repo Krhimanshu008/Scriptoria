@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
     const vm = await prisma.vmInstance.findUnique({
       where: { userId_target: { userId: user.userId, target } },
     });
-    if (!vm || vm.status !== "ONLINE" || !vm.publicUrl) {
+    if (!vm || vm.status !== "ONLINE") {
       return NextResponse.json({ error: `VM ${target} is not online.` }, { status: 400 });
     }
 

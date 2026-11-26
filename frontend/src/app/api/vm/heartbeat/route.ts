@@ -41,6 +41,7 @@ export async function POST(req: NextRequest) {
     const bootMeta =
       rawTelem.stepDurations || rawTelem.currentStepElapsed || rawTelem.totalBootElapsed
         ? {
+            modelFetch: rawTelem.modelFetch === true,
             stepDurations: rawTelem.stepDurations,
             currentStepElapsed: rawTelem.currentStepElapsed,
             totalBootElapsed: rawTelem.totalBootElapsed,
@@ -50,7 +51,8 @@ export async function POST(req: NextRequest) {
     const vms = await prisma.vmInstance.findMany({
       where: {
         userId: payload.userId,
-        target: { in: targets },
+        sessionGroup: payload.sessionGroup,
+        target: { in: targets.filter((target) => payload.targets.includes(target)) },
       },
     });
 
@@ -60,6 +62,7 @@ export async function POST(req: NextRequest) {
       // Allow runner auto-adoption: If the runner token is cryptographically valid for this user/target
       // and the runner is active (STARTING or ONLINE), adopt this runner session.
       // This seamlessly supports manual interactive runs in Kaggle or Colab notebooks without 410 session mismatch kills!
+      if (vm.provider === "kaggle" && (!vm.vmSecret || vm.vmSecret !== payload.vmSecret)) continue;
       const isRunnerActive = requestedStatus === "STARTING" || requestedStatus === "ONLINE";
 
       // Only reject if the VM was marked OFFLINE and the runner is not actively checking in
@@ -68,7 +71,7 @@ export async function POST(req: NextRequest) {
       }
 
       const adoptedSecret = payload.vmSecret || vm.vmSecret;
-      updatedTargets.push(vm.target);
+
 
       const tStats = telemetry[vm.target];
       const isHeadlessReady = Boolean(rawTelem.headlessMode === true && tStats?.ready);
@@ -90,10 +93,10 @@ export async function POST(req: NextRequest) {
           ? 5
           : requestedStep;
 
-      await prisma.vmInstance.update({
-        where: { id: vm.id },
+      const written = await prisma.vmInstance.updateMany({
+        where: { id: vm.id, ...(vm.provider === "kaggle" ? { vmSecret: payload.vmSecret } : {}) },
         data: {
-          publicUrl: nextStatus === "OFFLINE" ? "" : tunnelUrl || vm.publicUrl,
+          publicUrl: nextStatus === "OFFLINE" || rawTelem.headlessMode === true ? "" : tunnelUrl || vm.publicUrl,
           status: nextStatus,
           stepProgress: nextStep,
           vmSecret: adoptedSecret,
@@ -106,6 +109,7 @@ export async function POST(req: NextRequest) {
           bootMetadataJson: bootMeta ? JSON.stringify(bootMeta) : vm.bootMetadataJson,
         },
       });
+      if (written.count) updatedTargets.push(vm.target);
     }
 
     for (const entry of logs) {

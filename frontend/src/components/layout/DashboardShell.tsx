@@ -193,12 +193,12 @@ export function DashboardShell({
             bytesDone: stats.totalBytes || stats.bytes || 0,
             totalBytes: stats.totalBytes || stats.bytes || 0,
             etaSeconds: 0,
-            speedText: fetchJobId ? "Cached on /tmp (Drive backup queued)" : "Ready on /tmp",
+            speedText: fetchJobId ? "Cached on worker disk" : "Ready on /tmp",
             active: true,
             completed: true,
             error: null,
           });
-          toast.success(`${modelName} loaded into /tmp/models/${category} on ${target.toUpperCase()}`);
+          toast.success(`${modelName} cached in /tmp/models/${category} on ${target.toUpperCase()}`);
           queryClient.invalidateQueries({ queryKey: ["vm-catalog", target] });
           queryClient.invalidateQueries({ queryKey: ["vm-storage", target] });
           queryClient.invalidateQueries({ queryKey: ["master-catalog"] });

@@ -17,6 +17,9 @@ export async function POST(req: NextRequest) {
     const rawOutputFiles = Array.isArray(body.outputFiles) ? body.outputFiles : [];
     const metrics: unknown = body.metrics || null;
 
+    if (auth.worker && !auth.worker.targets.includes(workerId)) {
+      return NextResponse.json({ error: "Target outside worker session." }, { status: 403 });
+    }
     if (!taskId) {
       return NextResponse.json({ error: "taskId is required" }, { status: 400 });
     }
@@ -42,6 +45,8 @@ export async function POST(req: NextRequest) {
     const task = await prisma.batchTask.findFirst({
       where: {
         id: taskId,
+        assignedTarget: workerId,
+        status: "PROCESSING",
         batch: { userId: auth.userId },
       },
       include: {
@@ -55,7 +60,7 @@ export async function POST(req: NextRequest) {
 
     // 1. Update task to COMPLETED
     const updatedTask = await prisma.batchTask.update({
-      where: { id: taskId },
+      where: { id: taskId, assignedTarget: workerId, status: "PROCESSING" },
       data: {
         status: "COMPLETED",
         assignedTarget: workerId,

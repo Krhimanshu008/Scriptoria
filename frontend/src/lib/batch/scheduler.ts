@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { ensureDbSchemaReady } from "@/lib/db/ensure-schema";
 import { ComfyClient } from "@/lib/orchestrator/comfy-client";
 import { compileResourceAwareWorkflow, type WorkflowBuildSpec } from "@/lib/workflow/compiler";
+import { studioTargetForTask } from "./studio-headless";
 import { ensureModelReadyOnVm } from "@/lib/catalog/ensure-helper";
 import { appendSystemLog } from "@/lib/logs/logger";
 import type { ScriptoriaSceneSpecV1, BatchTrackKind } from "@/lib/batch/ingestion-spec";
@@ -558,9 +559,11 @@ export async function tickBatchScheduler(userId: string, batchId: string) {
     const depsReady = depIds.every((id) => taskStatusMap.get(id) === "COMPLETED");
     if (!depsReady) continue;
 
-    const ranked = await rankOnlineGpusForTask(availableVms, task);
+    const target = studioTargetForTask(task);
+    const eligible = target ? availableVms.filter((vm) => vm.target === target) : availableVms;
+    const ranked = await rankOnlineGpusForTask(eligible, task);
     const best = ranked[0];
-    if (!best) break;
+    if (!best) continue;
 
     const vmIdx = availableVms.findIndex((v) => v.target === best.target);
     const chosenVm = availableVms[vmIdx];

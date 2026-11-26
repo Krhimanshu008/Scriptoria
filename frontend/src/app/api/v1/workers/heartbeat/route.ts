@@ -21,6 +21,16 @@ export async function POST(req: NextRequest) {
     const vramTotalGb = typeof body.vramTotalGb === "number" ? body.vramTotalGb : null;
     const gpuName = body.gpuName ? String(body.gpuName) : null;
 
+    if (auth.worker && (!auth.worker.targets.includes(workerId) || (target && !auth.worker.targets.includes(target)))) {
+      return NextResponse.json({ error: "Target outside worker session." }, { status: 403 });
+    }
+    if (typeof body.taskId === "string" && body.taskId) {
+      const renewed = await prisma.batchTask.updateMany({
+        where: { id: body.taskId, batch: { userId: auth.userId }, status: "PROCESSING", assignedTarget: workerId },
+        data: { updatedAt: new Date() },
+      });
+      return NextResponse.json({ ok: renewed.count === 1 }, { status: renewed.count ? 200 : 409 });
+    }
     if (target) {
       await prisma.vmInstance.updateMany({
         where: {

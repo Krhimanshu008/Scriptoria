@@ -324,12 +324,14 @@ export async function ensureUserVmSlots(userId: string): Promise<void> {
 
   // Only provision initial slots if user has zero VM slots configured
   if (existingCount === 0) {
-    // Default to Account 1 (gpu0, gpu1) and Account 2 (gpu2, gpu3)
-    const initialSlots = DEFAULT_VM_SLOTS.slice(0, 4);
-    await Promise.all(
+    const initialSlots = DEFAULT_VM_SLOTS.filter((s) => s.provider === "kaggle" && s.accountAlias === "acc1")
+      .map((s) => ({ ...s, accountAlias: "personal", displayName: "Kaggle " + s.target.toUpperCase(),
+        sessionGroup: s.target.startsWith("tpu") ? "kaggle-tpu-personal" : "kaggle-personal" }));
+    await prisma.$transaction(
       initialSlots.map((slot) =>
-        prisma.vmInstance.create({
-          data: {
+        prisma.vmInstance.upsert({
+          where: { userId_target: { userId, target: slot.target } }, update: {},
+          create: {
             userId,
             target: slot.target,
             displayName: slot.displayName,

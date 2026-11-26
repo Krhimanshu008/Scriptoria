@@ -89,6 +89,8 @@ export function extractModelRefsFromGraph(graph: Record<string, unknown>): Requi
       if (field === "clip_name" && cls.toLowerCase().includes("clipvision")) {
         category = "clip_vision";
       }
+      if (field === "model_name" && cls === "UltralyticsDetectorProvider") category = "ultralytics";
+      if (field === "model_name" && cls === "SAMLoader") category = "sams";
       if (field === "model_name" && trimmed.endsWith(".gguf")) {
         category = "unet";
       }

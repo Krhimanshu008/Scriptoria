@@ -1,6 +1,16 @@
 import { prisma } from "@/lib/db/prisma";
 import type { VmInstance } from "@prisma/client";
 
+export function studioTargetForTask(task: { assignedTarget: string | null; inputParamsJson: string | null }) {
+  if (task.assignedTarget) return task.assignedTarget;
+  try {
+    const target = JSON.parse(task.inputParamsJson || "{}")?.preferredTarget;
+    return typeof target === "string" && target ? target : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface HeadlessStudioEnqueueInput {
   userId: string;
   vm: VmInstance;
@@ -57,6 +67,7 @@ export async function enqueueHeadlessBatchJobForStudio(
       batchId: batch.id,
       sequenceIndex: 0,
       sceneKey: "scene-1",
+      assignedTarget: input.vm.target,
       trackType: "VISUAL",
       workerProfile: input.workerProfile || input.vm.workerProfile || "IMAGE_CORE",
       baseCheckpoint: input.checkpoint,

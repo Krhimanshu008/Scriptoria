@@ -51,8 +51,6 @@ function VmClusterContent() {
     ok: boolean;
     detail: string;
   } | null>(null);
-  const [mirroring, setMirroring] = useState(false);
-  const [mirrorAccount, setMirrorAccount] = useState("acc1");
 
   const [connectModalAlias, setConnectModalAlias] = useState<string | null>(null);
   const [manualEmail, setManualEmail] = useState("");
@@ -109,7 +107,7 @@ function VmClusterContent() {
     staleTime: 30000,
   });
 
-  const { data: catalogData, refetch: refetchCatalog } = useQuery<{
+  const { data: catalogData } = useQuery<{
     models: CatalogModelChoice[];
   }>({
     queryKey: ["catalog-choices"],
@@ -126,36 +124,7 @@ function VmClusterContent() {
   const totalOnlineVram = onlineVms.reduce((acc, v) => acc + (v.vramTotalGb || 16), 0);
   const usedOnlineVram = onlineVms.reduce((acc, v) => acc + (v.vramUsedGb || 0), 0);
 
-  const kaggleAccounts = accountsData?.kaggleAccounts ?? [
-    {
-      accountAlias: "acc1",
-      username: "Account 1",
-      configured: false,
-      targets: ["gpu0", "gpu1"],
-      quota: null,
-    },
-    {
-      accountAlias: "acc2",
-      username: "Account 2",
-      configured: false,
-      targets: ["gpu2", "gpu3"],
-      quota: null,
-    },
-    {
-      accountAlias: "acc3",
-      username: "Account 3",
-      configured: false,
-      targets: ["gpu4", "gpu5"],
-      quota: null,
-    },
-    {
-      accountAlias: "acc4",
-      username: "Account 4",
-      configured: false,
-      targets: ["gpu6", "gpu7"],
-      quota: null,
-    },
-  ];
+  const kaggleAccounts = accountsData?.kaggleAccounts ?? [];
   const colabAccounts: ColabAccountSummary[] = accountsData?.colabAccounts ?? [
     {
       accountAlias: "acc1",
@@ -188,7 +157,6 @@ function VmClusterContent() {
   const hasAnyQuota = kaggleAccounts.some((a) => Boolean(a.quota));
 
   const catalogChoices = catalogData?.models ?? [];
-  const unbackedCount = catalogChoices.filter((m) => m.backupStatus !== "BACKED_UP").length;
   const globalIdleTimeout = settingsData?.settings.idleTimeoutMinutes ?? 15;
 
   async function handleForceProbe() {
@@ -228,26 +196,6 @@ function VmClusterContent() {
       }
     } finally {
       setTestingWebhook(false);
-    }
-  }
-
-  async function handleTriggerCpuMirror() {
-    setMirroring(true);
-    try {
-      const res = await fetch("/api/catalog/mirror", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountAlias: mirrorAccount, limit: 8 }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        toast.error(data.error || "Failed to launch 0-GPU CPU Drive Mirror");
-        return;
-      }
-      toast.success(data.message || `Queued ${data.queuedCount ?? 0} models for Drive mirror`);
-      refetchCatalog();
-    } finally {
-      setMirroring(false);
     }
   }
 
@@ -374,7 +322,7 @@ function VmClusterContent() {
         <div>
           <h1 className="text-base font-semibold text-white">GPU Compute Cluster</h1>
           <p className="text-xs text-zinc-500">
-            Kaggle Dual-T4 &amp; Colab T4 worker slots, boot profiles, and Drive model mirror.
+            Kaggle Dual-T4 &amp; Colab T4 worker slots and boot profiles.
           </p>
         </div>
 
@@ -509,56 +457,6 @@ function VmClusterContent() {
           })}
         </div>
       )}
-
-      {/* Compact 0-GPU CPU Drive Mirror Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-zinc-800 bg-[#111114] px-3.5 py-2.5">
-        <div className="flex items-center gap-2.5">
-          <HardDriveUpload className="h-4 w-4 text-zinc-400" />
-          <div className="text-xs">
-            <span className="font-medium text-zinc-200">Zero-GPU CPU Drive Mirror:</span>{" "}
-            <span className="text-zinc-400">
-              {unbackedCount > 0
-                ? `${unbackedCount} model(s) ready to mirror from HF/Civitai into 5 TB Drive`
-                : "All registered remote catalog models backed up."}
-            </span>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <select
-            value={mirrorAccount}
-            onChange={(e) => setMirrorAccount(e.target.value)}
-            className="h-7 rounded-md border border-zinc-800 bg-zinc-950 px-2 font-mono text-[11px] text-zinc-300"
-          >
-            <option value="acc1" className="bg-zinc-900">
-              acc1 (CPU)
-            </option>
-            <option value="acc2" className="bg-zinc-900">
-              acc2 (CPU)
-            </option>
-            <option value="acc3" className="bg-zinc-900">
-              acc3 (CPU)
-            </option>
-            <option value="acc4" className="bg-zinc-900">
-              acc4 (CPU)
-            </option>
-          </select>
-
-          <button
-            type="button"
-            disabled={mirroring || unbackedCount === 0}
-            onClick={handleTriggerCpuMirror}
-            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800 px-2.5 text-xs font-medium text-zinc-100 hover:bg-zinc-700 disabled:opacity-40"
-          >
-            {mirroring ? (
-              <Loader2 className="h-3 w-3 animate-spin" />
-            ) : (
-              <Cpu className="h-3 w-3" />
-            )}
-            <span>Mirror Missing (0 GPU)</span>
-          </button>
-        </div>
-      </div>
 
       {/* Collapsible Console */}
       <LiveConsole />

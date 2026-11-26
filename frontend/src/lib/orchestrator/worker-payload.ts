@@ -1,3 +1,5 @@
+import { prisma } from "@/lib/db/prisma";
+import { prepareWorkerModel } from "@/lib/catalog/worker-model";
 import type { NextRequest } from "next/server";
 import type { VmInstance } from "@prisma/client";
 import { signVmRegistrationToken } from "@/lib/auth/session";
@@ -47,24 +49,8 @@ export async function assembleWorkerRuntimePayload(
   const { userId, vm, groupVms, req, runtimeVmSecret, workerMode = "headless_safe", customDatasets = [] } =
     input;
 
-  let gdriveCred: Awaited<ReturnType<typeof getUserGDriveCredential>> = null;
-  let gdriveDecryptError: string | null = null;
-  try {
-    gdriveCred = await getUserGDriveCredential(userId, undefined, { ensureFresh: true });
-  } catch (err) {
-    gdriveDecryptError =
-      err instanceof Error ? err.message : "Failed to decrypt Google Drive credential";
-  }
-
+  const gdriveCred = await getUserGDriveCredential(userId, undefined, { ensureFresh: true }).catch(() => null);
   const isLlmProfile = isLlmWorkerProfile(vm.workerProfile);
-  if (!gdriveCred && !isLlmProfile) {
-    throw new WorkerPayloadError(
-      gdriveDecryptError
-        ? `Google Drive credential could not be decrypted (${gdriveDecryptError}). Re-save Google Drive in Settings → Vault or sync ENCRYPTION_KEY.`
-        : "Missing Google Drive credential in Settings Vault. Please add your Rclone/OAuth token first.",
-      400
-    );
-  }
 
   const sortedGroupVms = sortVmsByCanonicalTarget(groupVms);
   const groupTargets = sortedGroupVms.map((gv) => gv.target);
@@ -133,7 +119,13 @@ export async function assembleWorkerRuntimePayload(
     }
   }
 
-  const prewarmModels = Array.from(prewarmMap.values());
+  const prewarmModels = await Promise.all(Array.from(prewarmMap.values(), async (item) => {
+    const asset = await prisma.modelAsset.findFirst({ where: { userId, ...item } });
+    if (!asset) throw new WorkerPayloadError("Startup model missing from catalog: " + item.filename);
+    return prepareWorkerModel(userId, vm.provider, asset, {
+      hasDrive: Boolean(gdriveCred?.parsed.access_token || gdriveCred?.parsed.refresh_token),
+    });
+  }));
   const isTpu = profileSpec.accelerator === "tpu";
   const isKaggle = vm.provider === "kaggle";
 

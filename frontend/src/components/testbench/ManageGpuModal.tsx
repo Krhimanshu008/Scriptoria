@@ -37,7 +37,7 @@ export function ManageGpuModal({
   const [isAdding, setIsAdding] = useState(false);
 
   // Form fields for adding new account
-  const [newAlias, setNewAlias] = useState("acc3");
+  const [connectionName, setConnectionName] = useState("Personal Kaggle");
   const [newUsername, setNewUsername] = useState("");
   const [newApiKey, setNewApiKey] = useState("");
   const [gpuType, setGpuType] = useState<"dual_t4" | "single">("dual_t4");
@@ -101,8 +101,8 @@ export function ManageGpuModal({
   // Handle Adding New Account
   const handleAddAccount = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newAlias.trim()) {
-      toast.error("Account alias is required (e.g. acc3)");
+    if (!connectionName.trim()) {
+      toast.error("Enter a connection name");
       return;
     }
 
@@ -112,7 +112,8 @@ export function ManageGpuModal({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          accountAlias: newAlias.trim().toLowerCase(),
+          accountAlias: kaggleAccounts.find((a) => a.configured)?.accountAlias || gpuVms[0]?.accountAlias || "personal",
+          displayName: connectionName.trim(),
           username: newUsername.trim() || undefined,
           apiKey: newApiKey.trim() || undefined,
           gpuType,
@@ -216,7 +217,7 @@ export function ManageGpuModal({
                       <div>
                         <div className="flex items-center gap-2">
                           <span className="text-xs font-semibold text-zinc-200 uppercase">
-                            Kaggle {acc.alias}
+                            {kaggleAccounts.find((a) => a.accountAlias === acc.alias)?.displayName || acc.username || "Personal Kaggle"}
                           </span>
                           <span className="text-[10px] font-mono text-zinc-400 bg-zinc-800/90 px-1.5 py-0.5 rounded border border-zinc-700">
                             {acc.targets.join(", ")}
@@ -264,18 +265,18 @@ export function ManageGpuModal({
           <form onSubmit={handleAddAccount} className="flex-1 overflow-y-auto space-y-3.5 pr-1 text-xs">
             <div>
               <label className="block font-medium text-zinc-300 mb-1">
-                Account Alias (e.g. acc3, acc4, acc5)
+                Connection name
               </label>
               <input
                 type="text"
-                value={newAlias}
-                onChange={(e) => setNewAlias(e.target.value)}
-                placeholder="acc3"
+                value={connectionName}
+                onChange={(e) => setConnectionName(e.target.value)}
+                maxLength={80}
                 className="w-full h-8 px-2.5 rounded-md bg-zinc-900 border border-zinc-700 text-zinc-200 focus:border-amber-500 focus:outline-none"
                 required
               />
               <p className="text-[10px] text-zinc-500 mt-1">
-                acc3 will map to targets <span className="font-mono text-zinc-400">gpu4, gpu5</span> automatically.
+                GPU slots stay linked when you rename the connection.
               </p>
             </div>
 

@@ -29,40 +29,25 @@ export interface NotebookBuildConfig {
   quietStdout?: boolean;
 }
 
-export interface CpuMirrorSourceItem {
-  sourceKind?: string;
-  url: string;
-  authHeader?: string;
-  expectedSizeBytes?: number;
-  sha256?: string;
-}
-
-export interface CpuMirrorModelItem {
-  slug: string;
-  category: string;
-  subdir?: string;
-  filename: string;
-  url: string;
-  authHeader?: string;
-  expectedSizeBytes?: number;
-  sha256?: string;
-  mirrors?: CpuMirrorSourceItem[];
-}
-
-export interface CpuMirrorConfig {
-  appWebhookUrl: string;
-  registrationJwt: string;
-  gdriveTokenJson: string;
-  gdriveBaseFolder: string;
-  models: CpuMirrorModelItem[];
-}
-
 /**
  * Shared Python helper block for multi-mirror downloads (HuggingFace -> Civitai -> Direct URL)
  * using aria2c (or urllib fallback) with SHA-256 verification per mirror attempt.
  */
-function buildPythonMirrorDownloadHelper(): string {
+export function buildPythonMirrorDownloadHelper(): string {
   return `
+def _verify_download(path, expected_sha, expected_size=0):
+    size = os.path.getsize(path)
+    if size == 0 or (expected_size and size != expected_size):
+        raise ValueError("File size does not match catalog")
+    if expected_sha:
+        digest = hashlib.sha256()
+        with open(path, "rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+        if digest.hexdigest().lower() != expected_sha.lower():
+            raise ValueError("File SHA-256 does not match catalog")
+    return size
+
 def _download_with_mirrors(mirrors, tmp_dl, default_sha="", progress_cb=None):
     errors = []
     valid_mirrors = [m for m in (mirrors or []) if isinstance(m, dict) and str(m.get("url") or "").strip()]
@@ -80,17 +65,15 @@ def _download_with_mirrors(mirrors, tmp_dl, default_sha="", progress_cb=None):
         try:
             t0 = time.time()
             used_aria2 = False
-            if shutil.which("aria2c"):
+            if not auth_hdr and shutil.which("aria2c"):
                 cmd = [
                     "aria2c", "-x", "8", "-s", "8", "-k", "4M",
                     "--file-allocation=none", "--allow-overwrite=true",
                     "--auto-file-renaming=false", "--summary-interval=1",
                     "-d", os.path.dirname(tmp_dl), "-o", os.path.basename(tmp_dl),
                 ]
-                if auth_hdr:
-                    cmd.extend(["--header", f"Authorization: {auth_hdr}"])
                 cmd.append(url)
-                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 while proc.poll() is None:
                     if progress_cb and os.path.exists(tmp_dl):
                         done = os.path.getsize(tmp_dl)
@@ -102,9 +85,10 @@ def _download_with_mirrors(mirrors, tmp_dl, default_sha="", progress_cb=None):
 
             if not used_aria2:
                 headers = {"User-Agent": "Scriptoria-Fetcher/3.0"}
-                if auth_hdr:
-                    headers["Authorization"] = auth_hdr
                 req = urllib.request.Request(url, headers=headers)
+                if auth_hdr:
+                    # Signed CDN redirects do not need the provider's bearer credential.
+                    req.add_unredirected_header("Authorization", auth_hdr)
                 with urllib.request.urlopen(req, timeout=90) as resp:
                     hdr_len = int(resp.headers.get("Content-Length") or 0)
                     tot = exp_sz or hdr_len
@@ -119,17 +103,7 @@ def _download_with_mirrors(mirrors, tmp_dl, default_sha="", progress_cb=None):
                             if progress_cb:
                                 progress_cb(done, tot, max(0.1, time.time() - t0))
 
-            if sha_exp:
-                h = hashlib.sha256()
-                with open(tmp_dl, "rb") as hf:
-                    for blk in iter(lambda: hf.read(4 * 1024 * 1024), b""):
-                        h.update(blk)
-                actual_hash = h.hexdigest().lower()
-                if actual_hash != sha_exp:
-                    raise RuntimeError(f"SHA256 mismatch (expected {sha_exp[:12]}..., got {actual_hash[:12]}...)")
-
-            if not os.path.exists(tmp_dl) or os.path.getsize(tmp_dl) <= 0:
-                raise RuntimeError("Downloaded file is empty")
+            _verify_download(tmp_dl, sha_exp, exp_sz if not sha_exp else 0)
             return {"sourceKind": src_kind, "url": url, "elapsed": round(time.time() - t0, 1)}
         except Exception as merr:
             errors.append(f"[{idx+1}:{src_kind}] {merr}")
@@ -376,7 +350,7 @@ GDRIVE_BASE = ${JSON.stringify(cfg.gdriveBaseFolder.replace(/^\/+|\/+$/g, "") ||
 GDRIVE_TOKEN_RAW = ${JSON.stringify(cfg.gdriveTokenJson)}
 IDLE_TIMEOUT_SEC = ${idleSeconds}
 ENABLE_OFFLINE_SCAN = ${cfg.enableOfflineDatasetScan ? "True" : "False"}
-PREWARM_MODELS = ${JSON.stringify(prewarmModels)}
+PREWARM_MODELS = json.loads(${JSON.stringify(JSON.stringify(prewarmModels))})
 HEADLESS_MODE = ${cfg.headlessMode ? "True" : "False"}
 QUIET_STDOUT = ${cfg.quietStdout ? "True" : "False"}
 
@@ -455,6 +429,7 @@ def post_heartbeat(step, status="STARTING", telemetry=None):
     telem["needsGdriveSync"] = bool(NEEDS_GDRIVE_SYNC)
     telem["gdriveSyncedAtMs"] = GDRIVE_SYNCED_AT_MS
     telem["headlessMode"] = bool(HEADLESS_MODE)
+    telem["modelFetch"] = bool(HEADLESS_MODE)
     payload = {
         "token": REG_JWT,
         "tunnelUrl": TUNNEL_URL or "",
@@ -665,18 +640,38 @@ def _post_backup_callback(slug, status, gdrive_path="", gdrive_file_id="", size_
 ${buildPythonMirrorDownloadHelper()}
 
 FETCH_SEMAPHORE = threading.Semaphore(2)
+FETCH_PATH_LOCKS = {}
+VERIFIED_FILES = {}
 
-def _run_fetch_job(job_id, mirrors, category, subdir, filename, target_path, expected_size, sha256_hex, backup_to_gdrive, asset_slug, allow_gdrive_fallback=True):
+def _file_stamp(path):
+    try:
+        stat = os.stat(path)
+        return (stat.st_ino, stat.st_size, stat.st_mtime_ns)
+    except OSError:
+        return None
+
+def _run_fetch_job(job_id, mirrors, category, subdir, filename, target_path, expected_size, sha256_hex, backup_to_gdrive, asset_slug, allow_gdrive_fallback=True, source_error=""):
     def _upd(**kw):
         with FETCH_LOCK:
             if job_id in FETCH_JOBS:
                 FETCH_JOBS[job_id].update(kw)
 
-    tmp_dl = target_path + ".part"
-    with FETCH_SEMAPHORE:
+    tmp_dl = target_path + "." + job_id + ".part"
+    with FETCH_LOCK:
+        path_lock = FETCH_PATH_LOCKS.setdefault(target_path, threading.Lock())
+    with path_lock, FETCH_SEMAPHORE:
         try:
             globals()["LAST_ACTIVE"] = time.time()
             os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            if os.path.isfile(target_path):
+                try:
+                    size = _verify_download(target_path, sha256_hex, expected_size if not sha256_hex else 0)
+                    with FETCH_LOCK:
+                        VERIFIED_FILES[(target_path, sha256_hex, expected_size)] = _file_stamp(target_path)
+                    _upd(status="completed", percentage=100, bytesDone=size, totalBytes=size, source="cache")
+                    return
+                except ValueError:
+                    pass
             _evict_lru_models_if_needed(expected_size or 0)
             _upd(status="downloading", startedAt=time.time())
             t0 = time.time()
@@ -691,6 +686,8 @@ def _run_fetch_job(job_id, mirrors, category, subdir, filename, target_path, exp
 
             fetched_from = "http"
             try:
+                if not mirrors:
+                    raise RuntimeError(source_error or "No eligible download source")
                 res_info = _download_with_mirrors(mirrors, tmp_dl, default_sha=sha256_hex, progress_cb=_on_progress)
                 fetched_from = res_info.get("sourceKind", "http")
             except Exception as mirror_err:
@@ -703,6 +700,7 @@ def _run_fetch_job(job_id, mirrors, category, subdir, filename, target_path, exp
                         "dstFs": os.path.dirname(target_path),
                         "dstRemote": os.path.basename(tmp_dl),
                     }, max_wait=600, label=f"Drive fallback {filename}")
+                    _verify_download(tmp_dl, sha256_hex, expected_size if not sha256_hex else 0)
                     fetched_from = "gdrive"
                 else:
                     raise
@@ -710,6 +708,8 @@ def _run_fetch_job(job_id, mirrors, category, subdir, filename, target_path, exp
             os.replace(tmp_dl, target_path)
             globals()["LAST_ACTIVE"] = time.time()
             final_size = os.path.getsize(target_path)
+            with FETCH_LOCK:
+                VERIFIED_FILES[(target_path, sha256_hex, expected_size)] = _file_stamp(target_path)
             _upd(status="completed", bytesDone=final_size, totalBytes=final_size, percentage=100, speedMbps=0, etaSeconds=0, source=fetched_from)
             log_event(f"Fetch complete ({fetched_from}): {filename} ({round(final_size / (1024**3), 2)} GB) in {round(time.time() - t0, 1)}s", category="RCLONE", level="SUCCESS")
 
@@ -745,12 +745,38 @@ def _run_fetch_job(job_id, mirrors, category, subdir, filename, target_path, exp
                     os.remove(tmp_dl)
             except Exception:
                 pass
-            _upd(status="failed", error=str(fe))
+            _upd(status="failed", error=str(fe), speedMbps=0)
             log_event(f"Direct fetch failed ({filename}): {fe}", category="ERROR", level="ERROR")
 
 # -------------------------------------------------------------
 # 2. Start Sidecar (:9999) Immediately + Prepare Rclone / Caddy Config
 # -------------------------------------------------------------
+def start_model_fetch(body, job_id=None):
+    category, subdir, dest = _safe_model_target(body.get("category"), body.get("filename"), body.get("subdir"))
+    if not dest:
+        raise ValueError("Invalid catalog destination")
+    filename = os.path.basename(dest)
+    mirrors = list(body.get("mirrors") or [])
+    if not mirrors and body.get("url"):
+        mirrors = [dict(body, sourceKind="direct")]
+    job_id = job_id or str(uuid.uuid4())
+    with FETCH_LOCK:
+        if job_id in FETCH_JOBS:
+            return job_id
+        key = (dest, body.get("sha256") or "", int(body.get("expectedSizeBytes") or 0))
+        stamp = _file_stamp(dest)
+        if stamp and VERIFIED_FILES.get(key) == stamp:
+            FETCH_JOBS[job_id] = dict(jobId=job_id, filename=filename, category=category, status="completed",
+                bytesDone=stamp[1], totalBytes=stamp[1], percentage=100, speedMbps=0, source="cache")
+            return job_id
+        FETCH_JOBS[job_id] = dict(jobId=job_id, filename=filename, category=category, status="queued",
+            bytesDone=0, totalBytes=body.get("expectedSizeBytes") or 0, percentage=0, speedMbps=0, error=None)
+    threading.Thread(target=_run_fetch_job, args=(job_id, mirrors, category, subdir, filename, dest,
+        int(body.get("expectedSizeBytes") or 0), body.get("sha256") or "",
+        bool(body.get("backupToGdrive") and RCLONE_READY), body.get("assetSlug") or "",
+        bool(body.get("allowGdriveFallback")), body.get("sourceError") or ""), daemon=True).start()
+    return job_id
+
 class SidecarHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         return
@@ -925,63 +951,18 @@ class SidecarHandler(BaseHTTPRequestHandler):
         if self.path == "/fetch-url":
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length) or b"{}")
-            url = str(body.get("url") or "").strip()
-            mirrors = body.get("mirrors") if isinstance(body.get("mirrors"), list) else []
-            raw_cat = str(body.get("category") or "checkpoints")
-            subdir = str(body.get("subdir") or "")
-            filename = str(body.get("filename") or "").strip()
-            expected_size = int(body.get("expectedSizeBytes") or 0)
-            sha256_hex = str(body.get("sha256") or "").strip()
-            auth_header = str(body.get("authHeader") or "").strip()
-            backup_to_gdrive = bool(body.get("backupToGdrive", True))
-            allow_gdrive_fallback = bool(body.get("allowGdriveFallback", True))
-            asset_slug = str(body.get("assetSlug") or "").strip()
-
-            if not mirrors and url:
-                mirrors = [{"url": url, "authHeader": auth_header, "expectedSizeBytes": expected_size, "sha256": sha256_hex, "sourceKind": "direct"}]
-
-            clean_cat, rel_sub, target_path = _safe_model_target(raw_cat, filename, subdir)
-            if (not mirrors and not allow_gdrive_fallback) or not target_path:
-                self.send_response(400); self.end_headers(); return
-
-            if os.path.exists(target_path):
-                sz = os.path.getsize(target_path)
-                if sz > 0 and (expected_size == 0 or sz == expected_size):
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/json")
-                    self.end_headers()
-                    self.wfile.write(json.dumps({
-                        "status": "skipped",
-                        "alreadyCached": True,
-                        "sizeBytes": sz,
-                        "path": target_path,
-                    }).encode())
-                    return
-
-            job_id = str(uuid.uuid4())[:12]
-            with FETCH_LOCK:
-                FETCH_JOBS[job_id] = {
-                    "jobId": job_id,
-                    "filename": filename,
-                    "category": clean_cat,
-                    "status": "queued",
-                    "bytesDone": 0,
-                    "totalBytes": expected_size,
-                    "percentage": 1,
-                    "speedMbps": 0,
-                    "etaSeconds": None,
-                    "backupStatus": "PENDING" if backup_to_gdrive else "NONE",
-                    "error": None,
-                }
-            threading.Thread(
-                target=_run_fetch_job,
-                args=(job_id, mirrors, clean_cat, rel_sub, filename, target_path, expected_size, sha256_hex, backup_to_gdrive, asset_slug, allow_gdrive_fallback),
-                daemon=True,
-            ).start()
+            try:
+                job_id = start_model_fetch(body)
+            except ValueError as err:
+                self.send_error(400, str(err))
+                return
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"status": "started", "jobId": job_id, "filename": filename, "category": clean_cat}).encode())
+            with FETCH_LOCK:
+                cached = FETCH_JOBS[job_id].get("source") == "cache"
+            self.wfile.write(json.dumps({"status": "skipped" if cached else "started",
+                "alreadyCached": cached, "jobId": job_id}).encode())
             return
 
         if self.path == "/sync-output":
@@ -1156,27 +1137,6 @@ def setup_rclone():
             rc_post("rc/noop", {}, timeout=2)
             RCLONE_READY = True
             log_event(f"Rclone RC (:5572) ready in {round(time.time() - t0, 1)}s (HTTP/1.1 multi-thread)", category="RCLONE", level="SUCCESS")
-            for pw in PREWARM_MODELS:
-                pw_cat = pw.get("category", "checkpoints")
-                pw_file = pw.get("filename", "")
-                if pw_file:
-                    try:
-                        rc_post("operations/copyfile", {
-                            "srcFs": f"gdrive:{GDRIVE_BASE}/models/{pw_cat}",
-                            "srcRemote": pw_file,
-                            "dstFs": f"/tmp/models/{pw_cat}",
-                            "dstRemote": pw_file,
-                            "_async": True,
-                            "_config": {
-                                "SizeOnly": True, "Inplace": False,
-                                "MultiThreadCutoff": "64M", "MultiThreadChunkSize": "128M",
-                                "MultiThreadStreams": ${rcloneStreams}, "MultiThreadWriteBufferSize": "1M",
-                                "BufferSize": "${rcloneBuffer}", "DisableHTTP2": True,
-                            },
-                        }, timeout=5)
-                        log_event(f"Pre-warming {pw_file} while ComfyUI boots...", category="RCLONE")
-                    except Exception:
-                        pass
             return True
         except Exception:
             time.sleep(0.2)
@@ -1295,6 +1255,8 @@ threading.Thread(target=setup_aria2, daemon=True).start()
 uv_thread = threading.Thread(target=setup_uv, daemon=True)
 uv_thread.start()
 rclone_ok = setup_rclone()
+for startup_model in PREWARM_MODELS:
+    start_model_fetch(startup_model)
 
 # -------------------------------------------------------------
 # 3B. Dedicated LLM Nodes (LLM_QWEN_VLM, LLM_QWEN_TEXT_TURBO, LLM_QWEN_MOE_35B & LLM_QWEN_FAST_8B on Dual-T4)
@@ -2407,6 +2369,27 @@ def _worker_api_post(path, body_dict, timeout=20):
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8") or "{}")
 
+def poll_model_downloads():
+    tracked = set()
+    while True:
+        try:
+            with FETCH_LOCK:
+                reports = [dict(FETCH_JOBS[job_id], id=job_id) for job_id in tracked]
+            for report in reports:
+                if report["status"] == "queued":
+                    report["status"] = "downloading"
+            reply = _worker_api_post("/api/vm/model-fetch", {"reports": reports, "driveReady": bool(RCLONE_READY)}, timeout=30)
+            tracked.difference_update(reply.get("acknowledged", []))
+            command = reply.get("command")
+            if command:
+                tracked.add(start_model_fetch(command["request"], command["id"]))
+        except urllib.error.HTTPError as err:
+            if err.code in (401, 410):
+                return
+        except (OSError, ValueError, KeyError) as err:
+            log_event(f"Model download poll interrupted: {type(err).__name__}", category="NETWORK", level="WARN")
+        time.sleep(5)
+
 def _extract_graph_models(graph, req_models):
     items = []
     seen = set()
@@ -2475,6 +2458,13 @@ def _extract_graph_models(graph, req_models):
                         seen.add(pair); items.append(pair)
     return items
 
+def renew_task_lease(worker_target, task_id, done):
+    while not done.wait(60):
+        try:
+            _worker_api_post("/api/v1/workers/heartbeat", {"workerId": worker_target, "taskId": task_id}, timeout=15)
+        except Exception:
+            pass
+
 def _headless_worker_loop(worker_target, port):
     import base64
     log_event(f"Headless polling worker ready for {worker_target} (127.0.0.1:{port})", category="COMFYUI")
@@ -2490,7 +2480,7 @@ def _headless_worker_loop(worker_target, port):
     while True:
         task = None
         try:
-            res = _worker_api_post("/api/v1/workers/claim", {"workerId": worker_target, "capabilities": [PROFILE_ID]}, timeout=15)
+            res = _worker_api_post("/api/v1/workers/claim", {"workerId": worker_target, "capabilities": [PROFILE_ID], "driveReady": bool(RCLONE_READY)}, timeout=45)
             task = res.get("task")
         except Exception:
             time.sleep(5)
@@ -2501,53 +2491,41 @@ def _headless_worker_loop(worker_target, port):
             continue
 
         task_id = task["id"]
+        done = threading.Event()
+        threading.Thread(target=renew_task_lease, args=(worker_target, task_id, done), daemon=True).start()
         globals()["LAST_ACTIVE"] = time.time()
         try:
+            if task.get("modelPreparationError"):
+                raise RuntimeError(task["modelPreparationError"])
             graph = task.get("compiledGraph")
             if not isinstance(graph, dict):
                 raise RuntimeError("Claimed task missing compiledGraph JSON")
 
-            # Ensure required models: Google Drive first, then safe HF mirror fallback
-            mirror_by_key = {}
-            for _rm in (task.get("requiredModels") or []):
-                if isinstance(_rm, dict) and _rm.get("filename"):
-                    _mr = _rm.get("mirrors") or []
-                    mirror_by_key[(_rm.get("category") or "", _rm["filename"])] = _mr
-                    mirror_by_key[("", _rm["filename"])] = _mr
-
-            drive_ok = bool(RCLONE_READY)
-            for cat, fn in _extract_graph_models(graph, task.get("requiredModels")):
-                sub_dir = "bbox" if cat == "ultralytics" else ""
-                clean_cat, _, dst_path = _safe_model_target(cat, fn, sub_dir)
-                if not dst_path or os.path.exists(dst_path):
+            catalog = {(m["category"], m["filename"]): m for m in (task.get("requiredModels") or [])
+                       if isinstance(m, dict) and m.get("filename")}
+            staged = set()
+            for cat, name in _extract_graph_models(graph, task.get("requiredModels")):
+                filename = os.path.basename(name)
+                item = catalog.get((cat, filename))
+                if not item:
+                    # Some Comfy loaders alias unet and diffusion_models.
+                    item = next((m for m in catalog.values() if m["filename"] == filename
+                        and {cat, m["category"]} <= {"unet", "diffusion_models"}), None)
+                if not item:
+                    raise RuntimeError(f"Add {cat}/{name} to the task's catalog dependencies.")
+                key = (item["category"], item.get("subdir", ""), filename)
+                if key in staged:
                     continue
-                os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-                remote_dir = f"{GDRIVE_BASE}/models/{clean_cat}" + (f"/{sub_dir}" if sub_dir else "")
-                got_model = False
-                if drive_ok:
-                    try:
-                        log_event(f"[{worker_target}] Streaming {fn} from Drive...", category="RCLONE")
-                        rc_copy_async({
-                            "srcFs": f"gdrive:{remote_dir}",
-                            "srcRemote": fn,
-                            "dstFs": os.path.dirname(dst_path),
-                            "dstRemote": fn,
-                        }, max_wait=600, label=f"Drive {fn}")
-                        got_model = os.path.exists(dst_path) and os.path.getsize(dst_path) > 0
-                    except Exception as d_err:
-                        log_event(f"[{worker_target}] Drive unavailable for {fn}: {str(d_err)[:140]}", category="RCLONE", level="WARN")
-                        if "accessNotConfigured" in str(d_err) or "403" in str(d_err):
-                            drive_ok = False
-                if not got_model:
-                    mirrors = mirror_by_key.get((cat, fn)) or mirror_by_key.get((clean_cat, fn)) or mirror_by_key.get(("", fn)) or []
-                    if not mirrors:
-                        raise RuntimeError(f"Model {fn} unavailable in Drive and no HF mirror found.")
-                    tmp_part = dst_path + ".part"
-                    with FETCH_SEMAPHORE:
-                        log_event(f"[{worker_target}] Fetching {fn} via HF mirror fallback...", category="RCLONE")
-                        _download_with_mirrors(mirrors, tmp_part)
-                        os.replace(tmp_part, dst_path)
-                        log_event(f"[{worker_target}] Cached {fn} via mirror fallback.", category="RCLONE", level="SUCCESS")
+                staged.add(key)
+                job_id = start_model_fetch(item)
+                while True:
+                    with FETCH_LOCK:
+                        job = dict(FETCH_JOBS[job_id])
+                    if job["status"] == "completed":
+                        break
+                    if job["status"] == "failed":
+                        raise RuntimeError(job.get("error") or f"Model download failed: {name}")
+                    time.sleep(1)
 
             # Stage any inline base64 data:image LoadImage inputs into COMFY_DIR/input
             in_dir = os.path.join(COMFY_DIR, "input")
@@ -2632,7 +2610,10 @@ def _headless_worker_loop(worker_target, port):
                                 "gdrivePath": f"{remote_out}/{fn}" if file_id else "",
                                 "previewUrl": f"/api/outputs/{file_id}" if file_id else b64_preview,
                             })
+                    log_event(f"[{worker_target}] Workflow executed with staged models: {', '.join(k[2] for k in sorted(staged))}", category="COMFYUI", level="SUCCESS")
                     break
+            else:
+                raise RuntimeError("Timed out waiting for ComfyUI workflow completion.")
 
             _worker_api_post("/api/v1/workers/complete", {
                 "taskId": task_id,
@@ -2650,8 +2631,11 @@ def _headless_worker_loop(worker_target, port):
                 }, timeout=15)
             except Exception:
                 pass
+        finally:
+            done.set()
 
 if HEADLESS_MODE:
+    threading.Thread(target=poll_model_downloads, daemon=True).start()
     for _w_target, _w_port in zip(TARGETS[:len(active_ports)], active_ports):
         threading.Thread(target=_headless_worker_loop, args=(_w_target, _w_port), daemon=True).start()
 
@@ -2803,124 +2787,3 @@ export function buildColabNotebookJson(cfg: NotebookBuildConfig) {
   const pyCode = buildUnifiedNotebookPythonCode({ ...cfg, provider: "colab" });
   return wrapColabNotebookDocument(cfg.gpuTargets[0] || "gcgpu", pyCode);
 }
-
-/**
- * Generates a zero-GPU-quota CPU Kaggle worker script that fetches catalog models
- * directly from HuggingFace / Civitai / URLs and mirrors them into the user's 5 TB Google Drive.
- */
-export function buildCpuMirrorNotebookPythonCode(cfg: CpuMirrorConfig): string {
-  return `import os, sys, re, time, json, hashlib, shutil, zipfile, threading, subprocess, urllib.request, urllib.parse, urllib.error
-
-APP_URL = ${JSON.stringify(cfg.appWebhookUrl.replace(/\/$/, ""))}
-REG_JWT = ${JSON.stringify(cfg.registrationJwt)}
-GDRIVE_BASE = ${JSON.stringify(cfg.gdriveBaseFolder.replace(/^\/+|\/+$/g, "") || "Scriptoria")}
-GDRIVE_TOKEN_RAW = ${JSON.stringify(cfg.gdriveTokenJson)}
-MODELS = ${JSON.stringify(cfg.models)}
-
-os.makedirs("/tmp/mirror", exist_ok=True)
-
-RCLONE_READY = False
-RCLONE_LOCK = threading.Lock()
-GDRIVE_CFG = {}
-GDRIVE_CLIENT_ID = ""
-GDRIVE_CLIENT_SECRET = ""
-GDRIVE_TOKEN_EXPIRY_EPOCH = 0.0
-GDRIVE_SYNCED_AT_MS = 0
-NEEDS_GDRIVE_SYNC = False
-
-def log_event(msg, category="MIRROR", level="INFO"):
-    print(f"[{category}] {msg}", flush=True)
-
-${buildPythonRcloneHelpers()}
-${buildPythonMirrorDownloadHelper()}
-
-def post_cb(slug, status, gdrive_path="", gdrive_file_id="", size_bytes=None, error_msg=""):
-    try:
-        req = urllib.request.Request(
-            f"{APP_URL}/api/catalog/backup-callback",
-            data=json.dumps({
-                "token": REG_JWT,
-                "slug": slug,
-                "status": status,
-                "gdrivePath": gdrive_path,
-                "gdriveFileId": gdrive_file_id,
-                "sizeBytes": size_bytes,
-                "error": error_msg,
-            }).encode("utf-8"),
-            headers={"Content-Type": "application/json", "User-Agent": "Scriptoria-Mirror/1.0"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=15) as r:
-            r.read()
-    except Exception as e:
-        print(f"[CALLBACK] {slug}: {e}", flush=True)
-
-_init_gdrive_state(GDRIVE_TOKEN_RAW)
-refresh_gdrive_oauth_in_vm(force=True)
-with RCLONE_LOCK:
-    _write_rclone_conf_unlocked(push_rc=False)
-
-if not os.path.exists("/usr/local/bin/rclone"):
-    subprocess.run(["curl", "-sSLf", "https://downloads.rclone.org/rclone-current-linux-amd64.zip", "-o", "/tmp/rclone.zip"], check=True)
-    with zipfile.ZipFile("/tmp/rclone.zip", "r") as zf:
-        for m in zf.namelist():
-            if m.endswith("/rclone"):
-                with zf.open(m) as src, open("/usr/local/bin/rclone", "wb") as dst:
-                    dst.write(src.read())
-                break
-    os.chmod("/usr/local/bin/rclone", 0o755)
-    os.remove("/tmp/rclone.zip")
-
-subprocess.run(["bash", "-lc", "apt-get update -qq && apt-get install -y -qq aria2 >/dev/null 2>&1"], check=False)
-
-for item in MODELS:
-    slug = item["slug"]
-    raw_cat = str(item["category"]).strip().lower()
-    cat = {"kokoro": "tts", "mmaudio": "audio_sfx"}.get(raw_cat, raw_cat)
-    sub = item.get("subdir") or ""
-    fname = item["filename"]
-    url = item.get("url") or ""
-    auth_hdr = item.get("authHeader") or ""
-    sha_expected = (item.get("sha256") or "").lower()
-    mirrors = item.get("mirrors") if isinstance(item.get("mirrors"), list) else []
-    if not mirrors and url:
-        mirrors = [{"url": url, "authHeader": auth_hdr, "expectedSizeBytes": item.get("expectedSizeBytes") or 0, "sha256": sha_expected, "sourceKind": "direct"}]
-    remote_dir = f"{GDRIVE_BASE}/models/{cat}" + (f"/{sub}" if sub else "")
-    remote_path = f"{remote_dir}/{fname}"
-    local_path = os.path.join("/tmp/mirror", fname)
-    try:
-        refresh_gdrive_oauth_in_vm(force=False)
-        chk = subprocess.run(["/usr/local/bin/rclone", "lsjson", "--config", "/tmp/rclone.conf", f"gdrive:{remote_path}"], capture_output=True, text=True)
-        if chk.returncode == 0 and chk.stdout.strip().startswith("[") and len(json.loads(chk.stdout)) > 0:
-            info = json.loads(chk.stdout)[0]
-            post_cb(slug, "BACKED_UP", remote_path, info.get("ID", ""), info.get("Size"))
-            print(f"[MIRROR] Already in Drive: {remote_path}", flush=True)
-            continue
-
-        post_cb(slug, "BACKING_UP", remote_path)
-        print(f"[MIRROR] Downloading {fname} via {len(mirrors)} mirror(s)...", flush=True)
-        _download_with_mirrors(mirrors, local_path, default_sha=sha_expected)
-
-        sz = os.path.getsize(local_path)
-        subprocess.run(["/usr/local/bin/rclone", "mkdir", "--config", "/tmp/rclone.conf", f"gdrive:{remote_dir}"], check=False)
-        subprocess.run(["/usr/local/bin/rclone", "copyto", "--config", "/tmp/rclone.conf", "--disable-http2", "--drive-chunk-size=64M", local_path, f"gdrive:{remote_path}"], check=True)
-        ls_res = subprocess.run(["/usr/local/bin/rclone", "lsjson", "--config", "/tmp/rclone.conf", f"gdrive:{remote_path}"], capture_output=True, text=True)
-        fid = ""
-        if ls_res.returncode == 0 and ls_res.stdout.strip().startswith("["):
-            arr = json.loads(ls_res.stdout)
-            if arr: fid = arr[0].get("ID", "")
-        post_cb(slug, "BACKED_UP", remote_path, fid, sz)
-        print(f"[MIRROR] Backed up {fname} -> gdrive:{remote_path}", flush=True)
-    except Exception as err:
-        post_cb(slug, "FAILED", remote_path, "", None, str(err))
-        print(f"[MIRROR] Failed {fname}: {err}", flush=True)
-    finally:
-        if os.path.exists(local_path):
-            try:
-                os.remove(local_path)
-            except Exception:
-                pass
-print("[MIRROR] Batch mirror finished.", flush=True)
-`;
-}
-

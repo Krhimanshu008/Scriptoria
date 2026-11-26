@@ -60,6 +60,7 @@ interface CatalogModelItem {
   compatibleBase: string;
   requiredCustomNodes: string[];
   recommendedConfig: { notes?: string; steps?: number; cfg?: number; sampler?: string } | null;
+  reviewedSha256: string | null;
   hfRepoId: string | null;
   hfFilePath: string | null;
   civitaiModelId: string | null;
@@ -86,7 +87,6 @@ export default function ModelsPage() {
   const [category, setCategory] = useState("checkpoints");
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [fetchingSlug, setFetchingSlug] = useState<string | null>(null);
-  const [mirroring, setMirroring] = useState(false);
 
   const [showAddForm, setShowAddForm] = useState(false);
   const [inspectUrl, setInspectUrl] = useState("");
@@ -196,6 +196,27 @@ export default function ModelsPage() {
     );
   });
 
+  async function reviewFile(model: CatalogModelItem) {
+    setFetchingSlug(model.slug);
+    try {
+      const request = async (action: string, sha256?: string) => {
+        const response = await fetch("/api/catalog", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action, modelId: model.id, sha256 }) });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Unable to review this file.");
+        return data;
+      };
+      const file = await request("review_file");
+      if (!window.confirm(["Approve this file for your Kaggle projects after reviewing its content and license?",
+        model.displayName, file.location, "SHA-256 " + file.sha256].join("\n\n"))) return;
+      await request("confirm_review", file.sha256);
+      await refetchCatalog();
+      toast.success("File approved for Kaggle");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "File review failed");
+    } finally { setFetchingSlug(null); }
+  }
+
   async function handleFastEnsure(model: CatalogModelItem, preferSource: "auto" | "gdrive" = "auto") {
     setFetchingSlug(model.slug);
     try {
@@ -223,7 +244,7 @@ export default function ModelsPage() {
 
       if (body.transport === "sidecar-fetch") {
         toast.success(
-          `Direct ${String(body.source || "HF/Civitai").toUpperCase()} fetch started for ${model.filename} (+ 5TB Drive backup)`
+          `Model download queued for ${model.filename} on ${target}`
         );
         startStream({
           target,
@@ -247,31 +268,6 @@ export default function ModelsPage() {
       toast.error("Network error initiating model fetch");
     } finally {
       setFetchingSlug(null);
-    }
-  }
-
-  async function handleCpuMirrorBatch() {
-    setMirroring(true);
-    try {
-      const res = await fetch("/api/catalog/mirror", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountAlias: "acc1", limit: 6 }),
-      });
-      const body = await res.json();
-      if (!res.ok) {
-        toast.error(body.error || "Failed to launch CPU mirror job");
-        return;
-      }
-      if (body.queuedCount === 0) {
-        toast.success(body.message || "All remote catalog models are already backed up.");
-      } else {
-        toast.success(
-          `Queued 0-GPU-Quota Kaggle CPU mirror for ${body.queuedCount} model(s) -> 5TB Drive!`
-        );
-      }
-    } finally {
-      setMirroring(false);
     }
   }
 
@@ -424,7 +420,7 @@ export default function ModelsPage() {
           </h1>
           <p className="text-xs text-zinc-400">
             Fetch Image, Audio &amp; Video models directly from HuggingFace / Civitai into VM{" "}
-            <code>/tmp/models</code> with automatic 5 TB Google Drive backup.
+            <code>/tmp/models</code> with optional Google Drive backup.
           </p>
         </div>
 
@@ -453,21 +449,7 @@ export default function ModelsPage() {
             ))}
           </select>
 
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleCpuMirrorBatch}
-            disabled={mirroring}
-            title="Use Kaggle CPU worker (0 GPU quota) to mirror unbacked-up models from HF/Civitai into your 5TB Drive"
-            className="border-emerald-500/30 bg-emerald-500/10 text-xs text-emerald-200 hover:bg-emerald-500/20"
-          >
-            {mirroring ? (
-              <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Cpu className="mr-1.5 h-3.5 w-3.5" />
-            )}
-            0-GPU Mirror to 5TB Drive
-          </Button>
+
 
           <Button
             size="sm"
@@ -766,9 +748,14 @@ export default function ModelsPage() {
                     </div>
 
                     <div className="flex shrink-0 items-center gap-2">
+                      {activeVm?.provider === "kaggle" && hasDirect && !m.reviewedSha256 && (
+                        <Button size="sm" variant="outline" disabled={fetchingSlug === m.slug} onClick={() => reviewFile(m)}>
+                          Review for Kaggle
+                        </Button>
+                      )}
                       <Button
                         size="sm"
-                        disabled={!isTargetOnline || fetchingSlug === m.slug || (!hasDirect && m.backupStatus !== "BACKED_UP")}
+                        disabled={(activeVm?.provider === "kaggle" && !m.reviewedSha256) || !isTargetOnline || fetchingSlug === m.slug || (!hasDirect && m.backupStatus !== "BACKED_UP")}
                         onClick={() => handleFastEnsure(m, "auto")}
                         className="bg-indigo-600 text-xs text-white hover:bg-indigo-500 disabled:opacity-40"
                       >

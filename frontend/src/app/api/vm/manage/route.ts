@@ -1,3 +1,4 @@
+import { checkKaggleConnection } from "@/lib/orchestrator/kaggle-connection";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getAuthUser } from "@/lib/auth/session";
@@ -49,9 +50,11 @@ export async function POST(req: NextRequest) {
 
     const cleanAlias = (accountAlias || "").trim().toLowerCase();
     if (!cleanAlias) {
-      return NextResponse.json({ error: "Account alias is required (e.g. acc3, acc5)." }, { status: 400 });
+      return NextResponse.json({ error: "Connection ID is required." }, { status: 400 });
     }
 
+    const conflict = await checkKaggleConnection(user.userId, cleanAlias, username);
+    if (conflict) return NextResponse.json({ error: conflict }, { status: 409 });
     // 1. If username and apiKey provided, save encrypted credential
     if (username && apiKey) {
       await saveUserCredential(user.userId, {
@@ -59,44 +62,30 @@ export async function POST(req: NextRequest) {
         accountAlias: cleanAlias,
         username: username.trim(),
         rawSecret: apiKey.trim(),
+        metadata: { displayName: String(body.displayName || username).trim().slice(0, 80) },
       });
     }
 
-    // 2. Determine target names for this account
-    // Check existing targets to avoid collisions
-    const existing = await prisma.vmInstance.findMany({
-      where: { userId: user.userId },
-      select: { target: true },
-    });
-    const existingSet = new Set(existing.map((e) => e.target));
-
-    // Try finding standard targets for alias (acc1 -> gpu0,1; acc2 -> gpu2,3; acc3 -> gpu4,5; etc.)
-    const aliasMatch = cleanAlias.match(/\d+/);
-    const aliasNum = aliasMatch ? parseInt(aliasMatch[0], 10) : null;
-
-    let target1: string;
-    let target2: string | null = null;
-
-    if (aliasNum !== null && aliasNum >= 1) {
-      const baseIdx = (aliasNum - 1) * 2;
-      target1 = `gpu${baseIdx}`;
-      target2 = gpuType === "dual_t4" ? `gpu${baseIdx + 1}` : null;
-    } else {
-      // Find lowest available gpu number
-      let i = 0;
-      while (existingSet.has(`gpu${i}`)) i++;
-      target1 = `gpu${i}`;
-      if (gpuType === "dual_t4") {
-        let j = i + 1;
-        while (existingSet.has(`gpu${j}`)) j++;
-        target2 = `gpu${j}`;
-      }
-    }
+    // Device IDs belong to the connection, independently of its editable label.
+    const existing = await prisma.vmInstance.findMany({ where: { userId: user.userId },
+      select: { target: true, provider: true, accountAlias: true } });
+    const owned = existing.filter((v) => v.provider === "kaggle" && v.accountAlias === cleanAlias && /^gpu\d+$/.test(v.target))
+      .sort((a, b) => Number(a.target.slice(3)) - Number(b.target.slice(3)));
+    const used = new Set(existing.map((v) => v.target));
+    const nextSlot = () => {
+      let index = 0;
+      while (used.has("gpu" + index)) index++;
+      const target = "gpu" + index;
+      used.add(target);
+      return target;
+    };
+    const target1 = owned[0]?.target ?? nextSlot();
+    const target2 = gpuType === "dual_t4" ? owned[1]?.target ?? nextSlot() : null;
 
     const targetsToCreate = [
       {
         target: target1,
-        displayName: `Kaggle GPU ${target1.replace("gpu", "")} (${cleanAlias.toUpperCase()})`,
+        displayName: `Kaggle GPU ${target1.replace("gpu", "")}`,
         internalPort: 8188,
       },
     ];
@@ -104,7 +93,7 @@ export async function POST(req: NextRequest) {
     if (target2) {
       targetsToCreate.push({
         target: target2,
-        displayName: `Kaggle GPU ${target2.replace("gpu", "")} (${cleanAlias.toUpperCase()})`,
+        displayName: `Kaggle GPU ${target2.replace("gpu", "")}`,
         internalPort: 8189,
       });
     }
@@ -173,7 +162,7 @@ export async function DELETE(req: NextRequest) {
     const vmsToDelete = await prisma.vmInstance.findMany({
       where: {
         userId: user.userId,
-        ...(accountAlias ? { accountAlias } : { target: target! }),
+        ...(accountAlias ? { accountAlias, provider: "kaggle" } : { target: target! }),
       },
     });
 
@@ -212,7 +201,7 @@ export async function DELETE(req: NextRequest) {
     const deleteResult = await prisma.vmInstance.deleteMany({
       where: {
         userId: user.userId,
-        ...(accountAlias ? { accountAlias } : { target: target! }),
+        ...(accountAlias ? { accountAlias, provider: "kaggle" } : { target: target! }),
       },
     });
 
@@ -222,6 +211,7 @@ export async function DELETE(req: NextRequest) {
         where: {
           userId: user.userId,
           accountAlias,
+          provider: { in: ["kaggle", "kaggle-meta", "kaggle-tpu-meta"] },
         },
       });
     }

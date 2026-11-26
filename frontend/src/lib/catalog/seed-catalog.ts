@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db/prisma";
 
-export const CATALOG_VERSION = 20261102;
+export const CATALOG_VERSION = 20261126;
 
 export type QuantFormat = "FP16" | "BF16" | "INT8_CONVROT" | "W4A8" | "GGUF" | "FP8";
 
@@ -22,6 +22,7 @@ export interface SeedModelSpec {
   t4Notes?: string;
   licenseNote?: string;
   deviceSplitRecommended?: boolean;
+  sha256?: string;
   hfRepoId?: string;
   hfFilePath?: string;
   civitaiModelId?: string;
@@ -1275,7 +1276,7 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     modality: "IMAGE",
     category: "controlnet",
     filename: "xinsir-controlnet-union-sdxl-1.0-promax.safetensors",
-    sizeBytes: Math.round(2.4 * GB),
+    sizeBytes: 2513342408,
     vramEstimateGb: 2.6,
     compatibleBase: "SDXL",
     requiredCustomNodes: ["comfyui_controlnet_aux"],
@@ -1286,7 +1287,7 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     },
     hfRepoId: "xinsir/controlnet-union-sdxl-1.0",
     hfFilePath: "diffusion_pytorch_model_promax.safetensors",
-    civitaiModelId: "559665",
+    sha256: "9fae2e50cb431bfcbe05822b59ec2228df545ef27f711dea8949e9f4ed9f7cdc",
   },
   {
     slug: "clip-vit-h-14-laion2b",
@@ -2028,6 +2029,8 @@ export async function ensureUserCatalogSeeded(userId: string): Promise<void> {
         gdrivePath: true,
         hfRepoId: true,
         hfFilePath: true,
+        civitaiModelId: true,
+        sha256: true,
         recommendedConfigJson: true,
       },
     }),
@@ -2074,6 +2077,7 @@ export async function ensureUserCatalogSeeded(userId: string): Promise<void> {
           compatibleBase: m.compatibleBase,
           requiredCustomNodesJson: reqNodesJson,
           recommendedConfigJson: mergedConfigJson,
+          ...(m.sha256 ? { sha256: m.sha256 } : {}),
           hfRepoId: m.hfRepoId ?? null,
           hfFilePath: m.hfFilePath ?? null,
           civitaiModelId: m.civitaiModelId ?? null,
@@ -2086,6 +2090,8 @@ export async function ensureUserCatalogSeeded(userId: string): Promise<void> {
     } else if (existing.isSeeded) {
       const safeToUpdateFilename = existing.backupStatus === "NONE" && !existing.gdrivePath;
       const needsSync =
+        (m.sha256 && existing.sha256 !== m.sha256) ||
+        existing.civitaiModelId !== (m.civitaiModelId ?? null) ||
         existing.hfRepoId !== (m.hfRepoId ?? null) ||
         existing.hfFilePath !== (m.hfFilePath ?? null) ||
         existing.recommendedConfigJson !== mergedConfigJson;
@@ -2100,6 +2106,7 @@ export async function ensureUserCatalogSeeded(userId: string): Promise<void> {
             vramEstimateGb: m.vramEstimateGb,
             requiredCustomNodesJson: reqNodesJson,
             recommendedConfigJson: mergedConfigJson,
+            ...(m.sha256 ? { sha256: m.sha256 } : {}),
             hfRepoId: m.hfRepoId ?? null,
             hfFilePath: m.hfFilePath ?? null,
             civitaiModelId: m.civitaiModelId ?? null,

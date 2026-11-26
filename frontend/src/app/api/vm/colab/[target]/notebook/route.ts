@@ -63,13 +63,7 @@ export async function GET(
     }
 
     // Legacy standalone mode (only if explicitly requested with ?standalone=true)
-    const gdriveCred = await getUserGDriveCredential(user.userId, undefined, { ensureFresh: true });
-    if (!gdriveCred) {
-      return NextResponse.json(
-        { error: "Configure Google Drive in Settings Vault before generating a Colab notebook." },
-        { status: 400 }
-      );
-    }
+    const gdriveCred = await getUserGDriveCredential(user.userId, undefined, { ensureFresh: true }).catch(() => null);
 
     const vmSecret = vm.vmSecret || generateVmSecret();
     if (!vm.vmSecret) {
@@ -91,8 +85,8 @@ export async function GET(
       appWebhookUrl,
       registrationJwt,
       vmSecret,
-      gdriveTokenJson: gdriveCred.rawTokenJson,
-      gdriveBaseFolder: gdriveCred.baseFolder,
+      gdriveTokenJson: gdriveCred?.rawTokenJson || "",
+      gdriveBaseFolder: gdriveCred?.baseFolder || "Scriptoria",
       gpuTargets: [vm.target],
       accountAlias: vm.accountAlias,
     };

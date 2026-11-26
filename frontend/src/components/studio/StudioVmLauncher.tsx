@@ -41,6 +41,7 @@ export interface PrewarmModelRef {
 
 export interface EnrichedKaggleAccount {
   alias: string;
+  displayName: string;
   username: string | null;
   configured: boolean;
   primaryTarget: string;
@@ -120,6 +121,7 @@ export function useKaggleClusterAccounts(vms: PublicVmInstance[]) {
 
       return {
         alias: acc.accountAlias,
+        displayName: acc.displayName || acc.username || "Personal Kaggle",
         username: acc.username,
         configured: acc.configured,
         primaryTarget,
@@ -223,7 +225,7 @@ export async function bootKaggleAccount(params: {
   }
 
   toast.success(
-    `Booting Kaggle ${alias.toUpperCase()} (${workerProfile || currentProfile || "IMAGE_CORE"}) -> ${primaryTarget.toUpperCase()}!`
+    `Booting Kaggle worker (${workerProfile || currentProfile || "IMAGE_CORE"}) -> ${primaryTarget.toUpperCase()}!`
   );
   return true;
 }
@@ -312,37 +314,6 @@ export function KaggleVmLauncherDialog({
     }
   }
 
-  async function handleBootAllOffline() {
-    const offlineList = configuredAccounts.filter(
-      (a) => !a.isOnline && !a.isStarting && !a.quotaError
-    );
-    if (offlineList.length === 0) {
-      toast.info("All healthy configured Kaggle accounts are already starting or online.");
-      return;
-    }
-    setBusyAlias("__ALL__");
-    try {
-      for (const acc of offlineList) {
-        const targetProfile =
-          profileOverrides[acc.alias] ||
-          (matchWorkflowProfile && desiredProfile ? desiredProfile : acc.activeProfile);
-        await bootKaggleAccount({
-          primaryTarget: acc.primaryTarget,
-          alias: acc.alias,
-          workerProfile: targetProfile,
-          currentProfile: acc.activeProfile,
-          prewarmModels: attachPrewarm ? prewarmModels : undefined,
-        });
-      }
-      if (onTargetSelected && offlineList[0]) {
-        onTargetSelected(offlineList[0].primaryTarget);
-      }
-      await refreshCluster();
-    } finally {
-      setBusyAlias(null);
-    }
-  }
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="glass-popover max-w-2xl border-white/15 text-zinc-100">
@@ -406,26 +377,11 @@ export function KaggleVmLauncherDialog({
                 ) : (
                   <Zap className="mr-1.5 h-3.5 w-3.5" />
                 )}
-                Boot Best ({bestOfflineAccount.alias.toUpperCase()})
+                Boot Best ({bestOfflineAccount.displayName})
               </Button>
             )}
-            {configuredAccounts.filter((a) => !a.isOnline && !a.isStarting && !a.quotaError).length > 1 && (
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                disabled={Boolean(busyAlias)}
-                onClick={handleBootAllOffline}
-                className="h-8 border-cyan-500/40 bg-cyan-500/10 text-xs text-cyan-200 hover:bg-cyan-500/20"
-              >
-                {busyAlias === "__ALL__" ? (
-                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Power className="mr-1.5 h-3.5 w-3.5" />
-                )}
-                Boot All {configuredAccounts.filter((a) => !a.isOnline && !a.isStarting && !a.quotaError).length} Healthy
-              </Button>
-            )}
+
+
           </div>
         </div>
 
@@ -491,7 +447,7 @@ export function KaggleVmLauncherDialog({
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="rounded bg-cyan-500/15 px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase text-cyan-300">
-                        {acc.alias}
+                        {acc.displayName}
                       </span>
                       <span className="font-medium text-white">{acc.username}</span>
                       <span className="font-mono text-[10px] text-zinc-400">
@@ -621,7 +577,7 @@ export function KaggleVmLauncherDialog({
                           ) : (
                             <Power className="mr-1 h-3.5 w-3.5" />
                           )}
-                          Boot {acc.alias.toUpperCase()}
+                          Boot {acc.displayName}
                         </Button>
                       )}
                     </div>

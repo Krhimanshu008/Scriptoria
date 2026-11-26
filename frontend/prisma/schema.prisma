@@ -80,6 +80,7 @@ model VmInstance {
   updatedAt     DateTime  @updatedAt
 
   jobs       Job[]
+  modelFetches ModelFetch[]
   systemLogs SystemLog[]
 
   @@unique([userId, target])
@@ -150,6 +151,7 @@ model ModelAsset {
   civitaiModelId          String?
   civitaiVersionId        String?
   directUrl               String?
+  reviewedSha256          String?
   sha256                  String?
   gdrivePath              String?
   gdriveFileId            String?
@@ -161,6 +163,21 @@ model ModelAsset {
 
   @@unique([userId, slug])
   @@index([userId, modality, category])
+}
+
+model ModelFetch {
+  id           String   @id @default(cuid())
+  vmId         String
+  vm           VmInstance @relation(fields: [vmId], references: [id], onDelete: Cascade)
+  sessionKey   String
+  assetId      String
+  sourceMode   String
+  backup       Boolean
+  status       String   @default("queued")
+  progressJson String?
+  createdAt    DateTime @default(now())
+
+  @@index([vmId, sessionKey, status, createdAt])
 }
 
 model WorkflowTemplate {

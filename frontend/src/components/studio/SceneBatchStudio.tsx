@@ -141,6 +141,18 @@ export function SceneBatchStudio({ subView }: { subView: "scenes" | "batch" }) {
     projects.find((p) => p.id === selectedProjectId) || projects[0] || null;
   const batches = batchData?.batches ?? [];
 
+  async function renameProject() {
+    if (!activeProject) return;
+    const title = window.prompt("Project name", activeProject.title)?.trim();
+    if (!title || title === activeProject.title) return;
+    try {
+      const res = await fetch("/api/projects", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "rename_project", projectId: activeProject.id, title }) });
+      if (!res.ok) throw new Error((await res.json()).error || "Rename failed");
+      await refetchProjects();
+    } catch (error) { toast.error(error instanceof Error ? error.message : "Rename failed"); }
+  }
+
   async function handleCreateProject(e: React.FormEvent) {
     e.preventDefault();
     if (!newProjectTitle.trim()) return;
@@ -356,6 +368,7 @@ export function SceneBatchStudio({ subView }: { subView: "scenes" | "batch" }) {
               )}
             </select>
 
+            {activeProject && <Button type="button" variant="outline" onClick={renameProject}>Rename project</Button>}
             {activeProject && (
               <Button
                 type="button"

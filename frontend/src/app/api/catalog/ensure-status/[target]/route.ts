@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getAuthUser } from "@/lib/auth/session";
+import { fetchSessionKey } from "@/lib/catalog/worker-model";
 import { VmGateway } from "@/lib/orchestrator/vm-gateway";
 
 export async function GET(
@@ -22,6 +23,17 @@ export async function GET(
     const vm = await prisma.vmInstance.findUnique({
       where: { userId_target: { userId: user.userId, target } },
     });
+    if (vm && fetchJobId.startsWith("worker-")) {
+      const job = await prisma.modelFetch.findFirst({ where: { id: fetchJobId.slice(7), vmId: vm.id } });
+      if (!job) return NextResponse.json({ error: "Unknown model download." }, { status: 404 });
+      const progress = JSON.parse(job.progressJson || "{}");
+      const ended = !vm.vmSecret || job.sessionKey !== fetchSessionKey(vm.vmSecret) || vm.status === "OFFLINE"
+        || !vm.lastHeartbeat || Date.now() - vm.lastHeartbeat.getTime() > 120_000;
+      const completed = job.status === "completed";
+      const failed = job.status === "failed" || (!completed && ended);
+      return NextResponse.json({ ...progress, status: failed ? "failed" : job.status, completed, failed,
+        active: !completed && !failed, error: progress.error || (failed ? "Worker session ended." : null) });
+    }
     if (!vm || vm.status !== "ONLINE" || !vm.publicUrl) {
       return NextResponse.json({ status: "offline", active: false, completed: false });
     }

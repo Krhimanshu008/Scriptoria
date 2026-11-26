@@ -70,12 +70,7 @@ export default function TpuClusterPage() {
   const activeHbmGb = onlineTpuVms.length * 128;
   const usedHbmGb = onlineTpuVms.reduce((acc, v) => acc + (v.vramUsedGb || 0), 0);
 
-  const tpuAccounts = accountsData?.tpuAccounts ?? [
-    { accountAlias: "acc1", username: "Account 1", configured: false, target: "tpu0", quota: null },
-    { accountAlias: "acc2", username: "Account 2", configured: false, target: "tpu1", quota: null },
-    { accountAlias: "acc3", username: "Account 3", configured: false, target: "tpu2", quota: null },
-    { accountAlias: "acc4", username: "Account 4", configured: false, target: "tpu3", quota: null },
-  ];
+  const tpuAccounts = accountsData?.tpuAccounts ?? [];
 
   const combinedTpuQuotaSec = tpuAccounts.reduce(
     (acc, a) => acc + (a.quota?.tpuRemainingSeconds ?? 0),

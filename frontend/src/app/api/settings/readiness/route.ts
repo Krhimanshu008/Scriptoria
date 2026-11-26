@@ -47,10 +47,7 @@ export async function GET(req: NextRequest) {
       );
 
     const gdrive = findCred("gdrive");
-    const kaggle1 = findCred("kaggle", "acc1");
-    const kaggle2 = findCred("kaggle", "acc2");
-    const kaggle3 = findCred("kaggle", "acc3");
-    const kaggle4 = findCred("kaggle", "acc4");
+    const kaggle = findCred("kaggle");
     const colab1 = findCred("colab", "acc1");
     const colab2 = findCred("colab", "acc2");
     const hf = findCred("huggingface");
@@ -72,13 +69,13 @@ export async function GET(req: NextRequest) {
         getGoogleOAuthClientConfig(gdriveCred?.parsed).clientSecret
     );
 
-    const hasPrimaryCompute = Boolean(kaggle1 || kaggle2 || kaggle3 || colab1 || colab2);
+    const hasPrimaryCompute = Boolean(kaggle || colab1 || colab2);
 
     const items: ReadinessItem[] = [
       {
         id: "gdrive",
-        title: "Google Drive OAuth (5 TB Storage)",
-        tier: "REQUIRED",
+        title: "Google Drive backup and storage",
+        tier: "OPTIONAL",
         provider: "gdrive",
         accountAlias: gdrive?.accountAlias || "default",
         configured: Boolean(gdrive),
@@ -100,44 +97,14 @@ export async function GET(req: NextRequest) {
         health: gdriveHealth,
       },
       {
-        id: "kaggle-acc1",
-        title: "Kaggle Account (acc1 · Dual T4 + CPU Mirror)",
+        id: "kaggle",
+        title: "Personal Kaggle connection",
         tier: "REQUIRED",
         provider: "kaggle",
-        accountAlias: "acc1",
-        configured: Boolean(kaggle1),
-        usedFor: "Boots gpu0 + gpu1 (2×T4 32 GB) and runs 0-GPU CPU Drive Mirror jobs.",
-        hint: kaggle1?.username ? `@${kaggle1.username}` : "Add KGAT_ or API key",
-      },
-      {
-        id: "kaggle-acc2",
-        title: "Kaggle Account (acc2 · Secondary Dual T4)",
-        tier: "OPTIONAL",
-        provider: "kaggle",
-        accountAlias: "acc2",
-        configured: Boolean(kaggle2),
-        usedFor: "Adds +30h/week Dual-T4 capacity on gpu2 + gpu3.",
-        hint: kaggle2?.username ? `@${kaggle2.username}` : "Optional second Kaggle account",
-      },
-      {
-        id: "kaggle-acc3",
-        title: "Kaggle Account (acc3 · Tertiary Dual T4)",
-        tier: "OPTIONAL",
-        provider: "kaggle",
-        accountAlias: "acc3",
-        configured: Boolean(kaggle3),
-        usedFor: "Adds +30h/week Dual-T4 capacity on gpu4 + gpu5.",
-        hint: kaggle3?.username ? `@${kaggle3.username}` : "Optional third Kaggle account",
-      },
-      {
-        id: "kaggle-acc4",
-        title: "Kaggle Account (acc4 · Quaternary Dual T4)",
-        tier: "OPTIONAL",
-        provider: "kaggle",
-        accountAlias: "acc4",
-        configured: Boolean(kaggle4),
-        usedFor: "Adds +30h/week Dual-T4 capacity on gpu6 + gpu7.",
-        hint: kaggle4?.username ? `@${kaggle4.username}` : "Optional fourth Kaggle account",
+        accountAlias: kaggle?.accountAlias || "personal",
+        configured: Boolean(kaggle),
+        usedFor: "Runs project notebooks on the owner's GPU or TPU.",
+        hint: kaggle?.username ? "@" + kaggle.username : "Connect your Kaggle account",
       },
       {
         id: "colab-acc1",
@@ -203,7 +170,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       items,
       summary: {
-        coreReady: Boolean(gdrive && hasPrimaryCompute && webhook.mode !== "unreachable"),
+        coreReady: Boolean(hasPrimaryCompute && webhook.mode !== "unreachable"),
         agenticReady: llmCreds.length > 0,
         configuredCount: items.filter((i) => i.configured).length,
         totalCount: items.length,

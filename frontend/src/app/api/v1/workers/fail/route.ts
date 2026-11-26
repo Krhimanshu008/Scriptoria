@@ -17,6 +17,9 @@ export async function POST(req: NextRequest) {
     const errorMessage = String(body.errorMessage || "Task execution failed");
     const retryEligible = body.retryEligible !== false;
 
+    if (auth.worker && !auth.worker.targets.includes(workerId)) {
+      return NextResponse.json({ error: "Target outside worker session." }, { status: 403 });
+    }
     if (!taskId) {
       return NextResponse.json({ error: "taskId is required" }, { status: 400 });
     }
@@ -24,6 +27,8 @@ export async function POST(req: NextRequest) {
     const task = await prisma.batchTask.findFirst({
       where: {
         id: taskId,
+        assignedTarget: workerId,
+        status: "PROCESSING",
         batch: { userId: auth.userId },
       },
       include: {
@@ -41,7 +46,7 @@ export async function POST(req: NextRequest) {
     if (retryEligible && currentAttempts < maxAttempts) {
       // Re-queue task for another worker to attempt
       await prisma.batchTask.update({
-        where: { id: taskId },
+        where: { id: taskId, assignedTarget: workerId, status: "PROCESSING" },
         data: {
           status: "PENDING",
           assignedTarget: null,
@@ -61,7 +66,7 @@ export async function POST(req: NextRequest) {
 
     // Permanently fail task
     await prisma.batchTask.update({
-      where: { id: taskId },
+      where: { id: taskId, assignedTarget: workerId, status: "PROCESSING" },
       data: {
         status: "FAILED",
         assignedTarget: workerId,

@@ -1,3 +1,4 @@
+import { kaggleDisplayName } from "@/lib/orchestrator/kaggle-connection";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getAuthUser, ensureUserVmSlots } from "@/lib/auth/session";
@@ -12,6 +13,7 @@ import {
 
 export interface KaggleAccountSummary {
   accountAlias: string;
+  displayName?: string;
   username: string | null;
   configured: boolean;
   targets: string[];
@@ -23,6 +25,7 @@ export interface KaggleAccountSummary {
 
 export interface TpuAccountSummary {
   accountAlias: string;
+  displayName?: string;
   username: string | null;
   configured: boolean;
   target: string;
@@ -70,21 +73,23 @@ export async function GET(req: NextRequest) {
           userId: user.userId,
           provider: "kaggle",
         },
-        select: { accountAlias: true },
+        select: { accountAlias: true, username: true, metadataJson: true },
       }),
     ]);
 
     const vmAliases = vms
       .filter((v) => v.provider === "kaggle")
       .map((v) => v.accountAlias);
-    const defaultAliases = ["acc1", "acc2", "acc3", "acc4"];
+    const configuredAliases = kaggleCreds.map((c) => c.accountAlias);
     const kaggleAliases = Array.from(
-      new Set([...defaultAliases, ...kaggleCreds.map((c) => c.accountAlias), ...vmAliases])
+      new Set(configuredAliases.length ? configuredAliases : vmAliases.slice(0, 1))
     )
       .filter(Boolean)
       .sort();
     const kaggleAccounts: KaggleAccountSummary[] = await Promise.all(
       kaggleAliases.map(async (alias) => {
+        const connection = kaggleCreds.find((c) => c.accountAlias === alias);
+        const displayName = kaggleDisplayName(connection?.metadataJson, connection?.username);
         const allTargets = vms
           .filter((v) => v.provider === "kaggle" && v.accountAlias === alias)
           .map((v) => v.target)
@@ -99,6 +104,7 @@ export async function GET(req: NextRequest) {
         } catch (err) {
           return {
             accountAlias: alias,
+            displayName,
             username: null,
             configured: false,
             targets,
@@ -114,6 +120,7 @@ export async function GET(req: NextRequest) {
         if (!cred || !cred.username) {
           return {
             accountAlias: alias,
+            displayName,
             username: null,
             configured: false,
             targets,
@@ -123,12 +130,18 @@ export async function GET(req: NextRequest) {
           };
         }
 
+        if (configuredAliases.length > 1) return {
+          accountAlias: alias, displayName, username: cred.username, configured: true,
+          targets, gpuTargets, tpuTargets, quota: null,
+          quotaError: "Multiple connections in this workspace. Launches are paused for ownership review.",
+        };
         const cacheKey = `${cred.username}:${cred.authType}`;
         const cached = quotaCache.get(cacheKey);
         const now = Date.now();
         if (cached && now - cached.cachedAt < QUOTA_CACHE_TTL_MS) {
           return {
             accountAlias: alias,
+            displayName,
             username: cred.username,
             configured: true,
             targets,
@@ -147,6 +160,7 @@ export async function GET(req: NextRequest) {
           quotaCache.set(cacheKey, { quota, cachedAt: Date.now() });
           return {
             accountAlias: alias,
+            displayName,
             username: cred.username,
             configured: true,
             targets,
@@ -157,6 +171,7 @@ export async function GET(req: NextRequest) {
         } catch (err) {
           return {
             accountAlias: alias,
+            displayName,
             username: cred.username,
             configured: true,
             targets,
@@ -180,6 +195,7 @@ export async function GET(req: NextRequest) {
           : "tpu3";
       return {
         accountAlias: acc.accountAlias,
+        displayName: acc.displayName,
         username: acc.username,
         configured: acc.configured,
         target: acc.tpuTargets?.[0] || defaultTpuTarget,

@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db/prisma";
-import { resolveAllModelDownloadSources } from "@/lib/catalog/source-resolver";
+import { prepareWorkerModel, fetchSessionKey } from "./worker-model";
+import { ensureDbSchemaReady } from "@/lib/db/ensure-schema";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
 import { GDriveModelStreamer } from "@/lib/orchestrator/rclone-client";
 import { VmGateway } from "@/lib/orchestrator/vm-gateway";
@@ -36,7 +37,8 @@ export async function ensureModelReadyOnVm(params: {
   const { userId, vm, slug, modelId, filename, category, backupToGdrive = true, preferSource = "auto" } =
     params;
 
-  if (vm.status !== "ONLINE" || !vm.publicUrl) {
+  await ensureDbSchemaReady();
+  if (vm.status !== "ONLINE") {
     throw new Error(`VM ${vm.target} is not online.`);
   }
 
@@ -74,6 +76,7 @@ export async function ensureModelReadyOnVm(params: {
       civitaiVersionId: null,
       directUrl: null,
       sha256: null,
+      reviewedSha256: null,
       gdrivePath: null,
       gdriveFileId: null,
       backupStatus: "BACKED_UP",
@@ -91,91 +94,71 @@ export async function ensureModelReadyOnVm(params: {
   const gdriveCred = await getUserGDriveCredential(userId).catch(() => null);
   const rcloneCategory = asset.subdir ? `${asset.category}/${asset.subdir}` : asset.category;
 
-  if (preferSource !== "gdrive" && (asset.id || asset.hfRepoId || asset.civitaiModelId || asset.civitaiVersionId || asset.directUrl)) {
-    const rawSources = await resolveAllModelDownloadSources(userId, asset);
-    // Keep Kaggle IPs away from CivitAI URLs by default; prefer HF / GDrive unless explicit "direct" is requested.
-    const sources =
-      vm.provider === "kaggle" && preferSource !== "direct"
-        ? rawSources.filter((s) => s.sourceKind !== "civitai")
-        : rawSources;
-    if (sources.length > 0) {
-      const primary = sources[0];
-      try {
-        const shouldBackup = Boolean(asset.id && backupToGdrive && asset.backupStatus !== "BACKED_UP");
-        const fetchRes = await VmGateway.callJson<{
-          status: string;
-          alreadyCached?: boolean;
-          jobId?: string;
-        }>(vm, "/fetch-url", {
-          method: "POST",
-          targetPort: vm.useRouteLess ? 9999 : vm.internalPort,
-          body: JSON.stringify({
-            url: primary.url,
-            mirrors: sources.map((s) => ({
-              url: s.url,
-              authHeader: s.authHeader || "",
-              expectedSizeBytes: s.expectedSizeBytes || 0,
-              sha256: s.sha256 || "",
-              sourceKind: s.sourceKind,
-            })),
-            allowGdriveFallback: Boolean(gdriveCred && preferSource !== "direct"),
-            category: asset.category,
-            subdir: asset.subdir,
-            filename: asset.filename,
-            expectedSizeBytes: primary.expectedSizeBytes || 0,
-            sha256: primary.sha256 || "",
-            authHeader: primary.authHeader || "",
-            backupToGdrive: shouldBackup,
-            assetSlug: asset.slug,
-          }),
-          timeoutMs: 15000,
-        });
+  if (vm.provider === "kaggle" && !asset.reviewedSha256) {
+    throw new Error("Review this file for Kaggle in the Models catalog before use.");
+  }
+  const hasDrive = Boolean(gdriveCred?.parsed.access_token || gdriveCred?.parsed.refresh_token);
+  if (!vm.publicUrl) {
+    const boot = JSON.parse(vm.bootMetadataJson || "{}");
+    if (!vm.vmSecret || !boot.modelFetch || !vm.lastHeartbeat || Date.now() - vm.lastHeartbeat.getTime() > 120_000) {
+      throw new Error("This headless worker is unavailable for model fetches. Start an updated worker.");
+    }
+    if (!asset.id) throw new Error("Add this file to the Models catalog first.");
+    if (preferSource === "gdrive" && !hasDrive) throw new Error("Drive is disconnected.");
+    const job = await prisma.modelFetch.create({ data: {
+      vmId: vm.id, sessionKey: fetchSessionKey(vm.vmSecret), assetId: asset.id,
+      sourceMode: preferSource, backup: backupToGdrive && hasDrive,
+    } });
+    return { status: "started", transport: "sidecar-fetch", source: "worker", fetchJobId: "worker-" + job.id,
+      file: asset.filename, category: asset.category, target: vm.target };
+  }
+  if (preferSource !== "gdrive" || vm.provider === "kaggle") {
+    const request = await prepareWorkerModel(userId, vm.provider, asset, { hasDrive, sourceMode: preferSource, backup: backupToGdrive });
+    const sources = request.mirrors;
+    const primary = sources[0];
+    try {
+      const fetchRes = await VmGateway.callJson<{
+        status: string; alreadyCached?: boolean; jobId?: string;
+      }>(vm, "/fetch-url", {
+        method: "POST", targetPort: vm.useRouteLess ? 9999 : vm.internalPort,
+        body: JSON.stringify(request), timeoutMs: 15000,
+      });
 
-        if (fetchRes.alreadyCached) {
-          return {
-            status: "skipped",
-            alreadyCached: true,
-            source: primary.sourceKind,
-            file: asset.filename,
-            category: asset.category,
-            target: vm.target,
-          };
-        }
-
-        if (shouldBackup && asset.id) {
-          await prisma.modelAsset.update({
-            where: { id: asset.id },
-            data: { backupStatus: "BACKING_UP" },
-          });
-        }
-
-        const sourceTrail = sources.map((s) => s.sourceKind.toUpperCase()).join(" -> ");
-        await appendSystemLog({
-          userId,
-          vmInstanceId: vm.id,
-          category: "RCLONE",
-          level: "INFO",
-          message: `Multi-mirror fetch [${sourceTrail}${gdriveCred && preferSource !== "direct" ? " -> GDRIVE" : ""}] started for ${asset.filename} -> ${vm.target}${shouldBackup ? " (+ 5TB Drive backup)" : ""}.`,
-        });
-
+      if (fetchRes.alreadyCached) {
         return {
-          status: "started",
-          transport: "sidecar-fetch",
-          source: primary.sourceKind,
-          fetchJobId: fetchRes.jobId ?? null,
+          status: "skipped",
+          alreadyCached: true,
+          source: primary?.sourceKind || "gdrive",
           file: asset.filename,
           category: asset.category,
           target: vm.target,
         };
-      } catch (directErr) {
-        if (preferSource === "direct") {
-          throw directErr;
-        }
       }
+
+      const sourceTrail = sources.map((s) => s.sourceKind.toUpperCase()).join(" -> ");
+      await appendSystemLog({
+        userId,
+        vmInstanceId: vm.id,
+        category: "RCLONE",
+        level: "INFO",
+        message: `Multi-mirror fetch [${sourceTrail}${gdriveCred && preferSource !== "direct" ? " -> GDRIVE" : ""}] started for ${asset.filename} -> ${vm.target}${request.backupToGdrive ? " (+ 5TB Drive backup)" : ""}.`,
+      });
+
+      return {
+        status: "started",
+        transport: "sidecar-fetch",
+        source: primary?.sourceKind || "gdrive",
+        fetchJobId: fetchRes.jobId ?? null,
+        file: asset.filename,
+        category: asset.category,
+        target: vm.target,
+      };
+    } catch (directErr) {
+      if (vm.provider === "kaggle" || preferSource === "direct" || !hasDrive) throw directErr;
     }
   }
 
-  if (!gdriveCred) {
+  if (!hasDrive || !gdriveCred) {
     throw new Error("No direct download source succeeded and Google Drive credential is missing.");
   }
 

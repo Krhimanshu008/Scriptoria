@@ -40,6 +40,7 @@ export interface ApiAuthContext {
   authKind: "session" | "api_token";
   scopes: string[];
   webhookSecret?: string | null;
+  worker?: { provider: string; targets: string[] };
 }
 
 /**
@@ -92,14 +93,21 @@ export async function getWorkerAuthContext(req: NextRequest): Promise<ApiAuthCon
   if (auth.toLowerCase().startsWith("vmtoken ")) {
     const vmJwt = auth.slice(8).trim();
     const verified = verifyVmRegistrationToken(vmJwt);
-    if (verified?.userId) {
+    if (!verified?.userId || !verified.vmSecret) return null;
+    const rows = await prisma.vmInstance.findMany({ where: {
+      userId: verified.userId, sessionGroup: verified.sessionGroup, target: { in: verified.targets },
+      vmSecret: verified.vmSecret, status: { in: ["STARTING", "ONLINE", "BUSY"] },
+    }, select: { provider: true, target: true } });
+    if (rows.length) {
       return {
+        worker: { provider: rows[0].provider, targets: rows.map((vm) => vm.target) },
         userId: verified.userId,
         email: `vm-${verified.sessionGroup}`,
         authKind: "api_token",
         scopes: ["batch", "worker"],
       };
     }
+    return null;
   }
   return getAuthContext(req);
 }

@@ -31,38 +31,17 @@ interface HfTreeNode {
   lfs?: { oid?: string; size?: number };
 }
 
-async function lookupHfRepoFile(
-  repoId: string,
-  desiredPathOrName: string,
-  hfToken?: string
-): Promise<{ path: string; size?: number; sha256?: string } | null> {
-  const headers: Record<string, string> = { Accept: "application/json" };
-  if (hfToken) headers["Authorization"] = `Bearer ${hfToken}`;
-
-  const cleanWanted = desiredPathOrName.replace(/^\/+/, "");
-  const wantedBase = cleanWanted.split("/").pop()?.toLowerCase() || "";
-
-  const treeUrl = `https://huggingface.co/api/models/${repoId}/tree/main?recursive=true`;
-  const res = await fetch(treeUrl, {
-    headers,
-    cache: "no-store",
-    signal: AbortSignal.timeout(8000),
-  });
-  if (!res.ok) return null;
-
-  const entries = (await res.json()) as HfTreeNode[];
-  const files = entries.filter((e) => e.type === "file" && e.path);
-
-  const exact = files.find((f) => f.path?.toLowerCase() === cleanWanted.toLowerCase());
-  const byName =
-    exact || files.find((f) => f.path?.split("/").pop()?.toLowerCase() === wantedBase);
-
-  if (!byName?.path) return null;
-  return {
-    path: byName.path,
-    size: byName.lfs?.size ?? byName.size,
-    sha256: byName.lfs?.oid,
-  };
+function parseHfFileUrl(value?: string | null) {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (url.origin !== "https://huggingface.co") return null;
+    const match = url.pathname.match(/^\/([\w.-]+\/[\w.-]+)\/(?:resolve|blob|raw)\/([^/]+)\/(.+)$/);
+    if (!match) return null;
+    return { repo: match[1], revision: decodeURIComponent(match[2]), path: decodeURIComponent(match[3]) };
+  } catch {
+    return null;
+  }
 }
 
 interface CivitaiFileMeta {
@@ -81,11 +60,7 @@ function selectBestCivitaiFile(
   if (!files || files.length === 0) return undefined;
   const wanted = (desiredFilename || "").trim().toLowerCase();
   if (wanted) {
-    const exact = files.find((f) => f.name?.toLowerCase() === wanted);
-    if (exact) return exact;
-    const stem = wanted.replace(/\.(safetensors|ckpt|gguf|pth|pt|bin|onnx)$/i, "");
-    const byStem = files.find((f) => f.name?.toLowerCase().includes(stem));
-    if (byStem) return byStem;
+    return files.find((file) => file.name?.toLowerCase() === wanted);
   }
   return (
     files.find((f) => f.primary) ||
@@ -130,97 +105,67 @@ export async function resolveAllModelDownloadSources(
     sources.push(src);
   };
 
-  if (asset.hfRepoId) {
-    const targetPath = (asset.hfFilePath || asset.filename).replace(/^\/+/, "");
-    const resolved = await lookupHfRepoFile(asset.hfRepoId, targetPath, hfToken).catch(() => null);
-    const finalPath = resolved?.path || targetPath;
-    const url = `https://huggingface.co/${asset.hfRepoId}/resolve/main/${finalPath
-      .split("/")
-      .map(encodeURIComponent)
-      .join("/")}`;
-
-    pushSource({
-      sourceKind: "huggingface",
-      url,
-      filename: asset.filename,
-      expectedSizeBytes: resolved?.size ?? (asset.sizeBytes || undefined),
-      sha256: resolved?.sha256 ?? (asset.sha256 || undefined),
-      authHeader: hfToken ? `Bearer ${hfToken}` : undefined,
-    });
-  }
-
-  if (asset.civitaiVersionId) {
-    let expectedSize = asset.sizeBytes || undefined;
-    let sha = asset.sha256 || undefined;
-    let dlBase = `https://civitai.com/api/download/models/${encodeURIComponent(
-      asset.civitaiVersionId
-    )}`;
-
-    if (!expectedSize || !sha) {
-      const verRes = await fetch(
-        `https://civitai.com/api/v1/model-versions/${encodeURIComponent(asset.civitaiVersionId)}`,
-        {
-          headers: civitaiApiHeaders,
-          cache: "no-store",
-          signal: AbortSignal.timeout(5000),
-        }
-      ).catch(() => null);
-      if (verRes?.ok) {
-        const ver = (await verRes.json()) as { files?: CivitaiFileMeta[] };
-        const file = selectBestCivitaiFile(ver.files, asset.filename);
-        if (file?.downloadUrl) dlBase = file.downloadUrl;
-        if (!expectedSize && file?.sizeKB) expectedSize = Math.round(file.sizeKB * 1024);
-        if (!sha && file?.hashes?.SHA256) sha = file.hashes.SHA256.toLowerCase();
-      }
-    }
-
-    const sep = dlBase.includes("?") ? "&" : "?";
-    const url = civitaiKey ? `${dlBase}${sep}token=${encodeURIComponent(civitaiKey)}` : dlBase;
-    pushSource({
-      sourceKind: "civitai",
-      url,
-      filename: asset.filename,
-      expectedSizeBytes: expectedSize,
-      sha256: sha,
-    });
-  } else if (asset.civitaiModelId) {
-    const metaRes = await fetch(
-      `https://civitai.com/api/v1/models/${encodeURIComponent(asset.civitaiModelId)}`,
-      {
-        headers: civitaiApiHeaders,
-        cache: "no-store",
-        signal: AbortSignal.timeout(8000),
-      }
-    ).catch(() => null);
-    if (metaRes?.ok) {
-      const data = (await metaRes.json()) as {
-        modelVersions?: Array<{
-          id?: number;
-          files?: CivitaiFileMeta[];
-        }>;
-      };
-      const ver = data.modelVersions?.[0];
-      const file = selectBestCivitaiFile(ver?.files, asset.filename);
-      const dlBase =
-        file?.downloadUrl ||
-        (ver?.id ? `https://civitai.com/api/download/models/${ver.id}` : null);
-      if (dlBase) {
-        const sep = dlBase.includes("?") ? "&" : "?";
-        const url = civitaiKey ? `${dlBase}${sep}token=${encodeURIComponent(civitaiKey)}` : dlBase;
-        pushSource({
-          sourceKind: "civitai",
-          url,
-          filename: asset.filename || file?.name || `civitai_${asset.civitaiModelId}.safetensors`,
-          expectedSizeBytes:
-            (file?.sizeKB ? Math.round(file.sizeKB * 1024) : undefined) ??
-            (asset.sizeBytes || undefined),
-          sha256: file?.hashes?.SHA256?.toLowerCase() ?? (asset.sha256 || undefined),
+  const errors: string[] = [];
+  const pinnedHash = asset.sha256?.toLowerCase() || undefined;
+  if (asset.hfRepoId && /^[\w.-]+\/[\w.-]+$/.test(asset.hfRepoId)) {
+    const path = (asset.hfFilePath || asset.filename).split("/").map(encodeURIComponent).join("/");
+    const base = `https://huggingface.co/${asset.hfRepoId}/resolve/`;
+    const headers = hfToken ? { Authorization: `Bearer ${hfToken}` } : undefined;
+    const imported = parseHfFileUrl(asset.directUrl);
+    const requestedRevision = imported?.repo === asset.hfRepoId && imported.path === (asset.hfFilePath || asset.filename)
+      ? encodeURIComponent(imported.revision) : "main";
+    const info = await fetch(`${base}${requestedRevision}/${path}`, {
+      method: "HEAD", headers, redirect: "manual", cache: "no-store", signal: AbortSignal.timeout(8000),
+    }).catch(() => null);
+    if (info && info.status >= 200 && info.status < 400) {
+      const etag = (info.headers.get("x-linked-etag") || info.headers.get("etag") || "").replace(/"/g, "").toLowerCase();
+      const remoteHash = /^[a-f0-9]{64}$/.test(etag) ? etag : undefined;
+      const revision = info.headers.get("x-repo-commit");
+      if (pinnedHash && remoteHash && pinnedHash !== remoteHash) {
+        errors.push("Hugging Face file differs from the catalog checksum");
+      } else if (!pinnedHash && !remoteHash) {
+        errors.push("Hugging Face file has no verifiable SHA-256");
+      } else {
+        pushSource({ sourceKind: "huggingface", filename: asset.filename,
+          url: `${base}${revision && /^[a-f0-9]{40}$/.test(revision) ? revision : requestedRevision}/${path}`,
+          authHeader: headers?.Authorization, sha256: pinnedHash || remoteHash,
+          expectedSizeBytes: Number(info.headers.get("x-linked-size") || (info.ok && info.headers.get("content-length"))) || undefined,
         });
       }
+    } else {
+      errors.push(`Hugging Face file lookup: ${info?.status ?? "network error"}`);
     }
   }
 
-  if (asset.directUrl) {
+  if (asset.civitaiVersionId || asset.civitaiModelId) {
+    const version = Boolean(asset.civitaiVersionId);
+    const id = encodeURIComponent((asset.civitaiVersionId || asset.civitaiModelId)!);
+    const res = await fetch(`https://civitai.com/api/v1/${version ? "model-versions" : "models"}/${id}`, {
+      headers: civitaiApiHeaders, cache: "no-store", signal: AbortSignal.timeout(8000),
+    }).catch(() => null);
+    if (res?.ok) {
+      type Version = { files?: CivitaiFileMeta[] };
+      const data = await res.json() as Version & { modelVersions?: Version[] };
+      const versions = version ? [data] : (data.modelVersions || []);
+      const files = versions.flatMap((v) => v.files || []);
+      const expectedHash = pinnedHash || sources[0]?.sha256;
+      const file = expectedHash
+        ? files.find((f) => f.hashes?.SHA256?.toLowerCase() === expectedHash)
+        : selectBestCivitaiFile(files, asset.filename);
+      const url = file?.downloadUrl;
+      const sha = file?.hashes?.SHA256?.toLowerCase();
+      if (url && /^https:\/\/civitai\.com\/api\/download\/models\/\d+([?]|$)/.test(url) && sha && /^[a-f0-9]{64}$/.test(sha)) {
+        pushSource({ sourceKind: "civitai", url, filename: asset.filename, sha256: sha,
+          authHeader: civitaiKey ? `Bearer ${civitaiKey}` : undefined });
+      } else {
+        errors.push(`Civitai has no matching verified file for ${asset.filename}`);
+      }
+    } else {
+      errors.push(`Civitai metadata lookup: ${res?.status ?? "network error"}`);
+    }
+  }
+
+  if (asset.directUrl && !(asset.hfRepoId && parseHfFileUrl(asset.directUrl))) {
     pushSource({
       sourceKind: "direct",
       url: asset.directUrl,
@@ -230,6 +175,7 @@ export async function resolveAllModelDownloadSources(
     });
   }
 
+  if (!sources.length && errors.length) throw new Error(errors.join(". "));
   return sources;
 }
 
@@ -265,40 +211,35 @@ export async function inspectRemoteModelUrl(
   const parsedUrl = new URL(trimmed);
   const host = parsedUrl.hostname.toLowerCase();
 
-  if (host.includes("huggingface.co")) {
+  if (host === "huggingface.co") {
     const parts = parsedUrl.pathname.split("/").filter(Boolean);
     if (parts.length < 2) {
       throw new Error("Invalid HuggingFace URL. Expected https://huggingface.co/<owner>/<repo>/...");
     }
     const repoId = `${parts[0]}/${parts[1]}`;
-    const hfCred = await getDecryptedCredential(userId, "huggingface", "default").catch(() => null);
-    const hfToken = hfCred?.secret?.trim() || undefined;
 
-    let filePath = "";
-    const modeIdx = parts.findIndex((p) => p === "blob" || p === "resolve" || p === "raw");
-    if (modeIdx >= 2 && parts.length > modeIdx + 2) {
-      filePath = parts.slice(modeIdx + 2).join("/");
-    } else if (parts.length > 2 && parts[2] !== "tree") {
-      filePath = parts.slice(2).join("/");
-    }
-
-    if (filePath) {
-      const info = await lookupHfRepoFile(repoId, filePath, hfToken).catch(() => null);
-      const finalPath = info?.path || filePath;
-      const filename = finalPath.split("/").pop() || "model.safetensors";
+    const imported = parseHfFileUrl(trimmed);
+    if (imported) {
+      const filename = imported.path.split("/").pop()!;
+      const directUrl = `https://huggingface.co/${repoId}/resolve/${encodeURIComponent(imported.revision)}/${imported.path.split("/").map(encodeURIComponent).join("/")}`;
+      const [file] = await resolveAllModelDownloadSources(userId, {
+        filename, hfRepoId: repoId, hfFilePath: imported.path, directUrl,
+      });
+      if (!file) throw new Error("Hugging Face file metadata unavailable.");
       return {
-        sourceKind: "huggingface",
-        displayName: filename.replace(/\.(safetensors|gguf|pth|pt|bin)$/i, ""),
-        filename,
-        sizeBytes: info?.size,
-        sha256: info?.sha256,
-        hfRepoId: repoId,
-        hfFilePath: finalPath,
-        suggestedCategory: inferCategoryFromFilename(finalPath),
+        sourceKind: "huggingface", displayName: filename.replace(/\.(safetensors|gguf|pth|pt|bin)$/i, ""),
+        filename, sizeBytes: file.expectedSizeBytes, sha256: file.sha256,
+        hfRepoId: repoId, hfFilePath: imported.path, directUrl: file.url,
+        suggestedCategory: inferCategoryFromFilename(imported.path),
       };
+    }
+    if (parts.length > 2 && (parts[2] !== "tree" || parts[3] !== "main" || parts.length > 4)) {
+      throw new Error("Paste the full Hugging Face file URL, including its revision and filename.");
     }
 
     // Repo root URL: pick largest safetensors/gguf/pth/pt file automatically
+    const hfCred = await getDecryptedCredential(userId, "huggingface", "default").catch(() => null);
+    const hfToken = hfCred?.secret?.trim();
     const treeRes = await fetch(
       `https://huggingface.co/api/models/${repoId}/tree/main?recursive=true`,
       {
@@ -331,7 +272,7 @@ export async function inspectRemoteModelUrl(
     };
   }
 
-  if (host.includes("civitai.com")) {
+  if (host === "civitai.com" || host === "www.civitai.com") {
     const versionMatch =
       parsedUrl.pathname.match(/\/api\/download\/models\/(\d+)/) ||
       parsedUrl.searchParams.get("modelVersionId")?.match(/^(\d+)$/);
@@ -349,60 +290,67 @@ export async function inspectRemoteModelUrl(
         cache: "no-store",
         signal: AbortSignal.timeout(8000),
       });
-      if (res.ok) {
-        const ver = (await res.json()) as {
-          modelId?: number;
-          baseModel?: string;
-          model?: { name?: string; type?: string };
-          files?: CivitaiFileMeta[];
-        };
-        const file = selectBestCivitaiFile(ver.files);
-        const filename = file?.name || `civitai_${versionId}.safetensors`;
-        return {
-          sourceKind: "civitai",
-          displayName: ver.model?.name || filename,
-          filename,
-          sizeBytes: file?.sizeKB ? Math.round(file.sizeKB * 1024) : undefined,
-          sha256: file?.hashes?.SHA256?.toLowerCase(),
-          civitaiModelId: ver.modelId ? String(ver.modelId) : modelId,
-          civitaiVersionId: versionId,
-          compatibleBase: ver.baseModel,
-          suggestedCategory: inferCivitaiCategory(ver.model?.type, filename),
-        };
-      }
+      if (!res.ok) throw new Error(`Civitai version lookup failed (HTTP ${res.status}).`);
+      const ver = (await res.json()) as {
+        modelId?: number;
+        baseModel?: string;
+        model?: { name?: string; type?: string };
+        files?: CivitaiFileMeta[];
+      };
+      const selectors = [...parsedUrl.searchParams].filter(([key]) =>
+        ["type", "format", "size", "fp"].includes(key.toLowerCase()));
+      const file = selectors.length && parsedUrl.pathname.startsWith("/api/download/models/")
+        ? ver.files?.find((candidate) => {
+            if (!candidate.downloadUrl) return false;
+            const fields = new Map([...new URL(candidate.downloadUrl).searchParams].map(([key, val]) => [key.toLowerCase(), val.toLowerCase()]));
+            return selectors.every(([key, val]) => fields.get(key.toLowerCase()) === val.toLowerCase());
+          })
+        : selectBestCivitaiFile(ver.files);
+      if (!file?.name) throw new Error("The requested Civitai file variant is unavailable.");
+      const filename = file?.name || `civitai_${versionId}.safetensors`;
+      return {
+        sourceKind: "civitai",
+        displayName: ver.model?.name || filename,
+        filename,
+        sizeBytes: file?.sizeKB ? Math.round(file.sizeKB * 1024) : undefined,
+        sha256: file?.hashes?.SHA256?.toLowerCase(),
+        civitaiModelId: ver.modelId ? String(ver.modelId) : modelId,
+        civitaiVersionId: versionId,
+        compatibleBase: ver.baseModel,
+        suggestedCategory: inferCivitaiCategory(ver.model?.type, filename),
+      };
     }
 
-    if (modelId) {
+    if (!versionId && modelId) {
       const res = await fetch(`https://civitai.com/api/v1/models/${modelId}`, {
         headers: civitaiHeaders,
         cache: "no-store",
         signal: AbortSignal.timeout(8000),
       });
-      if (res.ok) {
-        const data = (await res.json()) as {
-          name?: string;
-          type?: string;
-          modelVersions?: Array<{
-            id?: number;
-            baseModel?: string;
-            files?: CivitaiFileMeta[];
-          }>;
-        };
-        const ver = data.modelVersions?.[0];
-        const file = selectBestCivitaiFile(ver?.files);
-        const filename = file?.name || `civitai_${modelId}.safetensors`;
-        return {
-          sourceKind: "civitai",
-          displayName: data.name || filename,
-          filename,
-          sizeBytes: file?.sizeKB ? Math.round(file.sizeKB * 1024) : undefined,
-          sha256: file?.hashes?.SHA256?.toLowerCase(),
-          civitaiModelId: modelId,
-          civitaiVersionId: ver?.id ? String(ver.id) : undefined,
-          compatibleBase: ver?.baseModel,
-          suggestedCategory: inferCivitaiCategory(data.type, filename),
-        };
-      }
+      if (!res.ok) throw new Error(`Civitai model lookup failed (HTTP ${res.status}).`);
+      const data = (await res.json()) as {
+        name?: string;
+        type?: string;
+        modelVersions?: Array<{
+          id?: number;
+          baseModel?: string;
+          files?: CivitaiFileMeta[];
+        }>;
+      };
+      const ver = data.modelVersions?.[0];
+      const file = selectBestCivitaiFile(ver?.files);
+      const filename = file?.name || `civitai_${modelId}.safetensors`;
+      return {
+        sourceKind: "civitai",
+        displayName: data.name || filename,
+        filename,
+        sizeBytes: file?.sizeKB ? Math.round(file.sizeKB * 1024) : undefined,
+        sha256: file?.hashes?.SHA256?.toLowerCase(),
+        civitaiModelId: modelId,
+        civitaiVersionId: ver?.id ? String(ver.id) : undefined,
+        compatibleBase: ver?.baseModel,
+        suggestedCategory: inferCivitaiCategory(data.type, filename),
+      };
     }
 
     throw new Error("Could not resolve Civitai model ID or version ID from URL.");

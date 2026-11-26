@@ -980,7 +980,7 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
           {selectedVmOnline && activeVm?.workerProfile && activeVm.workerProfile !== neededProfile && (
             <p className="text-[11px] text-amber-300/90">
               Note: {target.toUpperCase()} is currently running <strong>{activeVm.workerProfile}</strong>, while this pipeline recommends{" "}
-              <strong>{neededProfile}</strong>. Click <strong>Kaggle VMs</strong> to boot another account with {neededProfile}.
+              <strong>{neededProfile}</strong>. Click <strong>Kaggle VMs</strong> to select a worker with {neededProfile}.
             </p>
           )}
         </div>
@@ -1076,7 +1076,7 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
                     <span className="text-[10px] font-medium uppercase text-zinc-500">
                       Required Models ({compiled.requiredModels.length}) · {compiled.recommendedProfile}
                     </span>
-                    {selectedVmOnline && activeVm?.publicUrl && compiled.requiredModels.length > 0 && (
+                    {selectedVmOnline && compiled.requiredModels.length > 0 && (
                       <button
                         type="button"
                         disabled={streamingMissing}

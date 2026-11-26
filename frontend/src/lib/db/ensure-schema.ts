@@ -41,6 +41,8 @@ const SCHEMA_DDL_STATEMENTS: string[] = [
     "workerProfile" TEXT NOT NULL DEFAULT 'BASE_COMFY',
     "idleTimeoutMinutes" INTEGER,
     "prewarmModelsJson" TEXT,
+    "kaggleDatasetsJson" TEXT,
+    "bootMetadataJson" TEXT,
     "internalPort" INTEGER NOT NULL DEFAULT 8188,
     "publicUrl" TEXT NOT NULL DEFAULT '',
     "vmSecret" TEXT,
@@ -113,6 +115,7 @@ const SCHEMA_DDL_STATEMENTS: string[] = [
     "civitaiVersionId" TEXT,
     "directUrl" TEXT,
     "sha256" TEXT,
+    "reviewedSha256" TEXT,
     "gdrivePath" TEXT,
     "gdriveFileId" TEXT,
     "backupStatus" TEXT NOT NULL DEFAULT 'NONE',
@@ -122,6 +125,18 @@ const SCHEMA_DDL_STATEMENTS: string[] = [
     "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "ModelAsset_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE CASCADE ON UPDATE CASCADE
   )`,
+  `CREATE TABLE IF NOT EXISTS "ModelFetch" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "vmId" TEXT NOT NULL REFERENCES "VmInstance"("id") ON DELETE CASCADE,
+    "sessionKey" TEXT NOT NULL,
+    "assetId" TEXT NOT NULL,
+    "sourceMode" TEXT NOT NULL,
+    "backup" BOOLEAN NOT NULL,
+    "status" TEXT NOT NULL DEFAULT 'queued',
+    "progressJson" TEXT,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE INDEX IF NOT EXISTS "ModelFetch_vmId_sessionKey_status_createdAt_idx" ON "ModelFetch"("vmId","sessionKey","status","createdAt")`,
   `CREATE TABLE IF NOT EXISTS "WorkflowTemplate" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "userId" TEXT NOT NULL,
@@ -321,10 +336,11 @@ const SCHEMA_DDL_STATEMENTS: string[] = [
 ];
 
 async function runSchemaSync(): Promise<void> {
-  const [vmCols, existingTables] = await Promise.all([
+  const [modelCols, vmCols, existingTables] = await Promise.all([
+    prisma.$queryRawUnsafe<Array<{ name: string }>>(`PRAGMA table_info("ModelAsset")`),
     prisma.$queryRawUnsafe<Array<{ name: string }>>(`PRAGMA table_info("VmInstance")`),
     prisma.$queryRawUnsafe<Array<{ name: string }>>(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name IN ('User','Credential','VmInstance','Job','SystemLog','ModelAsset','WorkflowTemplate','WorkspaceSettings','AgentSession','AgentMessage','ApiToken','BatchJob','BatchTask','Project','CharacterProfile','Scene','LlmChatSession','LlmChatMessage')`
+      `SELECT name FROM sqlite_master WHERE type='table' AND name IN ('User','Credential','VmInstance','Job','SystemLog','ModelAsset','ModelFetch','WorkflowTemplate','WorkspaceSettings','AgentSession','AgentMessage','ApiToken','BatchJob','BatchTask','Project','CharacterProfile','Scene','LlmChatSession','LlmChatMessage')`
     ),
   ]);
 
@@ -341,7 +357,7 @@ async function runSchemaSync(): Promise<void> {
     tableSet.has("VmInstance") &&
     tableSet.has("Job") &&
     tableSet.has("SystemLog") &&
-    tableSet.has("ModelAsset") &&
+    tableSet.has("ModelAsset") && tableSet.has("ModelFetch") && modelCols.some((c) => c.name === "reviewedSha256") &&
     tableSet.has("WorkflowTemplate") &&
     tableSet.has("WorkspaceSettings") &&
     tableSet.has("AgentSession") &&
@@ -369,6 +385,14 @@ async function runSchemaSync(): Promise<void> {
 
   for (const stmt of SCHEMA_DDL_STATEMENTS) {
     await prisma.$executeRawUnsafe(stmt);
+  }
+
+  if (tableSet.has("ModelAsset") && !modelCols.some((c) => c.name === "reviewedSha256")) {
+    try {
+      await prisma.$executeRawUnsafe('ALTER TABLE "ModelAsset" ADD COLUMN "reviewedSha256" TEXT');
+    } catch (error) {
+      if (!String(error).toLowerCase().includes("duplicate column")) throw error;
+    }
   }
 
   if (tableSet.has("VmInstance")) {

@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
     await ensureDbSchemaReady();
 
     const body = (await req.json()) as {
-      action: "create_project" | "add_character" | "upsert_scene" | "delete_project";
+      action: "create_project" | "rename_project" | "add_character" | "upsert_scene" | "delete_project";
       projectId?: string;
       sceneId?: string;
       title?: string;
@@ -84,6 +84,13 @@ export async function POST(req: NextRequest) {
         include: { characters: true, scenes: true },
       });
       return NextResponse.json({ ok: true, project: proj });
+    }
+
+    if (body.action === "rename_project" && body.projectId) {
+      const title = body.title?.trim();
+      if (!title || title.length > 100) return NextResponse.json({ error: "Enter a title of 1–100 characters." }, { status: 400 });
+      const updated = await prisma.project.updateMany({ where: { id: body.projectId, userId: user.userId }, data: { title } });
+      return updated.count ? NextResponse.json({ ok: true }) : NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
 
     if (body.action === "delete_project" && body.projectId) {
