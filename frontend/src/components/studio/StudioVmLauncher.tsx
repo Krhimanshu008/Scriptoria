@@ -342,7 +342,7 @@ export function KaggleVmLauncherDialog({
 
         {/* Top Match & Batch Boot Strip */}
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-zinc-800 bg-zinc-950/80 p-3 text-xs">
-          <div className="space-y-1">
+          <div className="space-y-1 text-zinc-300">
             {desiredProfile && (
               <label className="flex cursor-pointer items-center gap-2 text-zinc-200">
                 <input
@@ -368,6 +368,11 @@ export function KaggleVmLauncherDialog({
                   Pre-warm {Math.min(3, prewarmModels.length)} workflow model(s) into `/tmp/models` on boot
                 </span>
               </label>
+            )}
+            {!desiredProfile && (!prewarmModels || prewarmModels.length === 0) && (
+              <span className="text-[11px] text-zinc-400">
+                Choose a Kaggle account below or click <strong>Boot Best</strong> to start a Dual-T4 VM.
+              </span>
             )}
           </div>
 
@@ -494,7 +499,7 @@ export function KaggleVmLauncherDialog({
                       onChange={(e) =>
                         setProfileOverrides((prev) => ({ ...prev, [acc.alias]: e.target.value }))
                       }
-                      className="glass-input h-8 max-w-xs flex-1 rounded-md px-2 font-mono text-[11px] text-zinc-200 disabled:opacity-60"
+                      className="glass-input h-8 min-w-0 w-full flex-1 rounded-md px-2 font-mono text-[11px] text-zinc-200 disabled:opacity-60 sm:min-w-[260px]"
                     >
                       {imageProfiles.map((p) => (
                         <option key={p.id} value={p.id} className="bg-zinc-900">

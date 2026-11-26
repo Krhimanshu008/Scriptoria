@@ -99,6 +99,49 @@ function inferProfileForPipeline(
   return "IMAGE_CORE";
 }
 
+function defaultVaeForPipeline(pipeline: WorkflowPipelineKind): string {
+  if (
+    pipeline === "sdxl_txt2img" ||
+    pipeline === "sdxl_detailer_upscale" ||
+    pipeline === "noob_vpred" ||
+    pipeline === "animagine_v4" ||
+    pipeline === "modular"
+  ) {
+    return "sdxl_vae_fp16_fix.safetensors";
+  }
+  return "";
+}
+
+function defaultSamplingForPipeline(pipeline: WorkflowPipelineKind): {
+  steps: number;
+  cfg: number;
+  width: number;
+  height: number;
+} {
+  switch (pipeline) {
+    case "noob_vpred":
+      return { steps: 28, cfg: 5.0, width: 1024, height: 1024 };
+    case "animagine_v4":
+      return { steps: 26, cfg: 5.0, width: 1024, height: 1024 };
+    case "neta_lumina":
+      return { steps: 24, cfg: 4.5, width: 1024, height: 1024 };
+    case "anima_v1":
+    case "moss_image":
+    case "qwen21_edit":
+      return { steps: 8, cfg: 1.0, width: 1024, height: 1024 };
+    case "flux3_klein":
+      return { steps: 12, cfg: 1.0, width: 1024, height: 1024 };
+    case "qwen_edit":
+      return { steps: 4, cfg: 1.0, width: 1024, height: 1024 };
+    case "flux_gguf":
+      return { steps: 20, cfg: 1.0, width: 1024, height: 1024 };
+    case "panorama_360":
+      return { steps: 20, cfg: 3.5, width: 1536, height: 768 };
+    default:
+      return { steps: 24, cfg: 6.0, width: 1024, height: 1024 };
+  }
+}
+
 export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
   const onlineVms = useMemo(
     () => vms.filter((v) => v.status === "ONLINE" || v.status === "BUSY"),
@@ -135,6 +178,7 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
   const [streamingMissing, setStreamingMissing] = useState(false);
 
   const [compiled, setCompiled] = useState<CompiledWorkflowResult | null>(null);
+  const [architectReasoning, setArchitectReasoning] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [templateName, setTemplateName] = useState("");
 
@@ -288,13 +332,15 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
   }
 
   function applyRecommendedSpec(spec: WorkflowBuildSpec, tunedPrompt?: { positive: string; negative: string }) {
+    const defaults = defaultSamplingForPipeline(spec.pipeline);
     setPipeline(spec.pipeline);
     if (spec.stylePreset) setStylePreset(spec.stylePreset);
-    if (spec.baseModel) setBaseModel(spec.baseModel);
-    if (spec.steps) setSteps(spec.steps);
-    if (spec.cfg !== undefined) setCfg(spec.cfg);
-    if (spec.width) setWidth(spec.width);
-    if (spec.height) setHeight(spec.height);
+    setBaseModel(spec.baseModel || "");
+    setVaeModel(spec.vaeModel ?? defaultVaeForPipeline(spec.pipeline));
+    setSteps(spec.steps ?? defaults.steps);
+    setCfg(spec.cfg ?? defaults.cfg);
+    setWidth(spec.width ?? defaults.width);
+    setHeight(spec.height ?? defaults.height);
     if (spec.loras?.[0]) {
       setLora1(spec.loras[0].filename);
       setLora1Strength(spec.loras[0].strength ?? 0.85);
@@ -303,9 +349,10 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
     }
     setEnableFaceDetailer(Boolean(spec.enableFaceDetailer));
     setUpscalerModel(spec.upscalerModel || "");
-    if (tunedPrompt?.positive) setPrompt(tunedPrompt.positive);
-    else if (spec.prompt) setPrompt(spec.prompt);
-    if (tunedPrompt?.negative !== undefined) setNegativePrompt(tunedPrompt.negative);
+    if (spec.prompt) setPrompt(spec.prompt);
+    else if (tunedPrompt?.positive) setPrompt(tunedPrompt.positive);
+    if (spec.negativePrompt !== undefined) setNegativePrompt(spec.negativePrompt);
+    else if (tunedPrompt?.negative !== undefined) setNegativePrompt(tunedPrompt.negative);
 
     setAdapters((prev) => ({
       ...prev,
@@ -313,15 +360,27 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
       ipWeight: spec.ipConnectors?.[0]?.weight ?? prev.ipWeight,
       cnMode: spec.controlNets?.[0]?.mode || "none",
       cnStrength: spec.controlNets?.[0]?.strength ?? prev.cnStrength,
+      characters: spec.characters ? [...spec.characters] : [],
       relight: spec.relight || "none",
-      dualGpuSplit: Boolean(spec.dualGpuSplit || spec.pipeline === "flux3_klein" || spec.pipeline === "moss_image" || spec.pipeline === "qwen21_edit" || spec.pipeline === "panorama_360"),
+      relightRefImage: spec.relightRefImagePath || "",
+      enableHandDetailer: Boolean(spec.enableHandDetailer),
+      dualGpuSplit: Boolean(spec.dualGpuSplit || DIT_SPLIT_PIPELINES.has(spec.pipeline)),
       enable360Preview: Boolean(spec.enable360Preview || spec.pipeline === "panorama_360"),
     }));
   }
 
   function handlePipelineChange(nextPipeline: WorkflowPipelineKind) {
-    setPipeline(nextPipeline);
     const isDiT = DIT_SPLIT_PIPELINES.has(nextPipeline);
+    const defaults = defaultSamplingForPipeline(nextPipeline);
+    setPipeline(nextPipeline);
+    setBaseModel("");
+    setLora1("");
+    setVaeModel(defaultVaeForPipeline(nextPipeline));
+    setSteps(defaults.steps);
+    setCfg(defaults.cfg);
+    setWidth(defaults.width);
+    setHeight(defaults.height);
+    setArchitectReasoning(null);
     setAdapters((prev) => ({
       ...prev,
       dualGpuSplit: isDiT,
@@ -331,6 +390,7 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
 
   function handleApplyRecommendation(rec: WorkflowStackRecommendation) {
     applyRecommendedSpec(rec.recommendedSpec, rec.tunedPromptSample);
+    setArchitectReasoning(rec.whyRecommended?.join(" ") || null);
     const matchingVm = onlineVms.find((v) => v.workerProfile === rec.targetProfile);
     if (matchingVm) setTarget(matchingVm.target);
     toast.success(`Loaded '${rec.title}' into Architect (${rec.t4ExecutionMode})`);
@@ -362,8 +422,13 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
         return;
       }
       if (data.designedSpec) {
-        applyRecommendedSpec(data.designedSpec, data.topRecommendation?.tunedPromptSample);
+        applyRecommendedSpec(data.designedSpec, {
+          positive: data.designedSpec.prompt || data.topRecommendation?.tunedPromptSample?.positive || "",
+          negative:
+            data.designedSpec.negativePrompt ?? data.topRecommendation?.tunedPromptSample?.negative ?? "",
+        });
       }
+      setArchitectReasoning(data.reasoning || null);
       if (data.compiled) setCompiled(data.compiled);
       toast.success(data.reasoning || "Designed & compiled modular ComfyUI workflow!");
     } finally {
@@ -423,6 +488,8 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
       }
 
       if (data.compiled) setCompiled(data.compiled);
+      if (action === "compile") setArchitectReasoning(null);
+      if (data.reasoning) setArchitectReasoning(data.reasoning);
       if (action === "optimize_with_ai" && data.optimizedSpec) {
         if (data.optimizedSpec.steps) setSteps(data.optimizedSpec.steps);
         if (data.optimizedSpec.cfg) setCfg(data.optimizedSpec.cfg);
@@ -919,6 +986,12 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
                 </span>
               )}
             </div>
+
+            {architectReasoning && (
+              <div className="rounded-lg border border-violet-500/30 bg-violet-500/10 p-2.5 text-[11px] text-violet-200">
+                <strong className="text-violet-100">Architect Reasoning:</strong> {architectReasoning}
+              </div>
+            )}
 
             {!compiled ? (
               <p className="rounded-md border border-zinc-800 bg-zinc-950 p-3 text-xs text-zinc-500">

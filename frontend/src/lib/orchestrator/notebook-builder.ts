@@ -80,7 +80,7 @@ def _download_with_mirrors(mirrors, tmp_dl, default_sha="", progress_cb=None):
             used_aria2 = False
             if shutil.which("aria2c"):
                 cmd = [
-                    "aria2c", "-x", "16", "-s", "16", "-k", "4M",
+                    "aria2c", "-x", "8", "-s", "8", "-k", "4M",
                     "--file-allocation=none", "--allow-overwrite=true",
                     "--auto-file-renaming=false", "--summary-interval=1",
                     "-d", os.path.dirname(tmp_dl), "-o", os.path.basename(tmp_dl),
@@ -611,6 +611,8 @@ def _post_backup_callback(slug, status, gdrive_path="", gdrive_file_id="", size_
 
 ${buildPythonMirrorDownloadHelper()}
 
+FETCH_SEMAPHORE = threading.Semaphore(2)
+
 def _run_fetch_job(job_id, mirrors, category, subdir, filename, target_path, expected_size, sha256_hex, backup_to_gdrive, asset_slug, allow_gdrive_fallback=True):
     def _upd(**kw):
         with FETCH_LOCK:
@@ -618,76 +620,80 @@ def _run_fetch_job(job_id, mirrors, category, subdir, filename, target_path, exp
                 FETCH_JOBS[job_id].update(kw)
 
     tmp_dl = target_path + ".part"
-    try:
-        os.makedirs(os.path.dirname(target_path), exist_ok=True)
-        _evict_lru_models_if_needed(expected_size or 0)
-        _upd(status="downloading", startedAt=time.time())
-        t0 = time.time()
-
-        def _on_progress(done, tot, elapsed):
-            spd = done / max(0.1, elapsed)
-            eff_tot = tot or expected_size or 0
-            pct = min(99, round((done / eff_tot) * 100)) if eff_tot else 0
-            eta = max(1, round((eff_tot - done) / spd)) if (eff_tot and spd > 0 and eff_tot > done) else None
-            _upd(bytesDone=done, totalBytes=eff_tot, percentage=pct, speedMbps=round(spd / (1024 ** 2), 1), etaSeconds=eta)
-
-        fetched_from = "http"
+    with FETCH_SEMAPHORE:
         try:
-            res_info = _download_with_mirrors(mirrors, tmp_dl, default_sha=sha256_hex, progress_cb=_on_progress)
-            fetched_from = res_info.get("sourceKind", "http")
-        except Exception as mirror_err:
-            if allow_gdrive_fallback and RCLONE_READY:
-                log_event(f"Direct mirrors failed for {filename} ({mirror_err}); trying 5 TB Drive fallback...", category="RCLONE", level="WARN")
-                remote_dir = f"{GDRIVE_BASE}/models/{category}" + (f"/{subdir}" if subdir else "")
-                rc_copy_async({
-                    "srcFs": f"gdrive:{remote_dir}",
-                    "srcRemote": filename,
-                    "dstFs": os.path.dirname(target_path),
-                    "dstRemote": os.path.basename(tmp_dl),
-                }, max_wait=600, label=f"Drive fallback {filename}")
-                fetched_from = "gdrive"
-            else:
-                raise
+            globals()["LAST_ACTIVE"] = time.time()
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            _evict_lru_models_if_needed(expected_size or 0)
+            _upd(status="downloading", startedAt=time.time())
+            t0 = time.time()
 
-        os.replace(tmp_dl, target_path)
-        final_size = os.path.getsize(target_path)
-        _upd(status="completed", bytesDone=final_size, totalBytes=final_size, percentage=100, speedMbps=0, etaSeconds=0, source=fetched_from)
-        log_event(f"Fetch complete ({fetched_from}): {filename} ({round(final_size / (1024**3), 2)} GB) in {round(time.time() - t0, 1)}s", category="RCLONE", level="SUCCESS")
+            def _on_progress(done, tot, elapsed):
+                globals()["LAST_ACTIVE"] = time.time()
+                spd = done / max(0.1, elapsed)
+                eff_tot = tot or expected_size or 0
+                pct = min(99, round((done / eff_tot) * 100)) if eff_tot else 0
+                eta = max(1, round((eff_tot - done) / spd)) if (eff_tot and spd > 0 and eff_tot > done) else None
+                _upd(bytesDone=done, totalBytes=eff_tot, percentage=pct, speedMbps=round(spd / (1024 ** 2), 1), etaSeconds=eta)
 
-        if backup_to_gdrive and fetched_from != "gdrive" and RCLONE_READY:
-            def _bg_backup():
-                remote_dir = f"{GDRIVE_BASE}/models/{category}" + (f"/{subdir}" if subdir else "")
-                remote_path = f"{remote_dir}/{filename}"
-                try:
-                    _upd(backupStatus="BACKING_UP")
-                    try:
-                        rc_post("operations/mkdir", {"fs": "gdrive:", "remote": remote_dir})
-                    except Exception:
-                        pass
+            fetched_from = "http"
+            try:
+                res_info = _download_with_mirrors(mirrors, tmp_dl, default_sha=sha256_hex, progress_cb=_on_progress)
+                fetched_from = res_info.get("sourceKind", "http")
+            except Exception as mirror_err:
+                if allow_gdrive_fallback and RCLONE_READY:
+                    log_event(f"Direct mirrors failed for {filename} ({mirror_err}); trying 5 TB Drive fallback...", category="RCLONE", level="WARN")
+                    remote_dir = f"{GDRIVE_BASE}/models/{category}" + (f"/{subdir}" if subdir else "")
                     rc_copy_async({
-                        "srcFs": os.path.dirname(target_path),
+                        "srcFs": f"gdrive:{remote_dir}",
                         "srcRemote": filename,
-                        "dstFs": f"gdrive:{remote_dir}",
-                        "dstRemote": filename,
-                    }, max_wait=600, label=f"Drive backup {filename}")
-                    stat = rc_post("operations/stat", {"fs": f"gdrive:{remote_dir}", "remote": filename}, timeout=15)
-                    fid = (stat.get("item") or {}).get("ID", "")
-                    _upd(backupStatus="BACKED_UP")
-                    log_event(f"Backed up {filename} -> gdrive:{remote_path}", category="RCLONE", level="SUCCESS")
-                    _post_backup_callback(asset_slug, "BACKED_UP", remote_path, fid, final_size)
-                except Exception as be:
-                    _upd(backupStatus="FAILED")
-                    log_event(f"Drive backup warning ({filename}): {be}", category="RCLONE", level="WARN")
-                    _post_backup_callback(asset_slug, "FAILED", remote_path, "", final_size, str(be))
-            threading.Thread(target=_bg_backup, daemon=True).start()
-    except Exception as fe:
-        try:
-            if os.path.exists(tmp_dl):
-                os.remove(tmp_dl)
-        except Exception:
-            pass
-        _upd(status="failed", error=str(fe))
-        log_event(f"Direct fetch failed ({filename}): {fe}", category="ERROR", level="ERROR")
+                        "dstFs": os.path.dirname(target_path),
+                        "dstRemote": os.path.basename(tmp_dl),
+                    }, max_wait=600, label=f"Drive fallback {filename}")
+                    fetched_from = "gdrive"
+                else:
+                    raise
+
+            os.replace(tmp_dl, target_path)
+            globals()["LAST_ACTIVE"] = time.time()
+            final_size = os.path.getsize(target_path)
+            _upd(status="completed", bytesDone=final_size, totalBytes=final_size, percentage=100, speedMbps=0, etaSeconds=0, source=fetched_from)
+            log_event(f"Fetch complete ({fetched_from}): {filename} ({round(final_size / (1024**3), 2)} GB) in {round(time.time() - t0, 1)}s", category="RCLONE", level="SUCCESS")
+
+            if backup_to_gdrive and fetched_from != "gdrive" and RCLONE_READY:
+                def _bg_backup():
+                    remote_dir = f"{GDRIVE_BASE}/models/{category}" + (f"/{subdir}" if subdir else "")
+                    remote_path = f"{remote_dir}/{filename}"
+                    try:
+                        _upd(backupStatus="BACKING_UP")
+                        try:
+                            rc_post("operations/mkdir", {"fs": "gdrive:", "remote": remote_dir})
+                        except Exception:
+                            pass
+                        rc_copy_async({
+                            "srcFs": os.path.dirname(target_path),
+                            "srcRemote": filename,
+                            "dstFs": f"gdrive:{remote_dir}",
+                            "dstRemote": filename,
+                        }, max_wait=600, label=f"Drive backup {filename}")
+                        stat = rc_post("operations/stat", {"fs": f"gdrive:{remote_dir}", "remote": filename}, timeout=15)
+                        fid = (stat.get("item") or {}).get("ID", "")
+                        _upd(backupStatus="BACKED_UP")
+                        log_event(f"Backed up {filename} -> gdrive:{remote_path}", category="RCLONE", level="SUCCESS")
+                        _post_backup_callback(asset_slug, "BACKED_UP", remote_path, fid, final_size)
+                    except Exception as be:
+                        _upd(backupStatus="FAILED")
+                        log_event(f"Drive backup warning ({filename}): {be}", category="RCLONE", level="WARN")
+                        _post_backup_callback(asset_slug, "FAILED", remote_path, "", final_size, str(be))
+                threading.Thread(target=_bg_backup, daemon=True).start()
+        except Exception as fe:
+            try:
+                if os.path.exists(tmp_dl):
+                    os.remove(tmp_dl)
+            except Exception:
+                pass
+            _upd(status="failed", error=str(fe))
+            log_event(f"Direct fetch failed ({filename}): {fe}", category="ERROR", level="ERROR")
 
 # -------------------------------------------------------------
 # 2. Start Sidecar (:9999) Immediately + Prepare Rclone / Caddy Config

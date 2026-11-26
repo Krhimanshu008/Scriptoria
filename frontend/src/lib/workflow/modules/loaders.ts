@@ -19,12 +19,19 @@ function attachSdxlVaeAndLoras(
   let vae = ctx.ref(ckptNode, 2);
 
   const autoVae = input.autoVaeFixSdxl !== false;
-  const vaeName = input.vaeModel || (autoVae ? "sdxl_vae_fp16_fix.safetensors" : undefined);
+  let candidateVae = input.vaeModel;
+  if (candidateVae && /flux|qwen|ae\.safetensors/i.test(candidateVae)) {
+    ctx.addGuardrail(
+      `Replaced incompatible DiT VAE '${candidateVae}' with T4-safe 'sdxl_vae_fp16_fix.safetensors'.`
+    );
+    candidateVae = "sdxl_vae_fp16_fix.safetensors";
+  }
+  const vaeName = candidateVae || (autoVae ? "sdxl_vae_fp16_fix.safetensors" : undefined);
   if (vaeName) {
     ctx.registerModel("vae", vaeName);
     const vaeNode = ctx.addNode("VAELoader", { vae_name: vaeName });
     vae = ctx.ref(vaeNode, 0);
-    if (!input.vaeModel && autoVae) {
+    if (!candidateVae && autoVae) {
       ctx.addGuardrail("Auto-injected sdxl_vae_fp16_fix.safetensors (Tesla T4 NaN black-image prevention).");
     }
   }
@@ -101,6 +108,22 @@ function attachModelOnlyLoras(
     ctx.addVram(0.35);
   }
   return out;
+}
+
+function pickCompatibleDiTVae(
+  ctx: GraphBuilderContext,
+  inputVae: string | undefined,
+  defaultDiTVae: string
+): string {
+  if (!inputVae) return defaultDiTVae;
+  const lower = inputVae.toLowerCase();
+  if (lower.includes("sdxl") || lower.includes("ft-mse") || lower.includes("ft_mse")) {
+    ctx.addGuardrail(
+      `Replaced incompatible SDXL VAE '${inputVae}' with native DiT VAE '${defaultDiTVae}'.`
+    );
+    return defaultDiTVae;
+  }
+  return inputVae;
 }
 
 /**
@@ -213,7 +236,7 @@ export function buildBaseModelLoader(
     const base = input.baseModel || "anima-turbo-v1.0-Q5_K_M.gguf";
     const isGguf = base.toLowerCase().endsWith(".gguf");
     const te = input.textEncoder1 || "qwen_3_06b_base.safetensors";
-    const vaeName = input.vaeModel || "qwen_image_vae.safetensors";
+    const vaeName = pickCompatibleDiTVae(ctx, input.vaeModel, "qwen_image_vae.safetensors");
     ctx.recommendedProfile = input.dualGpuSplit ? "IMAGE_DIT_DUAL_T4" : "IMAGE_GGUF_EDIT";
     ctx.vramEstimateGb = isGguf ? 5.8 : 7.8;
 
@@ -256,7 +279,7 @@ export function buildBaseModelLoader(
     const unet = input.baseModel || "flux1-dev-Q4_K_S.gguf";
     const t5 = input.textEncoder1 || "t5-v1_1-xxl-encoder-Q4_K_M.gguf";
     const clipL = input.textEncoder2 || "clip_l.safetensors";
-    const vaeName = input.vaeModel || "ae.safetensors";
+    const vaeName = pickCompatibleDiTVae(ctx, input.vaeModel, "ae.safetensors");
 
     ctx.registerModel("unet", unet);
     ctx.registerModel("text_encoders", t5);
@@ -292,7 +315,7 @@ export function buildBaseModelLoader(
       base = "flux3-image-klein-int8-convrot.safetensors";
     }
     const te = input.textEncoder1 || "qwen3.5_9b_flux3_prompt_upsampler_int8_convrot.safetensors";
-    const vaeName = input.vaeModel || "flux2-vae.safetensors";
+    const vaeName = pickCompatibleDiTVae(ctx, input.vaeModel, "flux2-vae.safetensors");
     const useSplit = input.dualGpuSplit !== false;
     ctx.recommendedProfile = useSplit ? "IMAGE_DIT_DUAL_T4" : "IMAGE_GGUF_EDIT";
     ctx.vramEstimateGb = useSplit ? 18.0 : 14.5;
@@ -332,7 +355,7 @@ export function buildBaseModelLoader(
     const base = input.baseModel || "moss_image_sft_int8_convrot.safetensors";
     const isGguf = base.toLowerCase().endsWith(".gguf");
     const te = input.textEncoder1 || "qwen3.5_9b_int8_convrot.safetensors";
-    const vaeName = input.vaeModel || "flux2-vae.safetensors";
+    const vaeName = pickCompatibleDiTVae(ctx, input.vaeModel, "flux2-vae.safetensors");
     const useSplit = input.dualGpuSplit !== false;
     ctx.recommendedProfile = useSplit ? "IMAGE_DIT_DUAL_T4" : "IMAGE_GGUF_EDIT";
     ctx.vramEstimateGb = useSplit ? 17.5 : 14.0;
@@ -379,7 +402,7 @@ export function buildBaseModelLoader(
       (isI2I
         ? "qwen3.5_9b_qwen_image_2.1_pe_i2i.int8_convrot.safetensors"
         : "qwen3.5_9b_qwen_image_2.1_pe_t2i.int8_convrot.safetensors");
-    const vaeName = input.vaeModel || "qwen_image_2.1_vae_bf16.safetensors";
+    const vaeName = pickCompatibleDiTVae(ctx, input.vaeModel, "qwen_image_2.1_vae_bf16.safetensors");
     const useSplit = input.dualGpuSplit !== false;
     ctx.recommendedProfile = useSplit ? "IMAGE_DIT_DUAL_T4" : "IMAGE_GGUF_EDIT";
     ctx.vramEstimateGb = useSplit ? 20.5 : 15.2;
@@ -412,7 +435,7 @@ export function buildBaseModelLoader(
   if (arch === "qwen_360") {
     const base = input.baseModel || "qwen-image-2512-Q4_K_M.gguf";
     const te = input.textEncoder1 || "qwen_2.5_vl_7b_fp8_scaled.safetensors";
-    const vaeName = input.vaeModel || "qwen_image_vae.safetensors";
+    const vaeName = pickCompatibleDiTVae(ctx, input.vaeModel, "qwen_image_vae.safetensors");
     const useSplit = input.dualGpuSplit !== false;
     ctx.recommendedProfile = "IMAGE_DIT_DUAL_T4";
     ctx.vramEstimateGb = useSplit ? 18.0 : 14.5;
@@ -451,7 +474,7 @@ export function buildBaseModelLoader(
   ctx.vramEstimateGb = 14.5;
   const unet = input.baseModel || "qwen-image-edit-2511-Q4_K_M.gguf";
   const te = input.textEncoder1 || "qwen_2.5_vl_7b_fp8_scaled.safetensors";
-  const vaeName = input.vaeModel || "qwen_image_vae.safetensors";
+  const vaeName = pickCompatibleDiTVae(ctx, input.vaeModel, "qwen_image_vae.safetensors");
   const editLoras = input.loras?.length
     ? input.loras
     : [{ filename: "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors", strength: 1.0 }];

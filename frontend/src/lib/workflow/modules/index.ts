@@ -181,14 +181,23 @@ export function assembleModularWorkflow(
     }
   }
 
-  // Apply Multi-Char Spatial Isolation
-  positive = applyMultiCharacterIsolation(ctx, { ...base, model: currentModel }, positive, input.characters, width, height);
-
-  // Apply IP-Connectors (with anime FaceID guardrail)
+  // Apply IP-Connectors first (with anime FaceID guardrail)
   const ipOut = applyIpConnectors(ctx, { ...base, model: currentModel }, positive, negative, input.ipConnectors);
   currentModel = ipOut.model;
   positive = ipOut.positive;
   negative = ipOut.negative;
+
+  // Apply Multi-Char Spatial Isolation on the IP-hooked model, forwarding both coupled MODEL and POSITIVE outputs
+  const multiOut = applyMultiCharacterIsolation(
+    ctx,
+    { ...base, model: currentModel },
+    positive,
+    input.characters,
+    width,
+    height
+  );
+  currentModel = multiOut.model;
+  positive = multiOut.positive;
 
   // Apply ControlNets (with NoobAI/Illustrious Xinsir guardrail)
   const cnOut = applyControlNets(ctx, { ...base, model: currentModel }, positive, negative, input.controlNets);

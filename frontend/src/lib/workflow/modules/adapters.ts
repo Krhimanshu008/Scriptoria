@@ -304,13 +304,14 @@ export function applyMultiCharacterIsolation(
   characters?: MultiCharRegionInput[],
   canvasWidth = 1024,
   canvasHeight = 1024
-): NodeRef {
+): { model: NodeRef; positive: NodeRef } {
   if (!characters || characters.length < 2 || !base.clip) {
-    return globalPositive;
+    return { model: base.model, positive: globalPositive };
   }
 
   if (!base.isDiT) {
     ctx.recommendedProfile = "IMAGE_CORE";
+    let model: NodeRef = base.model;
     let coupled: NodeRef = globalPositive;
     const regionConds: Array<{ cond: NodeRef; mask: NodeRef }> = [];
 
@@ -333,17 +334,18 @@ export function applyMultiCharacterIsolation(
 
     if (regionConds.length >= 2) {
       const coupleNode = ctx.addNode("ComfyCoupleMask", {
-        model: base.model,
+        model,
         positive_1: regionConds[0].cond,
         mask_1: regionConds[0].mask,
         positive_2: regionConds[1].cond,
         mask_2: regionConds[1].mask,
         global_positive: coupled,
       });
+      model = ctx.ref(coupleNode, 0);
       coupled = ctx.ref(coupleNode, 1);
       ctx.addGuardrail("Enabled ComfyCoupleMask multi-character attention isolation on SDXL/NoobAI.");
     }
-    return coupled;
+    return { model, positive: coupled };
   }
 
   // For DiT (MOSS / FLUX 3 / Anima / Qwen 2.1), never run UNet-only ComfyCouple; use ConditioningSetArea
@@ -365,5 +367,5 @@ export function applyMultiCharacterIsolation(
     combined = ctx.ref(comb, 0);
   }
   ctx.addGuardrail("Used DiT-safe ConditioningSetArea spatial boxes (blocked UNet-only ComfyCouple on DiT).");
-  return combined;
+  return { model: base.model, positive: combined };
 }

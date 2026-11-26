@@ -223,7 +223,7 @@ export function ModularAdaptersDrawer({
                   type="range"
                   min={0.1}
                   max={1.3}
-                  step={0.05}
+                  step={0.01}
                   value={value.ipWeight}
                   onChange={(e) => update({ ipWeight: Number(e.target.value) })}
                   className="h-8 accent-cyan-400"
@@ -284,7 +284,7 @@ export function ModularAdaptersDrawer({
                 <Label className="text-[11px] text-zinc-300">Strength ({value.cnStrength.toFixed(2)})</Label>
                 <Input
                   type="number"
-                  step={0.05}
+                  step={0.01}
                   min={0.1}
                   max={1.4}
                   value={value.cnStrength}
@@ -296,7 +296,7 @@ export function ModularAdaptersDrawer({
                 <Label className="text-[11px] text-zinc-300">End Percent</Label>
                 <Input
                   type="number"
-                  step={0.05}
+                  step={0.01}
                   min={0.2}
                   max={1.0}
                   value={value.cnEndPercent}
@@ -409,7 +409,7 @@ export function ModularAdaptersDrawer({
                       <span className="uppercase">{coord}:</span>
                       <Input
                         type="number"
-                        step={0.05}
+                        step={0.01}
                         min={0}
                         max={1}
                         value={ch[coord]}
