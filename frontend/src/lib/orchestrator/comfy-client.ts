@@ -57,6 +57,12 @@ interface ComfyObjectInfoNode {
   };
 }
 
+interface ComfyMediaOutputItem {
+  filename: string;
+  subfolder?: string;
+  type?: string;
+}
+
 interface ComfyHistoryRecord {
   status?: {
     status_str?: string;
@@ -66,11 +72,10 @@ interface ComfyHistoryRecord {
   outputs?: Record<
     string,
     {
-      images?: Array<{
-        filename: string;
-        subfolder?: string;
-        type?: string;
-      }>;
+      images?: ComfyMediaOutputItem[];
+      audio?: ComfyMediaOutputItem[];
+      gifs?: ComfyMediaOutputItem[];
+      videos?: ComfyMediaOutputItem[];
     }
   >;
 }
@@ -500,13 +505,21 @@ export class ComfyClient {
     const outputs = record.outputs || {};
     const images: ComfyOutputImageInfo[] = [];
     for (const nodeId of Object.keys(outputs)) {
-      const nodeImages = outputs[nodeId]?.images;
-      if (Array.isArray(nodeImages)) {
-        for (const img of nodeImages) {
+      const nodeOut = outputs[nodeId];
+      const buckets = [
+        nodeOut?.images,
+        nodeOut?.audio,
+        nodeOut?.gifs,
+        nodeOut?.videos,
+      ];
+      for (const bucket of buckets) {
+        if (!Array.isArray(bucket)) continue;
+        for (const item of bucket) {
+          if (!item?.filename || item.type === "temp") continue;
           images.push({
-            filename: img.filename,
-            subfolder: img.subfolder || "",
-            type: img.type || "output",
+            filename: item.filename,
+            subfolder: item.subfolder || "",
+            type: item.type || "output",
           });
         }
       }

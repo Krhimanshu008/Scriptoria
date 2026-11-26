@@ -3,6 +3,12 @@ import { prisma } from "@/lib/db/prisma";
 import { getAuthUser } from "@/lib/auth/session";
 import { resolveReachableWebhookBaseUrl } from "@/lib/orchestrator/webhook-tunnel";
 import { getOrCreateWorkspaceSettings } from "@/lib/settings/workspace-settings";
+import { getUserGDriveCredential } from "@/lib/gdrive/client";
+import {
+  assessGDriveTokenHealth,
+  getGoogleOAuthClientConfig,
+  type GDriveTokenHealth,
+} from "@/lib/gdrive/oauth-config";
 
 export interface ReadinessItem {
   id: string;
@@ -13,6 +19,7 @@ export interface ReadinessItem {
   configured: boolean;
   usedFor: string;
   hint: string | null;
+  health?: GDriveTokenHealth | null;
 }
 
 export async function GET(req: NextRequest) {
@@ -22,13 +29,14 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const [creds, settings, webhook] = await Promise.all([
+    const [creds, settings, webhook, gdriveCred] = await Promise.all([
       prisma.credential.findMany({
         where: { userId: user.userId },
         select: { provider: true, accountAlias: true, username: true, metadataJson: true },
       }),
       getOrCreateWorkspaceSettings(user.userId),
       resolveReachableWebhookBaseUrl(req),
+      getUserGDriveCredential(user.userId).catch(() => null),
     ]);
 
     const findCred = (provider: string, accountAlias?: string) =>
@@ -51,6 +59,19 @@ export async function GET(req: NextRequest) {
     const preferredLlm =
       llmCreds.find((c) => c.accountAlias === settings.preferredLlmProvider) || llmCreds[0];
 
+    const gdriveMeta = gdriveCred?.metadata || (() => {
+      try {
+        return JSON.parse(gdrive?.metadataJson || "{}") as Record<string, unknown>;
+      } catch {
+        return {};
+      }
+    })();
+    const gdriveHealth = assessGDriveTokenHealth(gdriveCred?.parsed, gdriveMeta);
+    const oauthClientConfigured = Boolean(
+      getGoogleOAuthClientConfig(gdriveCred?.parsed).clientId &&
+        getGoogleOAuthClientConfig(gdriveCred?.parsed).clientSecret
+    );
+
     const hasPrimaryCompute = Boolean(kaggle1 || kaggle2 || kaggle3 || colab1 || colab2);
 
     const items: ReadinessItem[] = [
@@ -64,16 +85,19 @@ export async function GET(req: NextRequest) {
         usedFor: "5 TB model backup, FastBoot v2 cache, and permanent output storage.",
         hint: gdrive
           ? `Base: ${
-              (() => {
-                try {
-                  return (JSON.parse(gdrive.metadataJson || "{}") as { baseFolder?: string })
-                    .baseFolder;
-                } catch {
-                  return null;
-                }
-              })() || settings.gdriveBaseFolder
+              (typeof gdriveMeta?.baseFolder === "string" ? gdriveMeta.baseFolder : null) ||
+              settings.gdriveBaseFolder
+            }${
+              gdriveHealth.likelyRevoked
+                ? " · Token revoked/expired (click Reconnect)"
+                : gdriveHealth.expiringSoonWarning
+                ? ` · ${gdriveHealth.refreshTokenAgeDays}d old (Testing mode expires @7d)`
+                : ""
             }`
+          : oauthClientConfigured
+          ? "Click Connect Google Drive (OAuth ready)"
           : "Missing OAuth token",
+        health: gdriveHealth,
       },
       {
         id: "kaggle-acc1",
@@ -185,6 +209,8 @@ export async function GET(req: NextRequest) {
         totalCount: items.length,
         webhookMode: webhook.mode,
         webhookUrl: webhook.url || null,
+        oauthClientConfigured,
+        gdriveHealth,
       },
     });
   } catch (error) {

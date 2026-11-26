@@ -22,6 +22,7 @@ export interface PublicVmInstance {
   workerProfile: string;
   idleTimeoutMinutes: number | null;
   prewarmModels: PrewarmModelRef[];
+  kaggleDatasets?: string[];
   bootMetadata?: BootMetadata | null;
   internalPort: number;
   publicUrl: string;
@@ -82,6 +83,18 @@ export function sanitizeVmForClient(vm: VmInstance): PublicVmInstance {
     }
   }
 
+  let kaggleDatasets: string[] = [];
+  if (vm.kaggleDatasetsJson) {
+    try {
+      const parsed = JSON.parse(vm.kaggleDatasetsJson);
+      if (Array.isArray(parsed)) {
+        kaggleDatasets = parsed.filter((d): d is string => typeof d === "string" && d.trim().length > 0);
+      }
+    } catch {
+      kaggleDatasets = [];
+    }
+  }
+
   return {
     id: vm.id,
     target: vm.target,
@@ -92,6 +105,7 @@ export function sanitizeVmForClient(vm: VmInstance): PublicVmInstance {
     workerProfile: vm.workerProfile || "BASE_COMFY",
     idleTimeoutMinutes: vm.idleTimeoutMinutes ?? null,
     prewarmModels,
+    kaggleDatasets,
     bootMetadata,
     internalPort: vm.internalPort,
     publicUrl: vm.publicUrl,

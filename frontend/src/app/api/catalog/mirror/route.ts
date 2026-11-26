@@ -4,7 +4,7 @@ import { getAuthUser, signVmRegistrationToken } from "@/lib/auth/session";
 import { getDecryptedCredential } from "@/lib/crypto/credentials";
 import { generateVmSecret } from "@/lib/crypto/vault";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
-import { resolveFastModelDownloadSource } from "@/lib/catalog/source-resolver";
+import { resolveAllModelDownloadSources } from "@/lib/catalog/source-resolver";
 import {
   buildCpuMirrorNotebookPythonCode,
   type CpuMirrorModelItem,
@@ -30,7 +30,7 @@ export async function POST(req: NextRequest) {
     const limit = Math.min(20, Math.max(1, Number(body.limit || 8)));
 
     const [gdriveCred, kaggleCred] = await Promise.all([
-      getUserGDriveCredential(user.userId),
+      getUserGDriveCredential(user.userId, undefined, { ensureFresh: true }),
       getDecryptedCredential(user.userId, "kaggle", accountAlias),
     ]);
 
@@ -65,17 +65,25 @@ export async function POST(req: NextRequest) {
 
     const mirrorModels: CpuMirrorModelItem[] = [];
     for (const asset of assets) {
-      const resolved = await resolveFastModelDownloadSource(user.userId, asset);
-      if (!resolved) continue;
+      const sources = await resolveAllModelDownloadSources(user.userId, asset);
+      if (sources.length === 0) continue;
+      const primary = sources[0];
       mirrorModels.push({
         slug: asset.slug,
         category: asset.category,
         subdir: asset.subdir,
         filename: asset.filename,
-        url: resolved.url,
-        authHeader: resolved.authHeader,
-        expectedSizeBytes: resolved.expectedSizeBytes,
-        sha256: resolved.sha256,
+        url: primary.url,
+        authHeader: primary.authHeader,
+        expectedSizeBytes: primary.expectedSizeBytes,
+        sha256: primary.sha256,
+        mirrors: sources.map((s) => ({
+          sourceKind: s.sourceKind,
+          url: s.url,
+          authHeader: s.authHeader,
+          expectedSizeBytes: s.expectedSizeBytes,
+          sha256: s.sha256,
+        })),
       });
     }
 

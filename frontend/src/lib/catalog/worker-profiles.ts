@@ -60,6 +60,14 @@ export const WORKER_PROFILES: Record<WorkerProfileId, WorkerProfileSpec> = {
         name: "comfyui_controlnet_aux",
         repoUrl: "https://github.com/Fannovel16/comfyui_controlnet_aux.git",
       },
+      {
+        name: "ComfyUI-KJNodes",
+        repoUrl: "https://github.com/kijai/ComfyUI-KJNodes.git",
+      },
+      {
+        name: "ComfyUI_UltimateSDUpscale",
+        repoUrl: "https://github.com/ssitu/ComfyUI_UltimateSDUpscale.git",
+      },
     ],
   },
   IMAGE_GGUF_EDIT: {

@@ -369,51 +369,97 @@ export async function compileResourceAwareWorkflow(
     };
   } else if (pipeline === "qwen_edit") {
     recommendedProfile = "IMAGE_GGUF_EDIT";
-    const unet = spec.baseModel || "qwen-image-edit-2511-Q4_K_M.gguf";
+    const unet = spec.baseModel || "qwen-image-edit-2511-Q3_K_S.gguf";
     const te = spec.textEncoder1 || "qwen_2.5_vl_7b_fp8_scaled.safetensors";
     const vae = spec.vaeModel || "qwen_image_vae.safetensors";
+    const lightningLora =
+      spec.loras?.[0]?.filename || "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors";
+    const loraStrength = spec.loras?.[0]?.strength ?? 1.0;
     registerModel("diffusion_models", unet);
     registerModel("text_encoders", te);
     registerModel("vae", vae);
-    requiredNodes = ["UnetLoaderGGUF", "CLIPLoader", "VAELoader", "KSampler", "VAEDecode", "SaveImage"];
+    registerModel("loras", lightningLora);
+    requiredNodes = [
+      "UnetLoaderGGUF",
+      "CLIPLoader",
+      "VAELoader",
+      "LoraLoaderModelOnly",
+      "ModelSamplingAuraFlow",
+      "CFGNorm",
+      "LoadImage",
+      "TextEncodeQwenImageEditPlus",
+      "CLIPTextEncode",
+      "VAEEncode",
+      "KSampler",
+      "VAEDecode",
+      "SaveImage",
+    ];
     graph = {
       "1": { class_type: "UnetLoaderGGUF", inputs: { unet_name: unet } },
       "2": { class_type: "CLIPLoader", inputs: { clip_name: te, type: "qwen_image" } },
       "3": { class_type: "VAELoader", inputs: { vae_name: vae } },
       "4": {
-        class_type: "CLIPTextEncode",
-        inputs: { text: spec.prompt || "relight scene with warm sunset rim light", clip: ["2", 0] },
+        class_type: "LoraLoaderModelOnly",
+        inputs: {
+          model: ["1", 0],
+          lora_name: lightningLora,
+          strength_model: loraStrength,
+        },
       },
-      "5": { class_type: "CLIPTextEncode", inputs: { text: "", clip: ["2", 0] } },
+      "5": {
+        class_type: "ModelSamplingAuraFlow",
+        inputs: { model: ["4", 0], shift: 3.0 },
+      },
       "6": {
-        class_type: "EmptyLatentImage",
-        inputs: { width: spec.width ?? 1024, height: spec.height ?? 1024, batch_size: 1 },
+        class_type: "CFGNorm",
+        inputs: { model: ["5", 0], strength: 1.0 },
       },
       "7": {
+        class_type: "LoadImage",
+        inputs: { image: spec.refImagePath || "character_ref.png" },
+      },
+      "8": {
+        class_type: "TextEncodeQwenImageEditPlus",
+        inputs: {
+          clip: ["2", 0],
+          vae: ["3", 0],
+          image1: ["7", 0],
+          prompt: spec.prompt || "Relight the subject in image 1 cleanly, preserving identity and attire.",
+        },
+      },
+      "9": {
+        class_type: "CLIPTextEncode",
+        inputs: { text: spec.negativePrompt || "", clip: ["2", 0] },
+      },
+      "10": {
+        class_type: "VAEEncode",
+        inputs: { pixels: ["7", 0], vae: ["3", 0] },
+      },
+      "11": {
         class_type: "KSampler",
         inputs: {
           seed,
           steps: spec.steps ?? 4,
           cfg: spec.cfg ?? 1.0,
-          sampler_name: "euler",
-          scheduler: "simple",
+          sampler_name: spec.samplerName || "euler",
+          scheduler: spec.scheduler || "simple",
           denoise: 1.0,
-          model: ["1", 0],
-          positive: ["4", 0],
-          negative: ["5", 0],
-          latent_image: ["6", 0],
+          model: ["6", 0],
+          positive: ["8", 0],
+          negative: ["9", 0],
+          latent_image: ["10", 0],
         },
       },
-      "8": { class_type: "VAEDecode", inputs: { samples: ["7", 0], vae: ["3", 0] } },
-      "9": {
+      "12": { class_type: "VAEDecode", inputs: { samples: ["11", 0], vae: ["3", 0] } },
+      "13": {
         class_type: "SaveImage",
-        inputs: { filename_prefix: "Scriptoria_QwenEdit", images: ["8", 0] },
+        inputs: { filename_prefix: "Scriptoria_QwenEdit", images: ["12", 0] },
       },
     };
   } else if (pipeline === "audio_kokoro") {
     modality = "AUDIO";
     recommendedProfile = "AUDIO_LIPSYNC";
-    registerModel("kokoro", spec.baseModel || "kokoro-v1.0.onnx");
+    registerModel("tts", spec.baseModel || "kokoro-v1.0.onnx");
     requiredNodes = ["KokoroSpeaker", "KokoroGenerator", "SaveAudio"];
     graph = {
       "1": { class_type: "KokoroSpeaker", inputs: { speaker_name: spec.voice || "af_heart" } },
@@ -452,7 +498,7 @@ export async function compileResourceAwareWorkflow(
   } else if (pipeline === "audio_mmaudio") {
     modality = "AUDIO";
     recommendedProfile = "AUDIO_LIPSYNC";
-    registerModel("mmaudio", spec.baseModel || "mmaudio_small_16k_v2.safetensors");
+    registerModel("audio_sfx", spec.baseModel || "mmaudio_small_16k_v2.safetensors");
     requiredNodes = ["MMAudioSampler", "SaveAudio"];
     graph = {
       "1": {

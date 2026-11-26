@@ -13,7 +13,9 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json().catch(() => ({}));
     const workerId = String(body.workerId || "unknown-worker");
-    const target = body.target ? String(body.target) : null;
+    const explicitTarget = body.target ? String(body.target).trim() : "";
+    const inferredMatch = workerId.match(/(?:^|[-_])(gpu\d+|gcgpu\d*|tpu\d+)(?:$|[-_])/i);
+    const target = explicitTarget || (inferredMatch ? inferredMatch[1].toLowerCase() : null);
     const status = String(body.status || "ONLINE");
     const vramUsedGb = typeof body.vramUsedGb === "number" ? body.vramUsedGb : null;
     const vramTotalGb = typeof body.vramTotalGb === "number" ? body.vramTotalGb : null;

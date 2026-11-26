@@ -51,9 +51,10 @@ export async function POST(req: NextRequest) {
       whereClause.workerProfile = { in: capabilities };
     }
 
-    const nextTask = await prisma.batchTask.findFirst({
+    const candidates = await prisma.batchTask.findMany({
       where: whereClause,
       orderBy: [{ sequenceIndex: "asc" }, { createdAt: "asc" }],
+      take: 25,
       include: {
         batch: {
           select: {
@@ -65,22 +66,77 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    if (!nextTask) {
+    if (candidates.length === 0) {
       return NextResponse.json({
         task: null,
         message: "No queued tasks matching capabilities",
       });
     }
 
-    // 3. Atomically assign task to worker
-    const claimed = await prisma.batchTask.update({
-      where: { id: nextTask.id },
-      data: {
-        status: "PROCESSING",
-        assignedTarget: workerId,
-        updatedAt: now,
-      },
-    });
+    // Parse DAG dependencies across candidates and check completed status in one query
+    const candidateDeps = new Map<string, string[]>();
+    const allDepIds = new Set<string>();
+    for (const c of candidates) {
+      if (!c.dependsOnTaskIdsJson) {
+        candidateDeps.set(c.id, []);
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(c.dependsOnTaskIdsJson);
+        const deps = Array.isArray(parsed)
+          ? parsed.filter((d): d is string => typeof d === "string" && d.length > 0)
+          : [];
+        candidateDeps.set(c.id, deps);
+        for (const d of deps) allDepIds.add(d);
+      } catch {
+        candidateDeps.set(c.id, []);
+      }
+    }
+
+    const completedDepSet = new Set<string>();
+    if (allDepIds.size > 0) {
+      const depRows = await prisma.batchTask.findMany({
+        where: {
+          id: { in: Array.from(allDepIds) },
+          status: "COMPLETED",
+        },
+        select: { id: true },
+      });
+      for (const r of depRows) completedDepSet.add(r.id);
+    }
+
+    // Atomic claim with compare-and-set (`status: "PENDING"`) to eliminate multi-GPU race conditions
+    let nextTask: (typeof candidates)[number] | null = null;
+    for (const c of candidates) {
+      const deps = candidateDeps.get(c.id) || [];
+      if (deps.some((depId) => !completedDepSet.has(depId))) {
+        continue;
+      }
+
+      const claimRes = await prisma.batchTask.updateMany({
+        where: {
+          id: c.id,
+          status: "PENDING",
+        },
+        data: {
+          status: "PROCESSING",
+          assignedTarget: workerId,
+          updatedAt: now,
+        },
+      });
+
+      if (claimRes.count > 0) {
+        nextTask = c;
+        break;
+      }
+    }
+
+    if (!nextTask) {
+      return NextResponse.json({
+        task: null,
+        message: "No dependency-ready queued tasks available",
+      });
+    }
 
     // Mark parent batch as RUNNING if it was QUEUED
     await prisma.batchJob.updateMany({
@@ -94,30 +150,30 @@ export async function POST(req: NextRequest) {
     });
 
     let inputParams: Record<string, unknown> = {};
-    if (claimed.inputParamsJson) {
+    if (nextTask.inputParamsJson) {
       try {
-        inputParams = JSON.parse(claimed.inputParamsJson);
+        inputParams = JSON.parse(nextTask.inputParamsJson);
       } catch {}
     }
 
     let compiledGraph: unknown = null;
-    if (claimed.compiledGraphJson) {
+    if (nextTask.compiledGraphJson) {
       try {
-        compiledGraph = JSON.parse(claimed.compiledGraphJson);
+        compiledGraph = JSON.parse(nextTask.compiledGraphJson);
       } catch {}
     }
 
     return NextResponse.json({
       task: {
-        id: claimed.id,
-        batchId: claimed.batchId,
+        id: nextTask.id,
+        batchId: nextTask.batchId,
         batchTitle: nextTask.batch.title,
-        sequenceIndex: claimed.sequenceIndex,
-        sceneKey: claimed.sceneKey,
-        trackType: claimed.trackType,
-        workerProfile: claimed.workerProfile,
-        workflowSlug: claimed.workflowSlug,
-        baseCheckpoint: claimed.baseCheckpoint,
+        sequenceIndex: nextTask.sequenceIndex,
+        sceneKey: nextTask.sceneKey,
+        trackType: nextTask.trackType,
+        workerProfile: nextTask.workerProfile,
+        workflowSlug: nextTask.workflowSlug,
+        baseCheckpoint: nextTask.baseCheckpoint,
         inputParams,
         compiledGraph,
       },

@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `Colab slot '${target}' not found.` }, { status: 404 });
     }
 
-    const gdriveCred = await getUserGDriveCredential(verified.userId);
+    const gdriveCred = await getUserGDriveCredential(verified.userId, undefined, { ensureFresh: true });
     if (!gdriveCred) {
       return NextResponse.json(
         { error: "Google Drive credential is missing in Scriptoria Settings Vault." },

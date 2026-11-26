@@ -142,7 +142,7 @@ export async function POST(
     let gdriveCred: Awaited<ReturnType<typeof getUserGDriveCredential>> = null;
     let gdriveDecryptError: string | null = null;
     try {
-      gdriveCred = await getUserGDriveCredential(user.userId);
+      gdriveCred = await getUserGDriveCredential(user.userId, undefined, { ensureFresh: true });
     } catch (err) {
       gdriveDecryptError =
         err instanceof Error ? err.message : "Failed to decrypt Google Drive credential";
@@ -205,19 +205,59 @@ export async function POST(
         );
       }
 
+      const sortedGroupVms = sortVmsByCanonicalTarget(groupVms);
       const profileSpec = getWorkerProfile(vm.workerProfile);
       const workspaceSettings = await getOrCreateWorkspaceSettings(user.userId);
       const effectiveIdleMinutes =
         vm.idleTimeoutMinutes ?? workspaceSettings.idleTimeoutMinutes ?? 15;
-      let prewarmModels: Array<{ category: string; filename: string }> = [];
-      if (vm.prewarmModelsJson) {
-        try {
-          const parsed = JSON.parse(vm.prewarmModelsJson);
-          if (Array.isArray(parsed)) prewarmModels = parsed;
-        } catch {
-          prewarmModels = [];
+
+      // Support asymmetric Dual-T4 slots by merging custom nodes, prewarm models, and Kaggle datasets across the group
+      const gpuProfiles = sortedGroupVms.map((gv) => gv.workerProfile || profileSpec.id);
+      const mergedNodeMap = new Map<string, { name: string; repoUrl: string }>();
+      for (const pId of gpuProfiles) {
+        for (const cn of getWorkerProfile(pId).customNodes) {
+          mergedNodeMap.set(cn.repoUrl, cn);
         }
       }
+      const mergedCustomNodes = Array.from(mergedNodeMap.values());
+
+      const prewarmMap = new Map<string, { category: string; filename: string }>();
+      const datasetSet = new Set<string>();
+      for (const gv of sortedGroupVms) {
+        if (gv.prewarmModelsJson) {
+          try {
+            const parsed = JSON.parse(gv.prewarmModelsJson);
+            if (Array.isArray(parsed)) {
+              for (const item of parsed) {
+                if (item && typeof item.category === "string" && typeof item.filename === "string") {
+                  prewarmMap.set(`${item.category}/${item.filename}`, {
+                    category: item.category,
+                    filename: item.filename,
+                  });
+                }
+              }
+            }
+          } catch {
+            // ignore
+          }
+        }
+        if (gv.kaggleDatasetsJson) {
+          try {
+            const parsedDs = JSON.parse(gv.kaggleDatasetsJson);
+            if (Array.isArray(parsedDs)) {
+              for (const ds of parsedDs) {
+                if (typeof ds === "string" && ds.trim().includes("/")) {
+                  datasetSet.add(ds.trim());
+                }
+              }
+            }
+          } catch {
+            // ignore
+          }
+        }
+      }
+      const prewarmModels = Array.from(prewarmMap.values());
+      const customDatasets = Array.from(datasetSet);
 
       const isTpu = profileSpec.accelerator === "tpu";
       const pythonCode = isTpu
@@ -237,12 +277,13 @@ export async function POST(
             gdriveTokenJson: gdriveCred?.rawTokenJson || "",
             gdriveBaseFolder: gdriveCred?.baseFolder || workspaceSettings.gdriveBaseFolder,
             gpuTargets: groupTargets,
+            gpuProfiles,
             accountAlias: vm.accountAlias,
             workerProfile: profileSpec.id,
-            customNodes: profileSpec.customNodes,
+            customNodes: mergedCustomNodes,
             idleTimeoutSeconds: effectiveIdleMinutes * 60,
             prewarmModels,
-            enableOfflineDatasetScan: vm.accountAlias === "acc1",
+            enableOfflineDatasetScan: vm.accountAlias === "acc1" || customDatasets.length > 0,
           });
 
       await prisma.vmInstance.updateMany({
@@ -292,10 +333,10 @@ export async function POST(
           kernelSlug,
           pythonCode,
           datasetDataSources: isTpu
-            ? ["rahim3/qwen3-8-27b-bf16", "rahim3/qwen38-tpu-env-v5e8"]
+            ? Array.from(new Set(["rahim3/qwen3-8-27b-bf16", "rahim3/qwen38-tpu-env-v5e8", ...customDatasets]))
             : isLlmProfile && profileSpec.id === "LLM_QWEN_VLM"
-            ? ["swift15/qwen38-27b-q4km-gguf"]
-            : [],
+            ? Array.from(new Set(["swift15/qwen38-27b-q4km-gguf", ...customDatasets]))
+            : customDatasets,
           enableTpu: isTpu,
           enableGpu: !isTpu,
           machineShape: isTpu ? "TpuV5E8" : "NvidiaTeslaT4",

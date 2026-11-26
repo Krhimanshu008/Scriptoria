@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { getAuthUser, ensureUserVmSlots } from "@/lib/auth/session";
 import { getDecryptedCredential } from "@/lib/crypto/credentials";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
+import { getGoogleOAuthClientConfig } from "@/lib/gdrive/oauth-config";
 import { KaggleOrchestrator, KaggleQuotaInfo } from "@/lib/orchestrator/kaggle-client";
 import {
   peekActiveTunnelUrl,
@@ -248,10 +249,9 @@ export async function GET(req: NextRequest) {
       };
     });
 
-    const oauthConfigured = Boolean(
-      process.env.GOOGLE_OAUTH_CLIENT_ID ||
-        (gdriveCred?.parsed?.client_id && gdriveCred?.parsed?.client_secret)
-    );
+    const { clientId: gdriveOAuthClientId, clientSecret: gdriveOAuthClientSecret } =
+      getGoogleOAuthClientConfig(gdriveCred?.parsed);
+    const oauthConfigured = Boolean(gdriveOAuthClientId && gdriveOAuthClientSecret);
 
     return NextResponse.json({
       kaggleAccounts,

@@ -61,6 +61,7 @@ model VmInstance {
   workerProfile      String    @default("BASE_COMFY") // BASE_COMFY, IMAGE_CORE, IMAGE_GGUF_EDIT, AUDIO_LIPSYNC, VIDEO_MOTION
   idleTimeoutMinutes Int?      // Optional per-slot override; null falls back to WorkspaceSettings.idleTimeoutMinutes
   prewarmModelsJson  String?   // Optional JSON array [{ category, filename }] to pre-stream while ComfyUI boots
+  kaggleDatasetsJson String?   // Optional JSON array of Kaggle dataset slugs ["owner/dataset"] mounted on boot
   internalPort       Int       @default(8188) // 8188 or 8189 inside VM
   publicUrl     String    @default("")   // Live trycloudflare.com URL (Caddy :8000) or named tunnel
   vmSecret      String?   // Per-session X-VM-Secret verified by Caddy

@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import { getAuthUser } from "@/lib/auth/session";
 import { getDecryptedCredential, saveUserCredential } from "@/lib/crypto/credentials";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
+import { getGoogleOAuthClientConfig, getOAuthStateSecret } from "@/lib/gdrive/oauth-config";
 import { invalidateColabMetaIfEmailChanged } from "@/lib/orchestrator/colab-runner";
 import { appendSystemLog } from "@/lib/logs/logger";
 
@@ -11,12 +12,6 @@ interface ColabOAuthState {
   alias: string;
   includeColabScope: boolean;
   redirectUri: string;
-}
-
-function getStateSecret(): string {
-  const secret = process.env.JWT_SECRET || process.env.ENCRYPTION_KEY;
-  if (!secret) throw new Error("JWT_SECRET or ENCRYPTION_KEY is not configured");
-  return secret;
 }
 
 export async function GET(req: NextRequest) {
@@ -35,16 +30,14 @@ export async function GET(req: NextRequest) {
     }
 
     const user = await getAuthUser(req);
-    const decoded = jwt.verify(stateToken, getStateSecret()) as ColabOAuthState;
+    const decoded = jwt.verify(stateToken, getOAuthStateSecret()) as ColabOAuthState;
 
     if (!user || user.userId !== decoded.userId) {
       return NextResponse.redirect(new URL("/?colabError=session_mismatch", baseOrigin));
     }
 
     const gdriveCred = await getUserGDriveCredential(user.userId);
-    const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID || gdriveCred?.parsed?.client_id || "";
-    const clientSecret =
-      process.env.GOOGLE_OAUTH_CLIENT_SECRET || gdriveCred?.parsed?.client_secret || "";
+    const { clientId, clientSecret } = getGoogleOAuthClientConfig(gdriveCred?.parsed);
 
     if (!clientId || !clientSecret) {
       return NextResponse.redirect(new URL("/?colabError=missing_oauth_secret", baseOrigin));
@@ -125,6 +118,9 @@ export async function GET(req: NextRequest) {
         name: profile.name || profile.email,
         hasColabScope,
         hasDriveScope,
+        refreshTokenIssuedAt: tokenData.refresh_token
+          ? new Date().toISOString()
+          : existingMeta.refreshTokenIssuedAt,
         connectedAt: new Date().toISOString(),
       },
     });

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getGoogleOAuthClientConfig } from "@/lib/gdrive/oauth-config";
 import { getAuthUser } from "@/lib/auth/session";
 import { getDecryptedCredential } from "@/lib/crypto/credentials";
 import {
@@ -197,13 +198,16 @@ export async function POST(req: NextRequest) {
           });
         }
 
-        if (parsed.refresh_token && process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
+        const { clientId: colabClientId, clientSecret: colabClientSecret } =
+          getGoogleOAuthClientConfig();
+
+        if (parsed.refresh_token && colabClientId && colabClientSecret) {
           const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
             body: new URLSearchParams({
-              client_id: process.env.GOOGLE_CLIENT_ID,
-              client_secret: process.env.GOOGLE_CLIENT_SECRET,
+              client_id: colabClientId,
+              client_secret: colabClientSecret,
               refresh_token: parsed.refresh_token,
               grant_type: "refresh_token",
             }).toString(),

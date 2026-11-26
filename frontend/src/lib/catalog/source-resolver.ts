@@ -65,8 +65,176 @@ async function lookupHfRepoFile(
   };
 }
 
+interface CivitaiFileMeta {
+  name?: string;
+  sizeKB?: number;
+  type?: string;
+  primary?: boolean;
+  hashes?: { SHA256?: string };
+  downloadUrl?: string;
+}
+
+function selectBestCivitaiFile(
+  files: CivitaiFileMeta[] | undefined,
+  desiredFilename?: string | null
+): CivitaiFileMeta | undefined {
+  if (!files || files.length === 0) return undefined;
+  const wanted = (desiredFilename || "").trim().toLowerCase();
+  if (wanted) {
+    const exact = files.find((f) => f.name?.toLowerCase() === wanted);
+    if (exact) return exact;
+    const stem = wanted.replace(/\.(safetensors|ckpt|gguf|pth|pt|bin|onnx)$/i, "");
+    const byStem = files.find((f) => f.name?.toLowerCase().includes(stem));
+    if (byStem) return byStem;
+  }
+  return (
+    files.find((f) => f.primary) ||
+    files.find((f) => f.type?.toLowerCase() === "model") ||
+    files.find((f) => /\.(safetensors|gguf|ckpt|pt|pth)$/i.test(f.name || "")) ||
+    files[0]
+  );
+}
+
 /**
- * Resolves the fastest authenticated direct download URL (HuggingFace -> Civitai -> Direct URL)
+ * Resolves ALL configured download mirrors in priority order (HuggingFace -> Civitai -> Direct URL)
+ * so VM fetchers and CPU mirrors can automatically fail over when one CDN returns 401/403/404 or SHA mismatch.
+ */
+export async function resolveAllModelDownloadSources(
+  userId: string,
+  asset: {
+    filename: string;
+    sizeBytes?: number | null;
+    sha256?: string | null;
+    hfRepoId?: string | null;
+    hfFilePath?: string | null;
+    civitaiModelId?: string | null;
+    civitaiVersionId?: string | null;
+    directUrl?: string | null;
+  }
+): Promise<ResolvedDownloadSource[]> {
+  const [hfCred, civitaiCred] = await Promise.all([
+    getDecryptedCredential(userId, "huggingface", "default").catch(() => null),
+    getDecryptedCredential(userId, "civitai", "default").catch(() => null),
+  ]);
+
+  const hfToken = hfCred?.secret?.trim() || undefined;
+  const civitaiKey = civitaiCred?.secret?.trim() || undefined;
+  const civitaiApiHeaders: Record<string, string> = { Accept: "application/json" };
+  if (civitaiKey) civitaiApiHeaders["Authorization"] = `Bearer ${civitaiKey}`;
+
+  const sources: ResolvedDownloadSource[] = [];
+  const seenUrls = new Set<string>();
+  const pushSource = (src: ResolvedDownloadSource) => {
+    if (!src.url || seenUrls.has(src.url)) return;
+    seenUrls.add(src.url);
+    sources.push(src);
+  };
+
+  if (asset.hfRepoId) {
+    const targetPath = (asset.hfFilePath || asset.filename).replace(/^\/+/, "");
+    const resolved = await lookupHfRepoFile(asset.hfRepoId, targetPath, hfToken).catch(() => null);
+    const finalPath = resolved?.path || targetPath;
+    const url = `https://huggingface.co/${asset.hfRepoId}/resolve/main/${finalPath
+      .split("/")
+      .map(encodeURIComponent)
+      .join("/")}`;
+
+    pushSource({
+      sourceKind: "huggingface",
+      url,
+      filename: asset.filename,
+      expectedSizeBytes: resolved?.size ?? (asset.sizeBytes || undefined),
+      sha256: resolved?.sha256 ?? (asset.sha256 || undefined),
+      authHeader: hfToken ? `Bearer ${hfToken}` : undefined,
+    });
+  }
+
+  if (asset.civitaiVersionId) {
+    let expectedSize = asset.sizeBytes || undefined;
+    let sha = asset.sha256 || undefined;
+    let dlBase = `https://civitai.com/api/download/models/${encodeURIComponent(
+      asset.civitaiVersionId
+    )}`;
+
+    if (!expectedSize || !sha) {
+      const verRes = await fetch(
+        `https://civitai.com/api/v1/model-versions/${encodeURIComponent(asset.civitaiVersionId)}`,
+        {
+          headers: civitaiApiHeaders,
+          cache: "no-store",
+          signal: AbortSignal.timeout(5000),
+        }
+      ).catch(() => null);
+      if (verRes?.ok) {
+        const ver = (await verRes.json()) as { files?: CivitaiFileMeta[] };
+        const file = selectBestCivitaiFile(ver.files, asset.filename);
+        if (file?.downloadUrl) dlBase = file.downloadUrl;
+        if (!expectedSize && file?.sizeKB) expectedSize = Math.round(file.sizeKB * 1024);
+        if (!sha && file?.hashes?.SHA256) sha = file.hashes.SHA256.toLowerCase();
+      }
+    }
+
+    const sep = dlBase.includes("?") ? "&" : "?";
+    const url = civitaiKey ? `${dlBase}${sep}token=${encodeURIComponent(civitaiKey)}` : dlBase;
+    pushSource({
+      sourceKind: "civitai",
+      url,
+      filename: asset.filename,
+      expectedSizeBytes: expectedSize,
+      sha256: sha,
+    });
+  } else if (asset.civitaiModelId) {
+    const metaRes = await fetch(
+      `https://civitai.com/api/v1/models/${encodeURIComponent(asset.civitaiModelId)}`,
+      {
+        headers: civitaiApiHeaders,
+        cache: "no-store",
+        signal: AbortSignal.timeout(8000),
+      }
+    ).catch(() => null);
+    if (metaRes?.ok) {
+      const data = (await metaRes.json()) as {
+        modelVersions?: Array<{
+          id?: number;
+          files?: CivitaiFileMeta[];
+        }>;
+      };
+      const ver = data.modelVersions?.[0];
+      const file = selectBestCivitaiFile(ver?.files, asset.filename);
+      const dlBase =
+        file?.downloadUrl ||
+        (ver?.id ? `https://civitai.com/api/download/models/${ver.id}` : null);
+      if (dlBase) {
+        const sep = dlBase.includes("?") ? "&" : "?";
+        const url = civitaiKey ? `${dlBase}${sep}token=${encodeURIComponent(civitaiKey)}` : dlBase;
+        pushSource({
+          sourceKind: "civitai",
+          url,
+          filename: asset.filename || file?.name || `civitai_${asset.civitaiModelId}.safetensors`,
+          expectedSizeBytes:
+            (file?.sizeKB ? Math.round(file.sizeKB * 1024) : undefined) ??
+            (asset.sizeBytes || undefined),
+          sha256: file?.hashes?.SHA256?.toLowerCase() ?? (asset.sha256 || undefined),
+        });
+      }
+    }
+  }
+
+  if (asset.directUrl) {
+    pushSource({
+      sourceKind: "direct",
+      url: asset.directUrl,
+      filename: asset.filename,
+      expectedSizeBytes: asset.sizeBytes || undefined,
+      sha256: asset.sha256 || undefined,
+    });
+  }
+
+  return sources;
+}
+
+/**
+ * Resolves the highest-priority authenticated direct download URL (HuggingFace -> Civitai -> Direct URL)
  * for a ModelAsset using tokens stored in the user's AES-256-GCM Vault.
  */
 export async function resolveFastModelDownloadSource(
@@ -82,91 +250,8 @@ export async function resolveFastModelDownloadSource(
     directUrl?: string | null;
   }
 ): Promise<ResolvedDownloadSource | null> {
-  const [hfCred, civitaiCred] = await Promise.all([
-    getDecryptedCredential(userId, "huggingface", "default").catch(() => null),
-    getDecryptedCredential(userId, "civitai", "default").catch(() => null),
-  ]);
-
-  const hfToken = hfCred?.secret?.trim() || undefined;
-  const civitaiKey = civitaiCred?.secret?.trim() || undefined;
-
-  if (asset.hfRepoId) {
-    const targetPath = (asset.hfFilePath || asset.filename).replace(/^\/+/, "");
-    const resolved = await lookupHfRepoFile(asset.hfRepoId, targetPath, hfToken).catch(() => null);
-    const finalPath = resolved?.path || targetPath;
-    const url = `https://huggingface.co/${asset.hfRepoId}/resolve/main/${finalPath
-      .split("/")
-      .map(encodeURIComponent)
-      .join("/")}`;
-
-    return {
-      sourceKind: "huggingface",
-      url,
-      filename: asset.filename,
-      expectedSizeBytes: resolved?.size ?? (asset.sizeBytes || undefined),
-      sha256: resolved?.sha256 ?? (asset.sha256 || undefined),
-      authHeader: hfToken ? `Bearer ${hfToken}` : undefined,
-    };
-  }
-
-  if (asset.civitaiVersionId) {
-    const base = `https://civitai.com/api/download/models/${encodeURIComponent(
-      asset.civitaiVersionId
-    )}`;
-    const url = civitaiKey ? `${base}?token=${encodeURIComponent(civitaiKey)}` : base;
-    return {
-      sourceKind: "civitai",
-      url,
-      filename: asset.filename,
-      expectedSizeBytes: asset.sizeBytes || undefined,
-      sha256: asset.sha256 || undefined,
-    };
-  }
-
-  if (asset.civitaiModelId) {
-    const metaRes = await fetch(
-      `https://civitai.com/api/v1/models/${encodeURIComponent(asset.civitaiModelId)}`,
-      { cache: "no-store", signal: AbortSignal.timeout(8000) }
-    ).catch(() => null);
-    if (metaRes?.ok) {
-      const data = (await metaRes.json()) as {
-        modelVersions?: Array<{
-          id?: number;
-          files?: Array<{ name?: string; sizeKB?: number; hashes?: { SHA256?: string }; downloadUrl?: string }>;
-        }>;
-      };
-      const ver = data.modelVersions?.[0];
-      const file = ver?.files?.[0];
-      const dlBase =
-        file?.downloadUrl ||
-        (ver?.id ? `https://civitai.com/api/download/models/${ver.id}` : null);
-      if (dlBase) {
-        const sep = dlBase.includes("?") ? "&" : "?";
-        const url = civitaiKey ? `${dlBase}${sep}token=${encodeURIComponent(civitaiKey)}` : dlBase;
-        return {
-          sourceKind: "civitai",
-          url,
-          filename: asset.filename || file?.name || `civitai_${asset.civitaiModelId}.safetensors`,
-          expectedSizeBytes:
-            (file?.sizeKB ? Math.round(file.sizeKB * 1024) : undefined) ??
-            (asset.sizeBytes || undefined),
-          sha256: file?.hashes?.SHA256?.toLowerCase() ?? (asset.sha256 || undefined),
-        };
-      }
-    }
-  }
-
-  if (asset.directUrl) {
-    return {
-      sourceKind: "direct",
-      url: asset.directUrl,
-      filename: asset.filename,
-      expectedSizeBytes: asset.sizeBytes || undefined,
-      sha256: asset.sha256 || undefined,
-    };
-  }
-
-  return null;
+  const sources = await resolveAllModelDownloadSources(userId, asset);
+  return sources[0] ?? null;
 }
 
 /**
@@ -253,9 +338,14 @@ export async function inspectRemoteModelUrl(
     const modelMatch = parsedUrl.pathname.match(/\/models\/(\d+)/);
     const versionId = versionMatch?.[1];
     const modelId = modelMatch?.[1];
+    const civitaiCred = await getDecryptedCredential(userId, "civitai", "default").catch(() => null);
+    const civitaiKey = civitaiCred?.secret?.trim() || undefined;
+    const civitaiHeaders: Record<string, string> = { Accept: "application/json" };
+    if (civitaiKey) civitaiHeaders["Authorization"] = `Bearer ${civitaiKey}`;
 
     if (versionId) {
       const res = await fetch(`https://civitai.com/api/v1/model-versions/${versionId}`, {
+        headers: civitaiHeaders,
         cache: "no-store",
         signal: AbortSignal.timeout(8000),
       });
@@ -264,9 +354,9 @@ export async function inspectRemoteModelUrl(
           modelId?: number;
           baseModel?: string;
           model?: { name?: string; type?: string };
-          files?: Array<{ name?: string; sizeKB?: number; hashes?: { SHA256?: string } }>;
+          files?: CivitaiFileMeta[];
         };
-        const file = ver.files?.[0];
+        const file = selectBestCivitaiFile(ver.files);
         const filename = file?.name || `civitai_${versionId}.safetensors`;
         return {
           sourceKind: "civitai",
@@ -284,6 +374,7 @@ export async function inspectRemoteModelUrl(
 
     if (modelId) {
       const res = await fetch(`https://civitai.com/api/v1/models/${modelId}`, {
+        headers: civitaiHeaders,
         cache: "no-store",
         signal: AbortSignal.timeout(8000),
       });
@@ -294,11 +385,11 @@ export async function inspectRemoteModelUrl(
           modelVersions?: Array<{
             id?: number;
             baseModel?: string;
-            files?: Array<{ name?: string; sizeKB?: number; hashes?: { SHA256?: string } }>;
+            files?: CivitaiFileMeta[];
           }>;
         };
         const ver = data.modelVersions?.[0];
-        const file = ver?.files?.[0];
+        const file = selectBestCivitaiFile(ver?.files);
         const filename = file?.name || `civitai_${modelId}.safetensors`;
         return {
           sourceKind: "civitai",

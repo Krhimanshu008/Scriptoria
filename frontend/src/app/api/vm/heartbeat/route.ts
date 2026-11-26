@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { ensureDbSchemaReady } from "@/lib/db/ensure-schema";
 import { verifyVmRegistrationToken } from "@/lib/auth/session";
 import { appendSystemLog } from "@/lib/logs/logger";
+import { getUserGDriveCredential } from "@/lib/gdrive/client";
 
 interface HeartbeatTelemetryEntry {
   ready?: boolean;
@@ -126,7 +127,38 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    return NextResponse.json({ ok: true, updatedTargets });
+    // Live Google Drive OAuth token sync: if the VM asks for refresh or Vault updated since VM synced
+    let gdriveTokenPayload: Record<string, unknown> | undefined;
+    let gdriveUpdatedAtMs: number | undefined;
+    const clientNeedsSync = rawTelem.needsGdriveSync === true;
+    const clientSyncedAtMs =
+      typeof rawTelem.gdriveSyncedAtMs === "number" ? rawTelem.gdriveSyncedAtMs : 0;
+
+    try {
+      const gdriveRow = await prisma.credential.findFirst({
+        where: { userId: payload.userId, provider: "gdrive" },
+        orderBy: { updatedAt: "desc" },
+        select: { updatedAt: true },
+      });
+      const vaultUpdatedMs = gdriveRow?.updatedAt ? gdriveRow.updatedAt.getTime() : 0;
+      if (clientNeedsSync || (vaultUpdatedMs > 0 && vaultUpdatedMs > clientSyncedAtMs)) {
+        const gdriveCred = await getUserGDriveCredential(payload.userId, undefined, {
+          ensureFresh: true,
+        });
+        if (gdriveCred) {
+          gdriveTokenPayload = gdriveCred.parsed as Record<string, unknown>;
+          gdriveUpdatedAtMs = gdriveCred.updatedAt?.getTime() || vaultUpdatedMs || Date.now();
+        }
+      }
+    } catch (syncErr) {
+      console.warn("[vm/heartbeat] GDrive live token sync notice:", syncErr);
+    }
+
+    return NextResponse.json({
+      ok: true,
+      updatedTargets,
+      ...(gdriveTokenPayload ? { gdriveTokenPayload, gdriveUpdatedAtMs } : {}),
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Heartbeat error";
     return NextResponse.json({ error: message }, { status: 500 });

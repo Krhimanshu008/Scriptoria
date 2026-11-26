@@ -60,8 +60,14 @@ const VALID_CATEGORIES = new Set([
   "lipsync",
 ]);
 
+const CATEGORY_ALIASES: Record<string, string> = {
+  kokoro: "tts",
+  mmaudio: "audio_sfx",
+};
+
 export function sanitizeModelCategory(category: string): string {
-  const clean = category.trim().toLowerCase();
+  const raw = category.trim().toLowerCase();
+  const clean = CATEGORY_ALIASES[raw] || raw;
   return VALID_CATEGORIES.has(clean) ? clean : "checkpoints";
 }
 

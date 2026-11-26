@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAuthUser } from "@/lib/auth/session";
+import { getAuthContext } from "@/lib/auth/api-token";
 import { fetchGDriveFileStream } from "@/lib/gdrive/client";
 
 export async function GET(
@@ -7,8 +7,8 @@ export async function GET(
   { params }: { params: Promise<{ fileId: string }> }
 ) {
   try {
-    const user = await getAuthUser(req);
-    if (!user) {
+    const auth = await getAuthContext(req);
+    if (!auth) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -17,7 +17,7 @@ export async function GET(
       return NextResponse.json({ error: "Missing fileId" }, { status: 400 });
     }
 
-    const driveRes = await fetchGDriveFileStream(user.userId, fileId);
+    const driveRes = await fetchGDriveFileStream(auth.userId, fileId);
     if (!driveRes.ok || !driveRes.body) {
       return NextResponse.json(
         { error: `Failed to fetch file from Google Drive (${driveRes.status})` },

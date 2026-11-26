@@ -14,12 +14,30 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => ({}));
     const taskId = String(body.taskId || "");
     const workerId = String(body.workerId || "unknown-worker");
-    const outputFiles: unknown = body.outputFiles || [];
+    const rawOutputFiles = Array.isArray(body.outputFiles) ? body.outputFiles : [];
     const metrics: unknown = body.metrics || null;
 
     if (!taskId) {
       return NextResponse.json({ error: "taskId is required" }, { status: 400 });
     }
+
+    // Normalize outputs so storage URIs / Drive IDs are preserved cleanly without bloating SQLite/Turso with multi-MB base64 blobs
+    const normalizedOutputs = rawOutputFiles.map((item: unknown) => {
+      if (!item || typeof item !== "object") return item;
+      const obj = { ...(item as Record<string, unknown>) };
+      const gdriveFileId = typeof obj.gdriveFileId === "string" ? obj.gdriveFileId : "";
+      const storageUri = typeof obj.storageUri === "string" ? obj.storageUri : "";
+      if (gdriveFileId && !obj.previewUrl) {
+        obj.previewUrl = `/api/outputs/${encodeURIComponent(gdriveFileId)}`;
+      }
+      if ((gdriveFileId || storageUri || obj.previewUrl) && typeof obj.base64 === "string") {
+        delete obj.base64;
+      } else if (typeof obj.base64 === "string" && obj.base64.length > 262_144) {
+        obj.base64Omitted = true;
+        delete obj.base64;
+      }
+      return obj;
+    });
 
     const task = await prisma.batchTask.findFirst({
       where: {
@@ -41,7 +59,7 @@ export async function POST(req: NextRequest) {
       data: {
         status: "COMPLETED",
         assignedTarget: workerId,
-        outputFilesJson: JSON.stringify(outputFiles),
+        outputFilesJson: JSON.stringify(normalizedOutputs),
         errorMessage: null,
         updatedAt: new Date(),
       },

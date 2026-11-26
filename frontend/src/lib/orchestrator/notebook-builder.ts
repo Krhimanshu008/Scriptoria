@@ -1,3 +1,5 @@
+import crypto from "node:crypto";
+
 export interface PrewarmModelItem {
   category: string;
   filename: string;
@@ -16,12 +18,21 @@ export interface NotebookBuildConfig {
   gdriveTokenJson: string;
   gdriveBaseFolder: string;
   gpuTargets: string[]; // ["gpu0", "gpu1"] for Kaggle Dual-T4, ["gcgpu"] for Colab
+  gpuProfiles?: string[]; // Per-slot workerProfile list aligned with gpuTargets
   accountAlias: string;
   workerProfile?: string;
   customNodes?: CustomNodeBootstrapItem[];
   idleTimeoutSeconds?: number;
   enableOfflineDatasetScan?: boolean;
   prewarmModels?: PrewarmModelItem[];
+}
+
+export interface CpuMirrorSourceItem {
+  sourceKind?: string;
+  url: string;
+  authHeader?: string;
+  expectedSizeBytes?: number;
+  sha256?: string;
 }
 
 export interface CpuMirrorModelItem {
@@ -33,6 +44,7 @@ export interface CpuMirrorModelItem {
   authHeader?: string;
   expectedSizeBytes?: number;
   sha256?: string;
+  mirrors?: CpuMirrorSourceItem[];
 }
 
 export interface CpuMirrorConfig {
@@ -41,6 +53,216 @@ export interface CpuMirrorConfig {
   gdriveTokenJson: string;
   gdriveBaseFolder: string;
   models: CpuMirrorModelItem[];
+}
+
+/**
+ * Shared Python helper block for multi-mirror downloads (HuggingFace -> Civitai -> Direct URL)
+ * using aria2c (or urllib fallback) with SHA-256 verification per mirror attempt.
+ */
+function buildPythonMirrorDownloadHelper(): string {
+  return `
+def _download_with_mirrors(mirrors, tmp_dl, default_sha="", progress_cb=None):
+    errors = []
+    valid_mirrors = [m for m in (mirrors or []) if isinstance(m, dict) and str(m.get("url") or "").strip()]
+    for idx, m in enumerate(valid_mirrors):
+        url = str(m.get("url") or "").strip()
+        auth_hdr = str(m.get("authHeader") or "").strip()
+        exp_sz = int(m.get("expectedSizeBytes") or 0)
+        sha_exp = str(m.get("sha256") or default_sha or "").strip().lower()
+        src_kind = str(m.get("sourceKind") or "direct")
+        if os.path.exists(tmp_dl):
+            try:
+                os.remove(tmp_dl)
+            except Exception:
+                pass
+        try:
+            t0 = time.time()
+            used_aria2 = False
+            if shutil.which("aria2c"):
+                cmd = [
+                    "aria2c", "-x", "16", "-s", "16", "-k", "4M",
+                    "--file-allocation=none", "--allow-overwrite=true",
+                    "--auto-file-renaming=false", "--summary-interval=1",
+                    "-d", os.path.dirname(tmp_dl), "-o", os.path.basename(tmp_dl),
+                ]
+                if auth_hdr:
+                    cmd.extend(["--header", f"Authorization: {auth_hdr}"])
+                cmd.append(url)
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                while proc.poll() is None:
+                    if progress_cb and os.path.exists(tmp_dl):
+                        done = os.path.getsize(tmp_dl)
+                        elapsed = max(0.1, time.time() - t0)
+                        progress_cb(done, exp_sz, elapsed)
+                    time.sleep(0.7)
+                if proc.returncode == 0 and os.path.exists(tmp_dl):
+                    used_aria2 = True
+
+            if not used_aria2:
+                headers = {"User-Agent": "Scriptoria-Fetcher/3.0"}
+                if auth_hdr:
+                    headers["Authorization"] = auth_hdr
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=90) as resp:
+                    hdr_len = int(resp.headers.get("Content-Length") or 0)
+                    tot = exp_sz or hdr_len
+                    done = 0
+                    with open(tmp_dl, "wb") as out:
+                        while True:
+                            chunk = resp.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            out.write(chunk)
+                            done += len(chunk)
+                            if progress_cb:
+                                progress_cb(done, tot, max(0.1, time.time() - t0))
+
+            if sha_exp:
+                h = hashlib.sha256()
+                with open(tmp_dl, "rb") as hf:
+                    for blk in iter(lambda: hf.read(4 * 1024 * 1024), b""):
+                        h.update(blk)
+                actual_hash = h.hexdigest().lower()
+                if actual_hash != sha_exp:
+                    raise RuntimeError(f"SHA256 mismatch (expected {sha_exp[:12]}..., got {actual_hash[:12]}...)")
+
+            if not os.path.exists(tmp_dl) or os.path.getsize(tmp_dl) <= 0:
+                raise RuntimeError("Downloaded file is empty")
+            return {"sourceKind": src_kind, "url": url, "elapsed": round(time.time() - t0, 1)}
+        except Exception as merr:
+            errors.append(f"[{idx+1}:{src_kind}] {merr}")
+            if os.path.exists(tmp_dl):
+                try:
+                    os.remove(tmp_dl)
+                except Exception:
+                    pass
+    raise RuntimeError(" ; ".join(errors) if errors else "No valid download mirrors supplied")
+`;
+}
+
+/**
+ * Shared Python helper block for parsing Rclone OAuth JSON, writing `/tmp/rclone.conf`,
+ * refreshing Google OAuth access tokens before 1h expiry, and hot-updating running `rclone rcd`.
+ */
+function buildPythonRcloneHelpers(): string {
+  return `
+def _parse_expiry_epoch(expiry_str):
+    if not expiry_str:
+        return 0.0
+    try:
+        import datetime as _dt
+        s = str(expiry_str).strip()
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        s = re.sub(r"\\.(\\d+)", lambda m: "." + m.group(1)[:6], s)
+        return _dt.datetime.fromisoformat(s).timestamp()
+    except Exception:
+        return 0.0
+
+def _init_gdrive_state(raw_token_str):
+    global GDRIVE_CFG, GDRIVE_CLIENT_ID, GDRIVE_CLIENT_SECRET, GDRIVE_TOKEN_EXPIRY_EPOCH
+    try:
+        cfg = json.loads(raw_token_str or "{}")
+        if not isinstance(cfg, dict):
+            cfg = {}
+    except Exception:
+        cfg = {}
+    GDRIVE_CLIENT_ID = str(cfg.pop("client_id", "") or "").strip()
+    GDRIVE_CLIENT_SECRET = str(cfg.pop("client_secret", "") or "").strip()
+    GDRIVE_CFG = cfg
+    GDRIVE_TOKEN_EXPIRY_EPOCH = _parse_expiry_epoch(cfg.get("expiry"))
+
+def _write_rclone_conf_unlocked(push_rc=True):
+    if not GDRIVE_CFG and not GDRIVE_CLIENT_ID:
+        return False
+    rclone_lines = ["[gdrive]", "type = drive", "scope = drive"]
+    if GDRIVE_CLIENT_ID:
+        rclone_lines.append(f"client_id = {GDRIVE_CLIENT_ID}")
+    if GDRIVE_CLIENT_SECRET:
+        rclone_lines.append(f"client_secret = {GDRIVE_CLIENT_SECRET}")
+    rclone_lines.append(f"token = {json.dumps(GDRIVE_CFG)}")
+    tmp_conf = "/tmp/rclone.conf.tmp"
+    with open(tmp_conf, "w", encoding="utf-8") as f:
+        f.write("\\n".join(rclone_lines) + "\\n")
+    os.replace(tmp_conf, "/tmp/rclone.conf")
+    if push_rc and globals().get("RCLONE_READY") and callable(globals().get("rc_post")):
+        try:
+            rc_params = {"token": json.dumps(GDRIVE_CFG)}
+            if GDRIVE_CLIENT_ID:
+                rc_params["client_id"] = GDRIVE_CLIENT_ID
+            if GDRIVE_CLIENT_SECRET:
+                rc_params["client_secret"] = GDRIVE_CLIENT_SECRET
+            rc_post("config/update", {"name": "gdrive", "parameters": rc_params}, timeout=5)
+        except Exception:
+            pass
+    return True
+
+def refresh_gdrive_oauth_in_vm(force=False):
+    global GDRIVE_TOKEN_EXPIRY_EPOCH, NEEDS_GDRIVE_SYNC
+    with RCLONE_LOCK:
+        rtok = str(GDRIVE_CFG.get("refresh_token") or "").strip()
+        if not rtok or not GDRIVE_CLIENT_ID or not GDRIVE_CLIENT_SECRET:
+            return False
+        if not force and GDRIVE_TOKEN_EXPIRY_EPOCH > 0 and time.time() < (GDRIVE_TOKEN_EXPIRY_EPOCH - 600):
+            return True
+        if not force and GDRIVE_CFG.get("access_token") and GDRIVE_TOKEN_EXPIRY_EPOCH == 0:
+            pass
+        try:
+            token_req_data = urllib.parse.urlencode({
+                "client_id": GDRIVE_CLIENT_ID,
+                "client_secret": GDRIVE_CLIENT_SECRET,
+                "refresh_token": rtok,
+                "grant_type": "refresh_token",
+            }).encode("utf-8")
+            req = urllib.request.Request("https://oauth2.googleapis.com/token", data=token_req_data, method="POST")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                res_json = json.loads(resp.read().decode("utf-8"))
+                if res_json.get("access_token"):
+                    expires_in = int(res_json.get("expires_in") or 3599)
+                    GDRIVE_CFG["access_token"] = res_json["access_token"]
+                    GDRIVE_CFG.setdefault("token_type", "Bearer")
+                    GDRIVE_CFG["expiry"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + max(60, expires_in - 60)))
+                    GDRIVE_TOKEN_EXPIRY_EPOCH = time.time() + max(60, expires_in - 60)
+                    NEEDS_GDRIVE_SYNC = False
+                    _write_rclone_conf_unlocked(push_rc=True)
+                    return True
+        except urllib.error.HTTPError as he:
+            err_body = ""
+            try:
+                err_body = he.read().decode("utf-8", errors="ignore")
+            except Exception:
+                pass
+            if "invalid_grant" in err_body.lower():
+                NEEDS_GDRIVE_SYNC = True
+            log_event(f"OAuth refresh notice (HTTP {he.code}): {err_body[:160] or he.reason}", category="RCLONE", level="WARN")
+        except Exception as e:
+            log_event(f"OAuth refresh notice: {e}", category="RCLONE", level="WARN")
+        return False
+
+def apply_synced_gdrive_token(payload_dict, updated_at_ms=None):
+    global GDRIVE_CFG, GDRIVE_CLIENT_ID, GDRIVE_CLIENT_SECRET, GDRIVE_TOKEN_EXPIRY_EPOCH, GDRIVE_SYNCED_AT_MS, NEEDS_GDRIVE_SYNC
+    if not isinstance(payload_dict, dict):
+        return False
+    with RCLONE_LOCK:
+        cfg = dict(payload_dict)
+        cid = str(cfg.pop("client_id", "") or GDRIVE_CLIENT_ID or "").strip()
+        csec = str(cfg.pop("client_secret", "") or GDRIVE_CLIENT_SECRET or "").strip()
+        if cid:
+            GDRIVE_CLIENT_ID = cid
+        if csec:
+            GDRIVE_CLIENT_SECRET = csec
+        GDRIVE_CFG = cfg
+        GDRIVE_TOKEN_EXPIRY_EPOCH = _parse_expiry_epoch(cfg.get("expiry"))
+        NEEDS_GDRIVE_SYNC = False
+        if updated_at_ms:
+            try:
+                GDRIVE_SYNCED_AT_MS = max(GDRIVE_SYNCED_AT_MS, int(updated_at_ms))
+            except Exception:
+                pass
+        _write_rclone_conf_unlocked(push_rc=True)
+        log_event("Hot-reloaded Google Drive OAuth token from Scriptoria Vault without VM restart.", category="RCLONE", level="SUCCESS")
+        return True
+`;
 }
 
 /**
@@ -62,7 +284,30 @@ export function buildUnifiedNotebookPythonCode(cfg: NotebookBuildConfig): string
   const rcloneTransfers = isKaggle ? "2" : "1";
   const prewarmModels = cfg.prewarmModels ?? [];
   const profileId = (cfg.workerProfile || "IMAGE_CORE").replace(/[^a-zA-Z0-9_-]/g, "_");
+  const gpuProfiles = (cfg.gpuProfiles?.length ? cfg.gpuProfiles : cfg.gpuTargets.map(() => profileId)).map((p) =>
+    p.replace(/[^a-zA-Z0-9_-]/g, "_")
+  );
+  const uniqueNonLlm = Array.from(new Set(gpuProfiles.filter((p) => !p.startsWith("LLM_"))));
+  const effectiveCacheProfile =
+    !profileId.startsWith("LLM_") && uniqueNonLlm.length > 1
+      ? [...uniqueNonLlm].sort().join("__")
+      : profileId;
   const customNodes = cfg.customNodes ?? [];
+  const nodesHash =
+    customNodes.length > 0
+      ? crypto
+          .createHash("sha256")
+          .update(
+            JSON.stringify(
+              [...customNodes]
+                .map((n) => [n.name, n.repoUrl])
+                .sort((a, b) => a[0].localeCompare(b[0]))
+            )
+          )
+          .digest("hex")
+          .slice(0, 8)
+      : "";
+  const fastbootCacheKey = nodesHash ? `${effectiveCacheProfile}_cn${nodesHash}` : effectiveCacheProfile;
 
   return `import os, sys, re, time, json, uuid, hashlib, shutil, zipfile, tarfile, sysconfig, subprocess, threading, urllib.request, urllib.parse, urllib.error
 from collections import deque
@@ -74,6 +319,8 @@ VM_SECRET = ${JSON.stringify(cfg.vmSecret)}
 PROVIDER = ${JSON.stringify(cfg.provider)}
 ACCOUNT_ALIAS = ${JSON.stringify(cfg.accountAlias)}
 PROFILE_ID = ${JSON.stringify(profileId)}
+GPU_PROFILES = ${JSON.stringify(gpuProfiles)}
+FASTBOOT_CACHE_KEY = ${JSON.stringify(fastbootCacheKey)}
 CUSTOM_NODES = ${JSON.stringify(customNodes)}
 TARGETS = ${JSON.stringify(cfg.gpuTargets)}
 PORTS = ${JSON.stringify(ports)}
@@ -91,6 +338,13 @@ PENDING_LOGS = []
 FETCH_JOBS = {}
 FETCH_LOCK = threading.Lock()
 RCLONE_READY = False
+RCLONE_LOCK = threading.Lock()
+GDRIVE_CFG = {}
+GDRIVE_CLIENT_ID = ""
+GDRIVE_CLIENT_SECRET = ""
+GDRIVE_TOKEN_EXPIRY_EPOCH = 0.0
+GDRIVE_SYNCED_AT_MS = int(time.time() * 1000)
+NEEDS_GDRIVE_SYNC = False
 TUNNEL_URL = None
 CURRENT_STEP = 1
 T_BOOT_START = time.time()
@@ -102,7 +356,14 @@ LAST_HB_SENT = 0.0
 COMFY_DIR = "/tmp/ComfyUI"
 FASTBOOT_SITE = "/tmp/sc_site_packages"
 PY_VER_TAG = f"{sys.version_info.major}{sys.version_info.minor}"
-FASTBOOT_REMOTE = f"{GDRIVE_BASE}/cache/fastboot_{PROVIDER}_{PROFILE_ID}_py{PY_VER_TAG}_v2.tar.gz"
+FASTBOOT_REMOTE = f"{GDRIVE_BASE}/cache/fastboot_{PROVIDER}_{FASTBOOT_CACHE_KEY}_py{PY_VER_TAG}_v2.tar.gz"
+
+try:
+    with open("/tmp/scriptoria_worker.env", "w", encoding="utf-8") as _ef:
+        _ef.write(f"SCRIPTORIA_URL={APP_URL}\\nSIDECAR_URL=http://127.0.0.1:9999\\nVM_SECRET={VM_SECRET}\\nWORKER_TARGET={TARGETS[0] if TARGETS else ''}\\n")
+    os.chmod("/tmp/scriptoria_worker.env", 0o600)
+except Exception:
+    pass
 
 def log_event(msg, category="SYSTEM", level="INFO"):
     line = f"[{category}] {msg}"
@@ -115,6 +376,8 @@ def log_event(msg, category="SYSTEM", level="INFO"):
 def has_pending_logs():
     with LOG_LOCK:
         return len(PENDING_LOGS) > 0
+
+${buildPythonRcloneHelpers()}
 
 def post_heartbeat(step, status="STARTING", telemetry=None):
     global CURRENT_STEP, EVER_CONNECTED, HEARTBEAT_FAIL_STREAK, LAST_HB_SENT, STEP_START, STEP_DURATIONS
@@ -134,6 +397,8 @@ def post_heartbeat(step, status="STARTING", telemetry=None):
     telem["stepDurations"] = dict(STEP_DURATIONS)
     telem["currentStepElapsed"] = round(now - STEP_START, 1)
     telem["totalBootElapsed"] = round(now - T_BOOT_START, 1)
+    telem["needsGdriveSync"] = bool(NEEDS_GDRIVE_SYNC)
+    telem["gdriveSyncedAtMs"] = GDRIVE_SYNCED_AT_MS
     payload = {
         "token": REG_JWT,
         "tunnelUrl": TUNNEL_URL or "",
@@ -151,7 +416,13 @@ def post_heartbeat(step, status="STARTING", telemetry=None):
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
-            resp.read()
+            hb_raw = resp.read().decode("utf-8", errors="ignore")
+            try:
+                hb_json = json.loads(hb_raw or "{}")
+                if isinstance(hb_json, dict) and hb_json.get("gdriveTokenPayload"):
+                    apply_synced_gdrive_token(hb_json.get("gdriveTokenPayload"), hb_json.get("gdriveUpdatedAtMs"))
+            except Exception:
+                pass
         EVER_CONNECTED = True
         HEARTBEAT_FAIL_STREAK = 0
     except urllib.error.HTTPError as he:
@@ -244,6 +515,10 @@ def rc_post(action, payload, timeout=60):
         return json.loads(resp.read().decode("utf-8"))
 
 def rc_copy_async(payload, max_wait=240, label="transfer"):
+    try:
+        refresh_gdrive_oauth_in_vm(force=False)
+    except Exception:
+        pass
     job = rc_post("operations/copyfile", {**payload, "_async": True}, timeout=15)
     jobid = job.get("jobid")
     if not jobid:
@@ -259,7 +534,8 @@ def rc_copy_async(payload, max_wait=240, label="transfer"):
     raise TimeoutError(f"{label} timed out after {max_wait}s")
 
 def _safe_model_target(category, filename, subdir=""):
-    clean_cat = os.path.basename(str(category or "checkpoints").strip())
+    raw_cat = os.path.basename(str(category or "checkpoints").strip()).lower()
+    clean_cat = {"kokoro": "tts", "mmaudio": "audio_sfx"}.get(raw_cat, raw_cat)
     if clean_cat not in CATEGORIES:
         clean_cat = "checkpoints"
     base_real = os.path.realpath("/tmp/models")
@@ -324,7 +600,9 @@ def _post_backup_callback(slug, status, gdrive_path="", gdrive_file_id="", size_
     except Exception:
         pass
 
-def _run_fetch_job(job_id, url, category, subdir, filename, target_path, expected_size, sha256_hex, auth_header, backup_to_gdrive, asset_slug):
+${buildPythonMirrorDownloadHelper()}
+
+def _run_fetch_job(job_id, mirrors, category, subdir, filename, target_path, expected_size, sha256_hex, backup_to_gdrive, asset_slug, allow_gdrive_fallback=True):
     def _upd(**kw):
         with FETCH_LOCK:
             if job_id in FETCH_JOBS:
@@ -337,70 +615,37 @@ def _run_fetch_job(job_id, url, category, subdir, filename, target_path, expecte
         _upd(status="downloading", startedAt=time.time())
         t0 = time.time()
 
-        used_aria2 = False
-        if shutil.which("aria2c"):
-            cmd = [
-                "aria2c", "-x", "16", "-s", "16", "-k", "4M",
-                "--file-allocation=none", "--allow-overwrite=true",
-                "--auto-file-renaming=false", "--summary-interval=1",
-                "-d", os.path.dirname(tmp_dl), "-o", os.path.basename(tmp_dl),
-            ]
-            if auth_header:
-                cmd.extend(["--header", f"Authorization: {auth_header}"])
-            cmd.append(url)
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            while proc.poll() is None:
-                if os.path.exists(tmp_dl):
-                    done = os.path.getsize(tmp_dl)
-                    elapsed = max(0.1, time.time() - t0)
-                    spd = done / elapsed
-                    pct = min(99, round((done / expected_size) * 100)) if expected_size else 0
-                    eta = max(1, round((expected_size - done) / spd)) if (expected_size and spd > 0 and expected_size > done) else None
-                    _upd(bytesDone=done, totalBytes=expected_size or 0, percentage=pct, speedMbps=round(spd / (1024 ** 2), 1), etaSeconds=eta)
-                time.sleep(0.7)
-            if proc.returncode == 0 and os.path.exists(tmp_dl):
-                used_aria2 = True
+        def _on_progress(done, tot, elapsed):
+            spd = done / max(0.1, elapsed)
+            eff_tot = tot or expected_size or 0
+            pct = min(99, round((done / eff_tot) * 100)) if eff_tot else 0
+            eta = max(1, round((eff_tot - done) / spd)) if (eff_tot and spd > 0 and eff_tot > done) else None
+            _upd(bytesDone=done, totalBytes=eff_tot, percentage=pct, speedMbps=round(spd / (1024 ** 2), 1), etaSeconds=eta)
 
-        if not used_aria2:
-            headers = {"User-Agent": "Scriptoria-Fetcher/3.0"}
-            if auth_header:
-                headers["Authorization"] = auth_header
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                hdr_len = int(resp.headers.get("Content-Length") or 0)
-                tot = expected_size or hdr_len
-                done = 0
-                with open(tmp_dl, "wb") as out:
-                    while True:
-                        chunk = resp.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        out.write(chunk)
-                        done += len(chunk)
-                        elapsed = max(0.1, time.time() - t0)
-                        spd = done / elapsed
-                        pct = min(99, round((done / tot) * 100)) if tot else 0
-                        eta = max(1, round((tot - done) / spd)) if (tot and spd > 0 and tot > done) else None
-                        _upd(bytesDone=done, totalBytes=tot, percentage=pct, speedMbps=round(spd / (1024 ** 2), 1), etaSeconds=eta)
-
-        if sha256_hex:
-            h = hashlib.sha256()
-            with open(tmp_dl, "rb") as hf:
-                while True:
-                    b = hf.read(4 * 1024 * 1024)
-                    if not b:
-                        break
-                    h.update(b)
-            actual_hash = h.hexdigest().lower()
-            if actual_hash != sha256_hex.lower():
-                raise RuntimeError(f"SHA256 mismatch (expected {sha256_hex[:12]}..., got {actual_hash[:12]}...)")
+        fetched_from = "http"
+        try:
+            res_info = _download_with_mirrors(mirrors, tmp_dl, default_sha=sha256_hex, progress_cb=_on_progress)
+            fetched_from = res_info.get("sourceKind", "http")
+        except Exception as mirror_err:
+            if allow_gdrive_fallback and RCLONE_READY:
+                log_event(f"Direct mirrors failed for {filename} ({mirror_err}); trying 5 TB Drive fallback...", category="RCLONE", level="WARN")
+                remote_dir = f"{GDRIVE_BASE}/models/{category}" + (f"/{subdir}" if subdir else "")
+                rc_copy_async({
+                    "srcFs": f"gdrive:{remote_dir}",
+                    "srcRemote": filename,
+                    "dstFs": os.path.dirname(target_path),
+                    "dstRemote": os.path.basename(tmp_dl),
+                }, max_wait=600, label=f"Drive fallback {filename}")
+                fetched_from = "gdrive"
+            else:
+                raise
 
         os.replace(tmp_dl, target_path)
         final_size = os.path.getsize(target_path)
-        _upd(status="completed", bytesDone=final_size, totalBytes=final_size, percentage=100, speedMbps=0, etaSeconds=0)
-        log_event(f"Direct fetch complete: {filename} ({round(final_size / (1024**3), 2)} GB) in {round(time.time() - t0, 1)}s", category="RCLONE", level="SUCCESS")
+        _upd(status="completed", bytesDone=final_size, totalBytes=final_size, percentage=100, speedMbps=0, etaSeconds=0, source=fetched_from)
+        log_event(f"Fetch complete ({fetched_from}): {filename} ({round(final_size / (1024**3), 2)} GB) in {round(time.time() - t0, 1)}s", category="RCLONE", level="SUCCESS")
 
-        if backup_to_gdrive and RCLONE_READY:
+        if backup_to_gdrive and fetched_from != "gdrive" and RCLONE_READY:
             def _bg_backup():
                 remote_dir = f"{GDRIVE_BASE}/models/{category}" + (f"/{subdir}" if subdir else "")
                 remote_path = f"{remote_dir}/{filename}"
@@ -454,7 +699,7 @@ class SidecarHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"status": "ok", "targets": TARGETS, "ports": PORTS}).encode())
+            self.wfile.write(json.dumps({"status": "ok", "targets": TARGETS, "ports": PORTS, "profiles": GPU_PROFILES}).encode())
         elif self.path == "/logs":
             with LOG_LOCK:
                 snapshot = list(BOOT_LOGS)
@@ -613,6 +858,7 @@ class SidecarHandler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length) or b"{}")
             url = str(body.get("url") or "").strip()
+            mirrors = body.get("mirrors") if isinstance(body.get("mirrors"), list) else []
             raw_cat = str(body.get("category") or "checkpoints")
             subdir = str(body.get("subdir") or "")
             filename = str(body.get("filename") or "").strip()
@@ -620,10 +866,14 @@ class SidecarHandler(BaseHTTPRequestHandler):
             sha256_hex = str(body.get("sha256") or "").strip()
             auth_header = str(body.get("authHeader") or "").strip()
             backup_to_gdrive = bool(body.get("backupToGdrive", True))
+            allow_gdrive_fallback = bool(body.get("allowGdriveFallback", True))
             asset_slug = str(body.get("assetSlug") or "").strip()
 
+            if not mirrors and url:
+                mirrors = [{"url": url, "authHeader": auth_header, "expectedSizeBytes": expected_size, "sha256": sha256_hex, "sourceKind": "direct"}]
+
             clean_cat, rel_sub, target_path = _safe_model_target(raw_cat, filename, subdir)
-            if not url or not target_path:
+            if (not mirrors and not allow_gdrive_fallback) or not target_path:
                 self.send_response(400); self.end_headers(); return
 
             if os.path.exists(target_path):
@@ -657,7 +907,7 @@ class SidecarHandler(BaseHTTPRequestHandler):
                 }
             threading.Thread(
                 target=_run_fetch_job,
-                args=(job_id, url, clean_cat, rel_sub, filename, target_path, expected_size, sha256_hex, auth_header, backup_to_gdrive, asset_slug),
+                args=(job_id, mirrors, clean_cat, rel_sub, filename, target_path, expected_size, sha256_hex, backup_to_gdrive, asset_slug, allow_gdrive_fallback),
                 daemon=True,
             ).start()
             self.send_response(200)
@@ -677,16 +927,17 @@ class SidecarHandler(BaseHTTPRequestHandler):
             src_dir = f"/tmp/outputs/{subfolder}" if subfolder else "/tmp/outputs"
             date_dir = time.strftime("%Y-%m-%d")
             remote_dir = f"{GDRIVE_BASE}/outputs/{date_dir}"
+            refresh_gdrive_oauth_in_vm(force=False)
             try:
                 rc_post("operations/mkdir", {"fs": "gdrive:", "remote": remote_dir})
             except Exception:
                 pass
-            rc_post("operations/copyfile", {
+            rc_copy_async({
                 "srcFs": src_dir,
                 "srcRemote": filename,
                 "dstFs": f"gdrive:{remote_dir}",
                 "dstRemote": filename,
-            })
+            }, max_wait=240, label=f"Sync output {filename}")
             stat = rc_post("operations/stat", {"fs": f"gdrive:{remote_dir}", "remote": filename})
             file_id = (stat.get("item") or {}).get("ID", "")
             self.send_response(200)
@@ -702,41 +953,11 @@ class SidecarHandler(BaseHTTPRequestHandler):
 
 threading.Thread(target=lambda: ThreadingHTTPServer(("127.0.0.1", 9999), SidecarHandler).serve_forever(), daemon=True).start()
 
-try:
-    gdrive_cfg = json.loads(GDRIVE_TOKEN_RAW)
-except Exception:
-    gdrive_cfg = {}
-
-client_id = gdrive_cfg.pop("client_id", "")
-client_secret = gdrive_cfg.pop("client_secret", "")
-refresh_token = gdrive_cfg.get("refresh_token", "")
-
-if refresh_token and client_id and client_secret:
-    try:
-        token_req_data = urllib.parse.urlencode({
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "refresh_token": refresh_token,
-            "grant_type": "refresh_token",
-        }).encode("utf-8")
-        req = urllib.request.Request("https://oauth2.googleapis.com/token", data=token_req_data, method="POST")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            res_json = json.loads(resp.read().decode("utf-8"))
-            if res_json.get("access_token"):
-                gdrive_cfg["access_token"] = res_json["access_token"]
-                gdrive_cfg.setdefault("token_type", "Bearer")
-                gdrive_cfg["expiry"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 3300))
-    except Exception as e:
-        log_event(f"OAuth refresh notice: {e}", category="RCLONE", level="WARN")
-
-rclone_lines = ["[gdrive]", "type = drive", "scope = drive"]
-if client_id:
-    rclone_lines.append(f"client_id = {client_id}")
-if client_secret:
-    rclone_lines.append(f"client_secret = {client_secret}")
-rclone_lines.append(f"token = {json.dumps(gdrive_cfg)}")
-with open("/tmp/rclone.conf", "w", encoding="utf-8") as f:
-    f.write("\\n".join(rclone_lines) + "\\n")
+_init_gdrive_state(GDRIVE_TOKEN_RAW)
+refresh_gdrive_oauth_in_vm(force=True)
+with RCLONE_LOCK:
+    _write_rclone_conf_unlocked(push_rc=False)
+    gdrive_cfg = GDRIVE_CFG
 
 with open("/tmp/Caddyfile", "w", encoding="utf-8") as f:
     f.write(f"""(sc_dispatch) {{
@@ -1436,8 +1657,10 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                 WORKER_PROCS["cpm"] = subprocess.Popen(cmd_cpm, env=env_cpm, stdout=open("/tmp/llama_cpm.log", "w"), stderr=subprocess.STDOUT)
                 log_event("Launched MiniCPM-V 4.7-1B Tagger -> CUDA:1 (:8192)", category="SYSTEM", level="SUCCESS")
             else:
+                has_dflash = bool(dflash_gguf and os.path.exists(dflash_gguf))
                 t_split = "52,48" if is_moe_35b else ("55,45" if is_vlm_27b else "50,50")
-                ctx_size = "8192" if is_vlm_27b else "16384"
+                ctx_size = "16384"
+                ubatch = "128" if (is_vlm_27b and has_dflash) else "256"
                 ll_cmd = [
                     llama_bin, "-m", model_gguf, "--host", "127.0.0.1", "--port", "8190",
                     "-ngl", "999",
@@ -1445,10 +1668,11 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                     "--split-mode", "layer",
                     "--tensor-split", t_split,
                     "--fit", "off",
+                    "--flash-attn", "on",
                     "--ctx-size", ctx_size,
                     "-ctk", "q8_0", "-ctv", "q8_0",
                     "--batch-size", "512",
-                    "--ubatch-size", "256",
+                    "--ubatch-size", ubatch,
                     "--parallel", "1",
                     "--kv-unified",
                     "--jinja",
@@ -1456,6 +1680,16 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                 ]
                 if mmproj_gguf and PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B"):
                     ll_cmd.extend(["--mmproj", mmproj_gguf])
+                if is_vlm_27b and has_dflash:
+                    ll_cmd.extend([
+                        "-md", dflash_gguf,
+                        "--spec-type", "draft-dflash",
+                        "--spec-draft-n-max", "5",
+                        "-ngld", "99",
+                        "-devd", "CUDA1",
+                        "-ctkd", "q8_0",
+                        "-ctvd", "q8_0",
+                    ])
                 ll_log = open("/tmp/llama_server.log", "w")
                 WORKER_PROCS["main"] = subprocess.Popen(ll_cmd, env=ll_env, stdout=ll_log, stderr=ll_log)
                 mode_label = (
@@ -1670,6 +1904,8 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
             lbl = "Qwen Swarm (4B Extractor + 9B QC + MiniCPM-V 1B)" if PROFILE_ID == "LLM_LIGHTWEIGHT_SWARM" else f"{mode_label}"
             log_event(f"{lbl} ONLINE in {round(time.time() - t_boot_start, 1)}s -> {TUNNEL_URL}", category="SYSTEM", level="SUCCESS")
 
+        if RCLONE_READY:
+            refresh_gdrive_oauth_in_vm(force=False)
         hb_int = 20 if all_ready else 8
         if next_step != _llm_last_step or has_pending_logs() or (time.time() - LAST_HB_SENT) >= hb_int:
             post_heartbeat(next_step, next_status, telem)
@@ -1677,6 +1913,14 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
 
         if not EVER_CONNECTED and (time.time() - _llm_t0) > 90 and HEARTBEAT_FAIL_STREAK >= 3:
             break
+        if IDLE_TIMEOUT_SEC > 0:
+            try:
+                with urllib.request.urlopen("http://127.0.0.1:8190/slots", timeout=1.5) as sr:
+                    slots = json.loads(sr.read().decode("utf-8"))
+                    if isinstance(slots, list) and any(s.get("is_processing") or s.get("state", 0) != 0 for s in slots if isinstance(s, dict)):
+                        LAST_ACTIVE = time.time()
+            except Exception:
+                pass
         if IDLE_TIMEOUT_SEC > 0 and (time.time() - LAST_ACTIVE > IDLE_TIMEOUT_SEC):
             log_event("LLM idle timeout reached. Stopping to preserve Kaggle quota.", category="ACTION", level="WARN")
             post_heartbeat(0, "OFFLINE", {})
@@ -1971,6 +2215,7 @@ def _upload_fastboot_snapshot():
 # 6. Wait for Tunnel + ComfyUI Readiness & Run Heartbeat Loop
 # -------------------------------------------------------------
 def probe_comfy_stats():
+    global LAST_ACTIVE
     stats = {}
     for t_name, port in zip(TARGETS, active_ports):
         try:
@@ -1980,11 +2225,24 @@ def probe_comfy_stats():
                 if devs:
                     vram_total = round(devs[0].get("vram_total", 16 * (1024**3)) / (1024**3), 2)
                     vram_free = round(devs[0].get("vram_free", 0) / (1024**3), 2)
+                    q_running = 0
+                    q_pending = 0
+                    try:
+                        with urllib.request.urlopen(f"http://127.0.0.1:{port}/queue", timeout=1.5) as qresp:
+                            qdata = json.loads(qresp.read().decode("utf-8"))
+                            q_running = len(qdata.get("queue_running") or [])
+                            q_pending = len(qdata.get("queue_pending") or [])
+                            if q_running > 0 or q_pending > 0:
+                                LAST_ACTIVE = time.time()
+                    except Exception:
+                        pass
                     stats[t_name] = {
                         "ready": True,
                         "gpuName": devs[0].get("name", "NVIDIA T4"),
                         "vramTotalGb": vram_total,
                         "vramUsedGb": round(max(0.0, vram_total - vram_free), 2),
+                        "queueRunning": q_running,
+                        "queuePending": q_pending,
                     }
         except Exception:
             stats[t_name] = {"ready": False}
@@ -2019,6 +2277,9 @@ while True:
     if (any_ready or (time.time() - t_loop_start) > 45) and should_upload_cache and rclone_ok and not upload_started:
         upload_started = True
         threading.Thread(target=_upload_fastboot_snapshot, daemon=True).start()
+
+    if RCLONE_READY:
+        refresh_gdrive_oauth_in_vm(force=False)
 
     steady_poll = all_ready or (any_ready and (time.time() - t_loop_start) > 90)
     hb_interval = 20 if steady_poll else 8
@@ -2141,7 +2402,7 @@ export function buildColabNotebookJson(cfg: NotebookBuildConfig) {
  * directly from HuggingFace / Civitai / URLs and mirrors them into the user's 5 TB Google Drive.
  */
 export function buildCpuMirrorNotebookPythonCode(cfg: CpuMirrorConfig): string {
-  return `import os, sys, time, json, hashlib, shutil, zipfile, subprocess, urllib.request, urllib.parse
+  return `import os, sys, re, time, json, hashlib, shutil, zipfile, threading, subprocess, urllib.request, urllib.parse, urllib.error
 
 APP_URL = ${JSON.stringify(cfg.appWebhookUrl.replace(/\/$/, ""))}
 REG_JWT = ${JSON.stringify(cfg.registrationJwt)}
@@ -2150,6 +2411,21 @@ GDRIVE_TOKEN_RAW = ${JSON.stringify(cfg.gdriveTokenJson)}
 MODELS = ${JSON.stringify(cfg.models)}
 
 os.makedirs("/tmp/mirror", exist_ok=True)
+
+RCLONE_READY = False
+RCLONE_LOCK = threading.Lock()
+GDRIVE_CFG = {}
+GDRIVE_CLIENT_ID = ""
+GDRIVE_CLIENT_SECRET = ""
+GDRIVE_TOKEN_EXPIRY_EPOCH = 0.0
+GDRIVE_SYNCED_AT_MS = 0
+NEEDS_GDRIVE_SYNC = False
+
+def log_event(msg, category="MIRROR", level="INFO"):
+    print(f"[{category}] {msg}", flush=True)
+
+${buildPythonRcloneHelpers()}
+${buildPythonMirrorDownloadHelper()}
 
 def post_cb(slug, status, gdrive_path="", gdrive_file_id="", size_bytes=None, error_msg=""):
     try:
@@ -2172,31 +2448,10 @@ def post_cb(slug, status, gdrive_path="", gdrive_file_id="", size_bytes=None, er
     except Exception as e:
         print(f"[CALLBACK] {slug}: {e}", flush=True)
 
-try:
-    gdrive_cfg = json.loads(GDRIVE_TOKEN_RAW)
-except Exception:
-    gdrive_cfg = {}
-
-cid = gdrive_cfg.pop("client_id", "")
-csec = gdrive_cfg.pop("client_secret", "")
-rtok = gdrive_cfg.get("refresh_token", "")
-if rtok and cid and csec:
-    data = urllib.parse.urlencode({
-        "client_id": cid, "client_secret": csec, "refresh_token": rtok, "grant_type": "refresh_token"
-    }).encode("utf-8")
-    with urllib.request.urlopen(urllib.request.Request("https://oauth2.googleapis.com/token", data=data, method="POST"), timeout=15) as resp:
-        res_json = json.loads(resp.read().decode("utf-8"))
-        if res_json.get("access_token"):
-            gdrive_cfg["access_token"] = res_json["access_token"]
-            gdrive_cfg.setdefault("token_type", "Bearer")
-            gdrive_cfg["expiry"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 3300))
-
-lines = ["[gdrive]", "type = drive", "scope = drive"]
-if cid: lines.append(f"client_id = {cid}")
-if csec: lines.append(f"client_secret = {csec}")
-lines.append(f"token = {json.dumps(gdrive_cfg)}")
-with open("/tmp/rclone.conf", "w", encoding="utf-8") as f:
-    f.write("\\n".join(lines) + "\\n")
+_init_gdrive_state(GDRIVE_TOKEN_RAW)
+refresh_gdrive_oauth_in_vm(force=True)
+with RCLONE_LOCK:
+    _write_rclone_conf_unlocked(push_rc=False)
 
 if not os.path.exists("/usr/local/bin/rclone"):
     subprocess.run(["curl", "-sSLf", "https://downloads.rclone.org/rclone-current-linux-amd64.zip", "-o", "/tmp/rclone.zip"], check=True)
@@ -2213,16 +2468,21 @@ subprocess.run(["bash", "-lc", "apt-get update -qq && apt-get install -y -qq ari
 
 for item in MODELS:
     slug = item["slug"]
-    cat = item["category"]
+    raw_cat = str(item["category"]).strip().lower()
+    cat = {"kokoro": "tts", "mmaudio": "audio_sfx"}.get(raw_cat, raw_cat)
     sub = item.get("subdir") or ""
     fname = item["filename"]
-    url = item["url"]
+    url = item.get("url") or ""
     auth_hdr = item.get("authHeader") or ""
     sha_expected = (item.get("sha256") or "").lower()
+    mirrors = item.get("mirrors") if isinstance(item.get("mirrors"), list) else []
+    if not mirrors and url:
+        mirrors = [{"url": url, "authHeader": auth_hdr, "expectedSizeBytes": item.get("expectedSizeBytes") or 0, "sha256": sha_expected, "sourceKind": "direct"}]
     remote_dir = f"{GDRIVE_BASE}/models/{cat}" + (f"/{sub}" if sub else "")
     remote_path = f"{remote_dir}/{fname}"
     local_path = os.path.join("/tmp/mirror", fname)
     try:
+        refresh_gdrive_oauth_in_vm(force=False)
         chk = subprocess.run(["/usr/local/bin/rclone", "lsjson", "--config", "/tmp/rclone.conf", f"gdrive:{remote_path}"], capture_output=True, text=True)
         if chk.returncode == 0 and chk.stdout.strip().startswith("[") and len(json.loads(chk.stdout)) > 0:
             info = json.loads(chk.stdout)[0]
@@ -2231,26 +2491,8 @@ for item in MODELS:
             continue
 
         post_cb(slug, "BACKING_UP", remote_path)
-        print(f"[MIRROR] Downloading {fname} from {url}...", flush=True)
-        if shutil.which("aria2c"):
-            cmd = ["aria2c", "-x", "16", "-s", "16", "-k", "4M", "--file-allocation=none", "--allow-overwrite=true", "-d", "/tmp/mirror", "-o", fname]
-            if auth_hdr:
-                cmd.extend(["--header", f"Authorization: {auth_hdr}"])
-            cmd.append(url)
-            subprocess.run(cmd, check=True)
-        else:
-            headers = {"User-Agent": "Scriptoria-Mirror/1.0"}
-            if auth_hdr: headers["Authorization"] = auth_hdr
-            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120) as r, open(local_path, "wb") as out:
-                shutil.copyfileobj(r, out, 1024 * 1024)
-
-        if sha_expected:
-            h = hashlib.sha256()
-            with open(local_path, "rb") as hf:
-                for blk in iter(lambda: hf.read(4 * 1024 * 1024), b""):
-                    h.update(blk)
-            if h.hexdigest().lower() != sha_expected:
-                raise RuntimeError("SHA256 mismatch")
+        print(f"[MIRROR] Downloading {fname} via {len(mirrors)} mirror(s)...", flush=True)
+        _download_with_mirrors(mirrors, local_path, default_sha=sha_expected)
 
         sz = os.path.getsize(local_path)
         subprocess.run(["/usr/local/bin/rclone", "mkdir", "--config", "/tmp/rclone.conf", f"gdrive:{remote_dir}"], check=False)

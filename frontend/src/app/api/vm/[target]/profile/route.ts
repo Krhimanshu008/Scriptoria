@@ -31,6 +31,7 @@ export async function PATCH(
       displayName?: string;
       idleTimeoutMinutes?: number | null;
       prewarmModelsJson?: string | null;
+      kaggleDatasetsJson?: string | null;
     } = {};
 
     if (body.workerProfile !== undefined) {
@@ -85,6 +86,19 @@ export async function PATCH(
         updateData.prewarmModelsJson = clean.length > 0 ? JSON.stringify(clean) : null;
       } else if (body.prewarmModels === null) {
         updateData.prewarmModelsJson = null;
+      }
+    }
+
+    if (body.kaggleDatasets !== undefined) {
+      if (Array.isArray(body.kaggleDatasets)) {
+        const cleanDatasets = (body.kaggleDatasets as unknown[])
+          .filter((d): d is string => typeof d === "string" && d.trim().includes("/"))
+          .map((d) => d.trim())
+          .slice(0, 6);
+        updateData.kaggleDatasetsJson =
+          cleanDatasets.length > 0 ? JSON.stringify(cleanDatasets) : null;
+      } else if (body.kaggleDatasets === null) {
+        updateData.kaggleDatasetsJson = null;
       }
     }
 

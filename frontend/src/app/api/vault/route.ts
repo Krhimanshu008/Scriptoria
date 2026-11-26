@@ -10,6 +10,11 @@ import {
 } from "@/lib/crypto/credentials";
 import { invalidateColabMetaIfEmailChanged } from "@/lib/orchestrator/colab-runner";
 import { appendSystemLog } from "@/lib/logs/logger";
+import {
+  assessGDriveTokenHealth,
+  normalizeRcloneGdrivePayload,
+  type GDriveTokenShape,
+} from "@/lib/gdrive/oauth-config";
 
 export async function GET(req: NextRequest) {
   try {
@@ -60,19 +65,34 @@ export async function GET(req: NextRequest) {
             meta = null;
           }
         }
-        let secretHint =
+        let secretHint: string | null =
           typeof meta?.secretHint === "string" ? (meta.secretHint as string) : null;
-        if (!secretHint) {
+        let gdriveHealth: ReturnType<typeof assessGDriveTokenHealth> | undefined;
+        let plainForHint: string | null = null;
+        if (!secretHint || c.provider === "gdrive") {
           try {
-            const plain = decryptSecret({
+            plainForHint = decryptSecret({
               ciphertext: c.encryptedKey,
               iv: c.iv,
               authTag: c.authTag,
             });
-            secretHint = buildRedactedSecretHint(c.provider, plain);
+            if (!secretHint) {
+              secretHint = buildRedactedSecretHint(c.provider, plainForHint);
+            }
           } catch {
-            secretHint = "••••";
+            if (!secretHint) secretHint = "••••";
           }
+        }
+        if (c.provider === "gdrive") {
+          let parsedGdrive: GDriveTokenShape | null = null;
+          if (plainForHint) {
+            try {
+              parsedGdrive = JSON.parse(plainForHint) as GDriveTokenShape;
+            } catch {
+              parsedGdrive = null;
+            }
+          }
+          gdriveHealth = assessGDriveTokenHealth(parsedGdrive, meta);
         }
         return {
           id: c.id,
@@ -81,7 +101,7 @@ export async function GET(req: NextRequest) {
           username: c.username,
           authType: c.authType,
           secretHint,
-          metadata: meta,
+          metadata: gdriveHealth ? { ...(meta || {}), gdriveHealth } : meta,
           updatedAt: c.updatedAt.toISOString(),
           configured: true,
         };
@@ -116,16 +136,20 @@ export async function POST(req: NextRequest) {
     }
 
     let finalSecret = rawSecret;
+    let gdriveMetaPatch: Record<string, unknown> | null = null;
     if (provider === "gdrive") {
       try {
-        const obj = JSON.parse(rawSecret);
-        if (!obj.client_id) {
-          obj.client_id = body.clientId || process.env.GDRIVE_CLIENT_ID || process.env.CLIENT_ID;
-        }
-        if (!obj.client_secret) {
-          obj.client_secret = body.clientSecret || process.env.GDRIVE_CLIENT_SECRET || process.env.SECRET;
-        }
-        finalSecret = JSON.stringify(obj);
+        const normalized = normalizeRcloneGdrivePayload(rawSecret, {
+          clientId: body.clientId ? String(body.clientId) : undefined,
+          clientSecret: body.clientSecret ? String(body.clientSecret) : undefined,
+        });
+        finalSecret = normalized.serialized;
+        const nowIso = new Date().toISOString();
+        gdriveMetaPatch = {
+          ...(normalized.payload.refresh_token ? { refreshTokenIssuedAt: nowIso } : {}),
+          lastRefreshError: null,
+          accessTokenExpiresAt: normalized.payload.expiry || null,
+        };
       } catch {
         return NextResponse.json(
           { error: "Google Drive secret must be a valid Rclone / OAuth JSON string." },
@@ -139,12 +163,17 @@ export async function POST(req: NextRequest) {
         ? await getDecryptedCredential(user.userId, "colab", accountAlias).catch(() => null)
         : null;
 
+    const mergedMetadata =
+      gdriveMetaPatch || metadata
+        ? { ...(metadata || {}), ...(gdriveMetaPatch || {}) }
+        : null;
+
     const saved = await saveUserCredential(user.userId, {
       provider,
       accountAlias,
       username,
       rawSecret: finalSecret,
-      metadata,
+      metadata: mergedMetadata,
     });
 
     if (provider === "gdrive" && metadata && typeof metadata.baseFolder === "string") {
@@ -222,21 +251,45 @@ export async function PATCH(req: NextRequest) {
     }
 
     let secretToUpdate = rawSecret;
-    if (rawSecret && provider === "gdrive") {
-      try {
-        const obj = JSON.parse(rawSecret);
-        if (!obj.client_id) {
-          obj.client_id = body.clientId || process.env.GDRIVE_CLIENT_ID || process.env.CLIENT_ID;
+    let patchMeta = metadata;
+    if (provider === "gdrive") {
+      const overrideClientId = body.clientId ? String(body.clientId).trim() : undefined;
+      const overrideClientSecret = body.clientSecret ? String(body.clientSecret).trim() : undefined;
+      if (rawSecret) {
+        try {
+          const normalized = normalizeRcloneGdrivePayload(rawSecret, {
+            clientId: overrideClientId,
+            clientSecret: overrideClientSecret,
+          });
+          secretToUpdate = normalized.serialized;
+          const nowIso = new Date().toISOString();
+          patchMeta = {
+            ...(metadata || {}),
+            ...(normalized.payload.refresh_token ? { refreshTokenIssuedAt: nowIso } : {}),
+            lastRefreshError: null,
+            accessTokenExpiresAt: normalized.payload.expiry || null,
+          };
+        } catch {
+          return NextResponse.json(
+            { error: "Google Drive secret must be a valid Rclone / OAuth JSON string." },
+            { status: 400 }
+          );
         }
-        if (!obj.client_secret) {
-          obj.client_secret = body.clientSecret || process.env.GDRIVE_CLIENT_SECRET || process.env.SECRET;
-        }
-        secretToUpdate = JSON.stringify(obj);
-      } catch {
-        return NextResponse.json(
-          { error: "Google Drive secret must be a valid Rclone / OAuth JSON string." },
-          { status: 400 }
+      } else if (overrideClientId || overrideClientSecret) {
+        const existingGdrive = await getDecryptedCredential(user.userId, "gdrive", accountAlias).catch(
+          () => null
         );
+        if (existingGdrive?.secret) {
+          try {
+            const normalized = normalizeRcloneGdrivePayload(existingGdrive.secret, {
+              clientId: overrideClientId,
+              clientSecret: overrideClientSecret,
+            });
+            secretToUpdate = normalized.serialized;
+          } catch {
+            // keep existing secret unchanged if malformed
+          }
+        }
       }
     }
 
@@ -251,7 +304,7 @@ export async function PATCH(req: NextRequest) {
       newAccountAlias,
       username,
       rawSecret: secretToUpdate,
-      metadata,
+      metadata: patchMeta,
     });
 
     if (provider === "gdrive" && metadata && typeof metadata.baseFolder === "string") {

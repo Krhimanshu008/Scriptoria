@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   KeyRound,
@@ -15,8 +15,11 @@ import {
   EyeOff,
   RefreshCw,
   Plus,
+  ExternalLink,
+  AlertTriangle,
 } from "lucide-react";
 import type { ReadinessItem } from "@/app/api/settings/readiness/route";
+import type { GDriveTokenHealth } from "@/lib/gdrive/oauth-config";
 import type { PublicWorkspaceSettings } from "@/lib/settings/workspace-settings";
 import type { FetchedModelOption } from "@/app/api/vault/llm-models/route";
 import { WORKER_PROFILE_LIST } from "@/lib/catalog/worker-profiles";
@@ -49,6 +52,9 @@ interface RedactedCredential {
     baseUrl?: string;
     llmProvider?: string;
     secretHint?: string;
+    lastRefreshError?: string | null;
+    refreshTokenAgeDays?: number | null;
+    gdriveHealth?: GDriveTokenHealth;
   } | null;
   updatedAt: string;
 }
@@ -88,8 +94,21 @@ function tierLabel(tier: ReadinessItem["tier"]) {
 }
 
 export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: SettingsTab }) {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const queryClient = useQueryClient();
+
+  useEffect(() => {
+    const connected = searchParams.get("gdriveConnected");
+    const err = searchParams.get("gdriveError");
+    if (connected) {
+      toast.success(`Google Drive connected (${connected}) with auto-refresh enabled.`);
+      router.replace("/settings/vault", { scroll: false });
+    } else if (err) {
+      toast.error(`Google Drive OAuth failed: ${err}`);
+      router.replace("/settings/vault", { scroll: false });
+    }
+  }, [searchParams, router]);
 
   const tabParam = searchParams.get("tab");
   const resolvedInitial: SettingsTab =
@@ -114,6 +133,8 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
   const [editAlias, setEditAlias] = useState("");
   const [editUsername, setEditUsername] = useState("");
   const [editBaseFolder, setEditBaseFolder] = useState("");
+  const [editGdriveClientId, setEditGdriveClientId] = useState("");
+  const [editGdriveClientSecret, setEditGdriveClientSecret] = useState("");
   const [editLlmProvider, setEditLlmProvider] = useState("gemini");
   const [editLlmModel, setEditLlmModel] = useState("");
   const [editLlmBaseUrl, setEditLlmBaseUrl] = useState("");
@@ -172,6 +193,8 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
       totalCount: number;
       webhookMode: string;
       webhookUrl: string | null;
+      oauthClientConfigured?: boolean;
+      gdriveHealth?: GDriveTokenHealth;
     };
   }>({
     queryKey: ["settings-readiness"],
@@ -306,6 +329,8 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
     setEditAlias(cred.accountAlias);
     setEditUsername(cred.username || "");
     setEditBaseFolder(cred.metadata?.baseFolder || "NovelVisualizer/ComfyUI_Storage");
+    setEditGdriveClientId("");
+    setEditGdriveClientSecret("");
     setEditLlmProvider(cred.metadata?.llmProvider || cred.accountAlias || "gemini");
     setEditLlmModel(cred.metadata?.model || cred.username || "");
     setEditLlmBaseUrl(cred.metadata?.baseUrl || "");
@@ -349,6 +374,12 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
           newAccountAlias: editAlias.trim() || editingCred.accountAlias,
           username: usernameToSend,
           rawSecret: editNewSecret.trim() || undefined,
+          ...(editingCred.provider === "gdrive"
+            ? {
+                clientId: editGdriveClientId.trim() || undefined,
+                clientSecret: editGdriveClientSecret.trim() || undefined,
+              }
+            : {}),
           metadata,
         }),
       });
@@ -656,6 +687,34 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
             </button>
           </div>
 
+          {(summary?.gdriveHealth?.likelyRevoked || summary?.gdriveHealth?.expiringSoonWarning) && (
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/40 bg-amber-950/30 px-4 py-3 text-xs text-amber-200">
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+                <div>
+                  <div className="font-semibold">
+                    {summary.gdriveHealth.likelyRevoked
+                      ? "Google Drive OAuth Refresh Token Revoked / Expired"
+                      : `Google Drive Refresh Token is ${summary.gdriveHealth.refreshTokenAgeDays ?? 5}+ days old`}
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-amber-200/80">
+                    Google Cloud OAuth apps in <code className="font-mono">Testing</code> mode revoke refresh tokens every 7 days.
+                    Switch your OAuth Consent Screen to <code className="font-mono">In Production</code> once in GCP Console (no full review needed for personal Drive — click Advanced -&gt; Continue once), then reconnect below.
+                  </div>
+                </div>
+              </div>
+              {summary.oauthClientConfigured && (
+                <a
+                  href="/api/auth/google/gdrive/start?returnTo=/settings/vault"
+                  className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-amber-500 px-3 text-xs font-semibold text-zinc-950 hover:bg-amber-400"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  1-Click Reconnect Google Drive
+                </a>
+              )}
+            </div>
+          )}
+
           <div className="overflow-x-auto rounded-lg border border-zinc-800 bg-[#111114]">
             <table className="w-full text-left text-xs">
               <thead className="border-b border-zinc-800 bg-zinc-950/60 text-[11px] font-medium text-zinc-500">
@@ -719,6 +778,19 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
 
                       <td className="px-3.5 py-2.5 text-right whitespace-nowrap">
                         <div className="inline-flex items-center gap-1.5">
+                          {item.provider === "gdrive" && (
+                            <a
+                              href={`/api/auth/google/gdrive/start?alias=${encodeURIComponent(
+                                item.accountAlias || "default"
+                              )}&returnTo=/settings/vault`}
+                              className="inline-flex h-7 items-center gap-1 rounded border border-emerald-700/60 bg-emerald-950/60 px-2 text-[11px] font-medium text-emerald-300 hover:bg-emerald-900/80 hover:text-emerald-100"
+                              title="Authorize / Reconnect personal 5 TB Google Drive in browser (gets fresh refresh_token)"
+                            >
+                              <ExternalLink className="h-3 w-3" />
+                              {item.configured ? "OAuth Reconnect" : "Connect OAuth"}
+                            </a>
+                          )}
+
                           {item.provider === "gdrive" && item.configured && (
                             <button
                               type="button"
@@ -825,6 +897,34 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
             </button>
           </div>
 
+          {(summary?.gdriveHealth?.likelyRevoked || summary?.gdriveHealth?.expiringSoonWarning) && (
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/40 bg-amber-950/30 px-4 py-3 text-xs text-amber-200">
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+                <div>
+                  <div className="font-semibold">
+                    {summary.gdriveHealth.likelyRevoked
+                      ? "Google Drive OAuth Refresh Token Revoked / Expired"
+                      : `Google Drive Refresh Token is ${summary.gdriveHealth.refreshTokenAgeDays ?? 5}+ days old`}
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-amber-200/80">
+                    Google Cloud OAuth apps in <code className="font-mono">Testing</code> mode revoke refresh tokens every 7 days.
+                    Switch your OAuth Consent Screen to <code className="font-mono">In Production</code> once in GCP Console (no full review needed for personal Drive — click Advanced -&gt; Continue once), then reconnect below.
+                  </div>
+                </div>
+              </div>
+              {summary.oauthClientConfigured && (
+                <a
+                  href="/api/auth/google/gdrive/start?returnTo=/settings/vault"
+                  className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-amber-500 px-3 text-xs font-semibold text-zinc-950 hover:bg-amber-400"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  1-Click Reconnect Google Drive
+                </a>
+              )}
+            </div>
+          )}
+
           <div className="overflow-x-auto rounded-lg border border-zinc-800 bg-[#111114]">
             {visibleCredentials.length === 0 ? (
               <div className="p-8 text-center text-xs text-zinc-500">
@@ -886,7 +986,18 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
                             {!isInternal && (
                               <>
                                 {c.provider === "gdrive" && (
-                                  <button
+                                  <>
+                                    <a
+                                      href={`/api/auth/google/gdrive/start?alias=${encodeURIComponent(
+                                        c.accountAlias || "default"
+                                      )}&returnTo=/settings/vault`}
+                                      className="inline-flex h-7 items-center gap-1 rounded border border-emerald-700/60 bg-emerald-950/60 px-2 text-[11px] font-medium text-emerald-300 hover:bg-emerald-900/80 hover:text-emerald-100"
+                                      title="Re-authorize in browser to mint a fresh refresh_token"
+                                    >
+                                      <ExternalLink className="h-3 w-3" />
+                                      Reconnect
+                                    </a>
+                                    <button
                                     type="button"
                                     disabled={Boolean(tState?.loading) || refreshingGdriveKey === c.accountAlias}
                                     onClick={() => handleRefreshGdriveToken(c.accountAlias)}
@@ -900,6 +1011,7 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
                                     )}
                                     Refresh Token
                                   </button>
+                                  </>
                                 )}
                                 <button
                                   type="button"
@@ -1371,6 +1483,25 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
 
             {addKind === "gdrive" && (
               <form onSubmit={handleSaveGdrive} className="space-y-3">
+                {summary?.oauthClientConfigured && (
+                  <div className="flex items-center justify-between rounded-md border border-emerald-800/50 bg-emerald-950/25 p-2.5 text-xs">
+                    <div>
+                      <div className="font-medium text-emerald-200">Recommended: 1-Click Browser OAuth</div>
+                      <div className="text-[10px] text-emerald-300/75">
+                        Auto-captures offline refresh token using your configured GCP OAuth client.
+                      </div>
+                    </div>
+                    <a
+                      href={`/api/auth/google/gdrive/start?returnTo=/settings/vault&baseFolder=${encodeURIComponent(
+                        gdriveBaseFolder.trim() || "NovelVisualizer/ComfyUI_Storage"
+                      )}`}
+                      className="inline-flex h-7 shrink-0 items-center gap-1 rounded bg-emerald-600 px-2.5 text-[11px] font-medium text-white hover:bg-emerald-500"
+                    >
+                      <ExternalLink className="h-3 w-3" />
+                      Authorize Drive
+                    </a>
+                  </div>
+                )}
                 <div className="flex items-center justify-between">
                   <Label className="text-xs">Drive Base Folder</Label>
                   <div className="flex gap-1 rounded border border-zinc-800 bg-zinc-950 p-0.5 text-[10px]">
@@ -1512,6 +1643,26 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
                       onChange={(e) => setEditBaseFolder(e.target.value)}
                     />
                   </div>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <div className="space-y-1">
+                      <Label className="text-[11px] text-zinc-400">OAuth Client ID (Optional override)</Label>
+                      <Input
+                        value={editGdriveClientId}
+                        onChange={(e) => setEditGdriveClientId(e.target.value)}
+                        placeholder="Paste Google OAuth Client ID"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-[11px] text-zinc-400">OAuth Client Secret (Optional override)</Label>
+                      <Input
+                        type="password"
+                        autoComplete="new-password"
+                        value={editGdriveClientSecret}
+                        onChange={(e) => setEditGdriveClientSecret(e.target.value)}
+                        placeholder="Paste OAuth Client Secret"
+                      />
+                    </div>
+                  </div>
                   <div className="flex items-center justify-between rounded border border-indigo-900/50 bg-indigo-950/20 p-2.5">
                     <div>
                       <div className="text-xs font-medium text-white">OAuth Access Token</div>
@@ -1534,6 +1685,53 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
                       )}
                       Refresh Now
                     </Button>
+                  </div>
+                  <div className="flex items-center justify-between rounded border border-emerald-900/50 bg-emerald-950/20 p-2.5">
+                    <div>
+                      <div className="text-xs font-medium text-emerald-200">1-Click Browser OAuth Reconnect</div>
+                      <div className="text-[10px] text-zinc-400">
+                        {editGdriveClientId.trim() && editGdriveClientSecret.trim()
+                          ? "Saves the Client ID/Secret above and opens Google consent"
+                          : summary?.oauthClientConfigured
+                          ? "Replace expired 7-day token with a fresh browser OAuth grant"
+                          : "Enter OAuth Client ID & Secret above first (or click Save Changes)"}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (editGdriveClientId.trim() || editGdriveClientSecret.trim()) {
+                          const patchRes = await fetch("/api/vault", {
+                            method: "PATCH",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                              provider: "gdrive",
+                              accountAlias: editingCred.accountAlias,
+                              clientId: editGdriveClientId.trim() || undefined,
+                              clientSecret: editGdriveClientSecret.trim() || undefined,
+                              metadata: {
+                                ...(editingCred.metadata || {}),
+                                baseFolder: editBaseFolder.trim() || "NovelVisualizer/ComfyUI_Storage",
+                              },
+                            }),
+                          });
+                          if (!patchRes.ok) {
+                            const errBody = await patchRes.json().catch(() => ({}));
+                            toast.error(errBody.error || "Failed saving OAuth Client ID/Secret");
+                            return;
+                          }
+                        }
+                        window.location.assign(
+                          `/api/auth/google/gdrive/start?alias=${encodeURIComponent(
+                            editingCred.accountAlias || "default"
+                          )}&returnTo=/settings/vault`
+                        );
+                      }}
+                      className="inline-flex h-8 shrink-0 items-center gap-1 rounded border border-emerald-700/60 bg-emerald-950/60 px-2.5 text-xs font-medium text-emerald-300 hover:bg-emerald-900/80"
+                    >
+                      <ExternalLink className="h-3 w-3" />
+                      Reconnect OAuth
+                    </button>
                   </div>
                 </div>
               )}

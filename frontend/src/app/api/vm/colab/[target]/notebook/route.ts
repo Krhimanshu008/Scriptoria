@@ -63,7 +63,7 @@ export async function GET(
     }
 
     // Legacy standalone mode (only if explicitly requested with ?standalone=true)
-    const gdriveCred = await getUserGDriveCredential(user.userId);
+    const gdriveCred = await getUserGDriveCredential(user.userId, undefined, { ensureFresh: true });
     if (!gdriveCred) {
       return NextResponse.json(
         { error: "Configure Google Drive in Settings Vault before generating a Colab notebook." },

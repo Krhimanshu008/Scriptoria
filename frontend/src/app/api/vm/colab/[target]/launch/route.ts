@@ -116,7 +116,11 @@ export async function GET(
   // 2. Fallback to main Vault GDrive credential (owns for acc1, ACL-shares writer access for acc2)
   if (!driveAccessToken && gdriveCred) {
     try {
-      const mainToken = await mintGDriveAccessToken(gdriveCred.parsed);
+      const mainToken = await mintGDriveAccessToken(
+        gdriveCred.parsed,
+        user.userId,
+        gdriveCred.accountAlias || "default"
+      );
       const ownerEmail = await getGoogleAccountEmail(mainToken);
       driveAccessToken = mainToken;
       hasFullDriveScope = true;

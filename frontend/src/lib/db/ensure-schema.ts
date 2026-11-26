@@ -333,6 +333,7 @@ async function runSchemaSync(): Promise<void> {
   const hasWorkerProfile = vmColSet.has("workerProfile");
   const hasIdleTimeout = vmColSet.has("idleTimeoutMinutes");
   const hasPrewarmModels = vmColSet.has("prewarmModelsJson");
+  const hasKaggleDatasets = vmColSet.has("kaggleDatasetsJson");
   const hasBootMetadata = vmColSet.has("bootMetadataJson");
   const allTablesExist =
     tableSet.has("User") &&
@@ -354,7 +355,7 @@ async function runSchemaSync(): Promise<void> {
     tableSet.has("LlmChatSession") &&
     tableSet.has("LlmChatMessage");
 
-  if (allTablesExist && hasWorkerProfile && hasIdleTimeout && hasPrewarmModels && hasBootMetadata) {
+  if (allTablesExist && hasWorkerProfile && hasIdleTimeout && hasPrewarmModels && hasKaggleDatasets && hasBootMetadata) {
     try {
       await prisma.$queryRawUnsafe(`PRAGMA journal_mode = WAL;`);
       await prisma.$queryRawUnsafe(`PRAGMA synchronous = NORMAL;`);
@@ -383,6 +384,10 @@ async function runSchemaSync(): Promise<void> {
       {
         present: hasPrewarmModels,
         sql: `ALTER TABLE "VmInstance" ADD COLUMN "prewarmModelsJson" TEXT`,
+      },
+      {
+        present: hasKaggleDatasets,
+        sql: `ALTER TABLE "VmInstance" ADD COLUMN "kaggleDatasetsJson" TEXT`,
       },
       {
         present: hasBootMetadata,

@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db/prisma";
-import { resolveFastModelDownloadSource } from "@/lib/catalog/source-resolver";
+import { resolveAllModelDownloadSources } from "@/lib/catalog/source-resolver";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
 import { GDriveModelStreamer } from "@/lib/orchestrator/rclone-client";
 import { VmGateway } from "@/lib/orchestrator/vm-gateway";
@@ -88,11 +88,15 @@ export async function ensureModelReadyOnVm(params: {
     throw new Error("Catalog model not found.");
   }
 
-  if (preferSource !== "gdrive" && asset.id) {
-    const source = await resolveFastModelDownloadSource(userId, asset);
-    if (source) {
+  const gdriveCred = await getUserGDriveCredential(userId).catch(() => null);
+  const rcloneCategory = asset.subdir ? `${asset.category}/${asset.subdir}` : asset.category;
+
+  if (preferSource !== "gdrive" && (asset.id || asset.hfRepoId || asset.civitaiModelId || asset.civitaiVersionId || asset.directUrl)) {
+    const sources = await resolveAllModelDownloadSources(userId, asset);
+    if (sources.length > 0) {
+      const primary = sources[0];
       try {
-        const shouldBackup = backupToGdrive && asset.backupStatus !== "BACKED_UP";
+        const shouldBackup = Boolean(asset.id && backupToGdrive && asset.backupStatus !== "BACKED_UP");
         const fetchRes = await VmGateway.callJson<{
           status: string;
           alreadyCached?: boolean;
@@ -101,13 +105,21 @@ export async function ensureModelReadyOnVm(params: {
           method: "POST",
           targetPort: vm.useRouteLess ? 9999 : vm.internalPort,
           body: JSON.stringify({
-            url: source.url,
+            url: primary.url,
+            mirrors: sources.map((s) => ({
+              url: s.url,
+              authHeader: s.authHeader || "",
+              expectedSizeBytes: s.expectedSizeBytes || 0,
+              sha256: s.sha256 || "",
+              sourceKind: s.sourceKind,
+            })),
+            allowGdriveFallback: Boolean(gdriveCred && preferSource !== "direct"),
             category: asset.category,
             subdir: asset.subdir,
             filename: asset.filename,
-            expectedSizeBytes: source.expectedSizeBytes || 0,
-            sha256: source.sha256 || "",
-            authHeader: source.authHeader || "",
+            expectedSizeBytes: primary.expectedSizeBytes || 0,
+            sha256: primary.sha256 || "",
+            authHeader: primary.authHeader || "",
             backupToGdrive: shouldBackup,
             assetSlug: asset.slug,
           }),
@@ -118,7 +130,7 @@ export async function ensureModelReadyOnVm(params: {
           return {
             status: "skipped",
             alreadyCached: true,
-            source: source.sourceKind,
+            source: primary.sourceKind,
             file: asset.filename,
             category: asset.category,
             target: vm.target,
@@ -132,18 +144,19 @@ export async function ensureModelReadyOnVm(params: {
           });
         }
 
+        const sourceTrail = sources.map((s) => s.sourceKind.toUpperCase()).join(" -> ");
         await appendSystemLog({
           userId,
           vmInstanceId: vm.id,
           category: "RCLONE",
           level: "INFO",
-          message: `Direct ${source.sourceKind.toUpperCase()} fetch started for ${asset.filename} -> ${vm.target}${shouldBackup ? " (+ 5TB Drive backup)" : ""}.`,
+          message: `Multi-mirror fetch [${sourceTrail}${gdriveCred && preferSource !== "direct" ? " -> GDRIVE" : ""}] started for ${asset.filename} -> ${vm.target}${shouldBackup ? " (+ 5TB Drive backup)" : ""}.`,
         });
 
         return {
           status: "started",
           transport: "sidecar-fetch",
-          source: source.sourceKind,
+          source: primary.sourceKind,
           fetchJobId: fetchRes.jobId ?? null,
           file: asset.filename,
           category: asset.category,
@@ -157,12 +170,10 @@ export async function ensureModelReadyOnVm(params: {
     }
   }
 
-  const gdriveCred = await getUserGDriveCredential(userId);
   if (!gdriveCred) {
     throw new Error("No direct download source succeeded and Google Drive credential is missing.");
   }
 
-  const rcloneCategory = asset.subdir ? `${asset.category}/${asset.subdir}` : asset.category;
   const res = await GDriveModelStreamer.startModelStream(
     vm,
     gdriveCred.baseFolder,

@@ -2,12 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import jwt from "jsonwebtoken";
 import { getAuthUser } from "@/lib/auth/session";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
-
-function getStateSecret(): string {
-  const secret = process.env.JWT_SECRET || process.env.ENCRYPTION_KEY;
-  if (!secret) throw new Error("JWT_SECRET or ENCRYPTION_KEY is not configured");
-  return secret;
-}
+import {
+  getGoogleOAuthClientConfig,
+  getOAuthStateSecret,
+  resolveOAuthCallbackOrigin,
+} from "@/lib/gdrive/oauth-config";
 
 export async function GET(req: NextRequest) {
   try {
@@ -20,8 +19,7 @@ export async function GET(req: NextRequest) {
     const includeColabScope = req.nextUrl.searchParams.get("colabScope") === "true";
 
     const gdriveCred = await getUserGDriveCredential(user.userId);
-    const clientId =
-      process.env.GOOGLE_OAUTH_CLIENT_ID || gdriveCred?.parsed?.client_id || "";
+    const { clientId } = getGoogleOAuthClientConfig(gdriveCred?.parsed);
 
     if (!clientId) {
       return NextResponse.redirect(
@@ -29,18 +27,12 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const origin = (process.env.NEXT_PUBLIC_APP_URL || req.nextUrl.origin).replace(/\/$/, "");
-    // Use actual request origin if user is accessing localhost while NEXT_PUBLIC_APP_URL points elsewhere
-    const callbackOrigin =
-      req.nextUrl.hostname === "localhost" || req.nextUrl.hostname === "127.0.0.1"
-        ? req.nextUrl.origin
-        : origin;
-
+    const callbackOrigin = resolveOAuthCallbackOrigin(req);
     const redirectUri = `${callbackOrigin}/api/auth/google/colab/callback`;
 
     const state = jwt.sign(
       { userId: user.userId, alias, includeColabScope, redirectUri },
-      getStateSecret(),
+      getOAuthStateSecret(),
       { expiresIn: "10m" }
     );
 
