@@ -355,6 +355,16 @@ export function SceneBatchStudio({ subView }: { subView: "scenes" | "batch" }) {
           .map((line) => line.trim())
           .filter(Boolean)
           .map((line, i) => {
+            if (line.startsWith("{")) {
+              try {
+                const obj = JSON.parse(line) as Record<string, unknown>;
+                if (typeof obj.prompt === "string" && obj.prompt.trim()) {
+                  return obj;
+                }
+              } catch {
+                // Fall back to pipe-delimited parsing
+              }
+            }
             const parts = line.split("|").map((s) => s.trim());
             const parsedSeed = parts[2] ? Number(parts[2]) : undefined;
             return {
@@ -868,13 +878,54 @@ export function SceneBatchStudio({ subView }: { subView: "scenes" | "batch" }) {
           <div className="space-y-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <Label className="text-[11px] text-zinc-300">
-                Prompts (1 per line, or <code className="text-cyan-300">prompt | negative | seed | title</code>)
+                Prompts (1 per line, <code className="text-cyan-300">prompt | negative | seed | title</code>, or JSONL)
               </Label>
-              <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-1 text-[11px] text-zinc-200 hover:bg-zinc-800">
-                <Upload className="h-3 w-3 text-cyan-300" />
-                Import .TXT / .CSV / .JSONL
-                <input type="file" accept=".txt,.csv,.jsonl" className="hidden" onChange={handleCsvFileUpload} />
-              </label>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {[
+                  { key: "abAnchor5" as const, label: "LOTM Ch.214: A/B Anchor #5", title: "LOTM Ch.214 A/B Anchor #5 (Qwen 2.1 vs Qwen Edit)" },
+                  { key: "anchors8Qwen21" as const, label: "Ch.214: 8 Anchors (Qwen 2.1)", title: "LOTM Ch.214 Wave 1 (8 Anchors · Qwen 2.1 Dual-T4)" },
+                  { key: "pilot10Qwen21AnchorsPlusEditCov" as const, label: "Ch.214: 10-Shot Pilot DAG", title: "LOTM Ch.214 Pilot (8 Anchors + 2 Qwen-Edit Coverage DAG)" },
+                ].map((preset) => (
+                  <button
+                    key={preset.key}
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const res = await fetch("/api/test-kits/ch214");
+                        if (!res.ok) throw new Error("Failed to load Ch.214 kit");
+                        const kit = (await res.json()) as {
+                          studioBatchPresets: Record<string, Array<Record<string, unknown>>>;
+                        };
+                        const rows = kit.studioBatchPresets[preset.key] || [];
+                        if (rows.length === 0) return;
+                        setExecutionMode("dual_split");
+                        setBatchTitle(preset.title);
+                        setActiveBaseSpec((prev) => ({
+                          ...prev,
+                          pipeline: "qwen21_edit",
+                          architecture: "qwen21",
+                          baseModel: "qwen_image_2.1_turbo_int8_convrot.safetensors",
+                          dualGpuSplit: true,
+                          width: 1344,
+                          height: 768,
+                        }));
+                        setPromptLines(rows.map((r) => JSON.stringify(r)).join("\n"));
+                        toast.success(`Loaded ${preset.label} (${rows.length} jobs for Acc1 dual_split)`);
+                      } catch (err) {
+                        toast.error(err instanceof Error ? err.message : "Failed to load preset");
+                      }
+                    }}
+                    className="rounded-md border border-violet-500/40 bg-violet-950/30 px-2 py-1 text-[10.5px] font-medium text-violet-200 hover:bg-violet-900/40"
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+                <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-1 text-[11px] text-zinc-200 hover:bg-zinc-800">
+                  <Upload className="h-3 w-3 text-cyan-300" />
+                  Import .TXT / .CSV / .JSONL
+                  <input type="file" accept=".txt,.csv,.jsonl" className="hidden" onChange={handleCsvFileUpload} />
+                </label>
+              </div>
             </div>
             <textarea
               rows={6}

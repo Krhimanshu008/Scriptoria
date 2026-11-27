@@ -3242,6 +3242,14 @@ def _headless_worker_loop(slot_idx, worker_target):
                             }, max_wait=120, label=f"Stage input {dep_fn}")
                         except Exception:
                             pass
+                    if not os.path.exists(dst_in) and dep_out.get("previewUrl") and str(dep_out["previewUrl"]).startswith("/api/outputs/"):
+                        try:
+                            dl_req = urllib.request.Request(f"{APP_URL}{dep_out['previewUrl']}", headers=_headers())
+                            with urllib.request.urlopen(dl_req, timeout=60) as dl_resp:
+                                with open(dst_in, "wb") as dl_f:
+                                    dl_f.write(dl_resp.read())
+                        except Exception:
+                            pass
             for nid, node in graph.items():
                 if isinstance(node, dict) and node.get("class_type") == "LoadImage":
                     img_val = str((node.get("inputs") or {}).get("image") or "")
@@ -3252,6 +3260,21 @@ def _headless_worker_loop(slot_idx, worker_target):
                         with open(os.path.join(in_dir, fname), "wb") as f_out:
                             f_out.write(base64.b64decode(b64_data))
                         node["inputs"]["image"] = fname
+                    elif img_val.startswith("ref://"):
+                        import urllib.parse as _up
+                        ref_body = img_val[len("ref://"):].lstrip("/")
+                        ref_parts = ref_body.split("/", 1)
+                        if len(ref_parts) == 2 and ref_parts[0] and ref_parts[1]:
+                            kit_name, rel_ref_path = ref_parts[0], ref_parts[1]
+                            safe_name = f"scref_{kit_name}_{rel_ref_path.replace('/', '__')}"
+                            dst_ref = os.path.join(in_dir, safe_name)
+                            if not os.path.exists(dst_ref):
+                                asset_url = f"{APP_URL}/api/v1/workers/ref-asset?kit={_up.quote(kit_name)}&path={_up.quote(rel_ref_path)}"
+                                ref_req = urllib.request.Request(asset_url, headers=_headers())
+                                with urllib.request.urlopen(ref_req, timeout=60) as ref_resp:
+                                    with open(dst_ref, "wb") as rf_out:
+                                        rf_out.write(ref_resp.read())
+                            node["inputs"]["image"] = safe_name
 
             q_req = urllib.request.Request(
                 f"http://127.0.0.1:{port}/prompt",

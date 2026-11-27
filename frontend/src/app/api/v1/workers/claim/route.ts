@@ -287,14 +287,17 @@ export async function POST(req: NextRequest) {
       modelPreparationError = error instanceof Error ? error.message : "Model resolution failed.";
     }
 
-    // Resolve parent dependency outputs (for Stage 1 -> Stage 2 handoff) and patch __STAGE1_OUTPUT_IMAGE__ placeholder
+    // Resolve parent dependency outputs (for Stage 1 -> Stage 2 or Anchor -> Coverage handoff) and patch placeholders
     const nextDeps = candidateDeps.get(nextTask.id) || [];
     const dependsOnOutputs = nextDeps.flatMap((depId) => completedDepOutputs.get(depId) || []);
     const firstParentFilename = dependsOnOutputs.find((o) => typeof o?.filename === "string" && o.filename)?.filename;
     if (firstParentFilename && compiledGraph && typeof compiledGraph === "object") {
       for (const node of Object.values(compiledGraph as Record<string, Record<string, unknown>>)) {
         const inputs = node?.inputs as Record<string, unknown> | undefined;
-        if (node?.class_type === "LoadImage" && inputs?.image === "__STAGE1_OUTPUT_IMAGE__") {
+        if (
+          node?.class_type === "LoadImage" &&
+          (inputs?.image === "__STAGE1_OUTPUT_IMAGE__" || inputs?.image === "__ANCHOR_OUTPUT_IMAGE__")
+        ) {
           inputs.image = firstParentFilename;
         }
       }

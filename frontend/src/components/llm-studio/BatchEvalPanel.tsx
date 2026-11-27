@@ -245,6 +245,48 @@ export function BatchEvalPanel({
                 {s.label}
               </Button>
             ))}
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={async () => {
+                try {
+                  const res = await fetch("/api/test-kits/ch214");
+                  if (!res.ok) throw new Error("Failed to load Ch. 214 test kit");
+                  const kit = (await res.json()) as {
+                    llmEvalCases: Array<{
+                      prompt: string;
+                      expectedContains?: string;
+                      requiredKeys?: string[];
+                    }>;
+                  };
+                  setTitle("LOTM Ch. 214 · 8-Beat Continuity Extraction");
+                  setMode("json");
+                  setSystemPrompt(
+                    "Extract exact canon facts from this Lord of the Mysteries Chapter 214 beat into strict JSON. Preserve clothing, props, timestamps, written addresses, weather, and eye details accurately."
+                  );
+                  setJsonSchema(
+                    JSON.stringify(
+                      {
+                        required: [
+                          "beat_name",
+                          "location",
+                          "present_subjects",
+                          "key_props_and_facts",
+                        ],
+                      },
+                      null,
+                      2
+                    )
+                  );
+                  setDatasetText(kit.llmEvalCases.map((c) => JSON.stringify(c)).join("\n"));
+                  toast.success(`Loaded LOTM Ch. 214 (${kit.llmEvalCases.length} beat cases)`);
+                } catch (err) {
+                  toast.error(err instanceof Error ? err.message : "Failed to load kit");
+                }
+              }}
+            >
+              LOTM Ch. 214 (8 Beats)
+            </Button>
           </div>
           {isDualReplicaActive && (
             <Badge className="bg-emerald-500/15 text-emerald-300 border-emerald-500/40">

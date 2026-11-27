@@ -175,21 +175,55 @@ export function WorkflowsChainPanel({ targetOptions }: { targetOptions: LlmTarge
       {/* Saved Templates Sidebar */}
       <div className="space-y-3 lg:col-span-4">
         <div className="rounded-xl border border-zinc-800 bg-zinc-950/80 p-3 space-y-2.5">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <span className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
               LLM Workflow Templates
             </span>
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={() => {
-                setSelectedSlug("");
-                setWorkflowName("New Chained Pipeline");
-                setSteps([makeBlankStep(0), makeBlankStep(1)]);
-              }}
-            >
-              <Plus className="size-3" /> Blank
-            </Button>
+            <div className="flex items-center gap-1">
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={async () => {
+                  try {
+                    const res = await fetch("/api/test-kits/ch214");
+                    if (!res.ok) throw new Error("Failed to load Ch. 214 kit");
+                    const kit = (await res.json()) as {
+                      llmWorkflowSteps: LlmWorkflowStep[];
+                      beats: Array<{ beatName: string; paragraphRange: string; beatText: string }>;
+                    };
+                    setSelectedSlug("");
+                    setWorkflowName("LOTM Ch. 214 · Directing Chain");
+                    setSteps(kit.llmWorkflowSteps);
+                    const b1 = kit.beats[0];
+                    const b2 = kit.beats[1];
+                    if (b1) {
+                      setWorkflowInput(
+                        `${b1.beatName} (¶${b1.paragraphRange}):\n${b1.beatText}${
+                          b2 ? `\n\n${b2.beatName} (¶${b2.paragraphRange}):\n${b2.beatText}` : ""
+                        }`
+                      );
+                    }
+                    setRunResult(null);
+                    toast.success("Loaded LOTM Ch. 214 3-Step Directing Workflow");
+                  } catch (err) {
+                    toast.error(err instanceof Error ? err.message : "Failed to load kit");
+                  }
+                }}
+              >
+                Ch. 214 Chain
+              </Button>
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => {
+                  setSelectedSlug("");
+                  setWorkflowName("New Chained Pipeline");
+                  setSteps([makeBlankStep(0), makeBlankStep(1)]);
+                }}
+              >
+                <Plus className="size-3" /> Blank
+              </Button>
+            </div>
           </div>
           <div className="space-y-2 max-h-[540px] overflow-y-auto pr-1">
             {workflows.map((wf) => (

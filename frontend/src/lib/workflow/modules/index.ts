@@ -137,18 +137,46 @@ export function assembleModularWorkflow(
   let currentModel: NodeRef = base.model;
 
   if (base.architecture === "qwen_edit") {
-    const refLoad = ctx.addNode("LoadImage", { image: input.refImagePath || "character_ref.png" });
-    const encPlus = ctx.addNode("TextEncodeQwenImageEditPlus", {
+    const orderedRefs: string[] = [];
+    const pushRef = (p?: string) => {
+      const s = p?.trim();
+      if (s && !orderedRefs.includes(s)) orderedRefs.push(s);
+    };
+    pushRef(input.refImagePath);
+    for (const c of input.ipConnectors || []) {
+      if (c && c.mode !== "none") pushRef(c.refImagePath);
+    }
+    if (orderedRefs.length === 0) {
+      orderedRefs.push("character_ref.png");
+    }
+
+    const encInputs: Record<string, unknown> = {
       clip: base.clip!,
       vae: base.vae,
-      image1: ctx.ref(refLoad, 0),
       prompt: tuned.positive,
+    };
+    let firstImgNode = "";
+    orderedRefs.slice(0, 3).forEach((refPath, idx) => {
+      const ld = ctx.addNode("LoadImage", { image: refPath });
+      if (idx === 0) firstImgNode = ld;
+      encInputs[`image${idx + 1}`] = ctx.ref(ld, 0);
     });
+
+    const encPlus = ctx.addNode("TextEncodeQwenImageEditPlus", encInputs);
     const negEnc = ctx.addNode("CLIPTextEncode", { text: tuned.negative, clip: base.clip! });
-    const vaeEnc = ctx.addNode("VAEEncode", { pixels: ctx.ref(refLoad, 0), vae: base.vae });
     positive = ctx.ref(encPlus, 0);
     negative = ctx.ref(negEnc, 0);
-    latentImage = ctx.ref(vaeEnc, 0);
+
+    if (input.useEmptyLatent) {
+      const emptyLat = ctx.addNode("EmptyLatentImage", { width, height, batch_size: batchSize });
+      latentImage = ctx.ref(emptyLat, 0);
+      ctx.addGuardrail(
+        `Qwen-Edit Anchor Mode: EmptyLatentImage ${width}x${height} with ${Math.min(3, orderedRefs.length)} reference slots (image1..image${Math.min(3, orderedRefs.length)}).`
+      );
+    } else {
+      const vaeEnc = ctx.addNode("VAEEncode", { pixels: ctx.ref(firstImgNode, 0), vae: base.vae });
+      latentImage = ctx.ref(vaeEnc, 0);
+    }
   } else {
     const posEnc = ctx.addNode("CLIPTextEncode", { text: tuned.positive, clip: base.clip! });
     const negEnc = ctx.addNode("CLIPTextEncode", { text: tuned.negative, clip: base.clip! });
@@ -181,8 +209,14 @@ export function assembleModularWorkflow(
     }
   }
 
-  // Apply IP-Connectors first (with anime FaceID guardrail)
-  const ipOut = applyIpConnectors(ctx, { ...base, model: currentModel }, positive, negative, input.ipConnectors);
+  // Apply IP-Connectors first (with anime FaceID guardrail); skip duplicate ReferenceLatent on qwen_edit slots already wired into TextEncodeQwenImageEditPlus
+  const effectiveConnectors =
+    base.architecture === "qwen_edit"
+      ? (input.ipConnectors || []).filter(
+          (c) => c.mode !== "qwen21_ref_strength" && c.mode !== "flux3_ref_latent"
+        )
+      : input.ipConnectors;
+  const ipOut = applyIpConnectors(ctx, { ...base, model: currentModel }, positive, negative, effectiveConnectors);
   currentModel = ipOut.model;
   positive = ipOut.positive;
   negative = ipOut.negative;

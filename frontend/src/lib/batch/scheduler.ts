@@ -135,7 +135,9 @@ export async function createBatchFromSpec(params: {
         batchSize: vt.batchSize,
         seed: vt.seed,
         refImagePath: vt.refImagePath,
+        useEmptyLatent: vt.useEmptyLatent,
       };
+      const externalDeps = (vt.dependsOnSceneKeys || []).map((k) => `${k}::VISUAL`);
 
       if (executionMode === "dual_pipeline") {
         const split = await splitWorkflowIntoTwoStages(userId, vSpec);
@@ -146,7 +148,7 @@ export async function createBatchFromSpec(params: {
             stageIndex: 1,
             sceneKey: scene.sceneKey,
             trackType: "VISUAL",
-            dependsOnTempKeys: [],
+            dependsOnTempKeys: externalDeps,
             spec: { ...vSpec, enableFaceDetailer: false, enableHandDetailer: false, upscalerModel: undefined, relight: "none" },
             workerProfile: split.stage1.recommendedProfile,
             baseCheckpoint: vSpec.baseModel || "",
@@ -173,7 +175,7 @@ export async function createBatchFromSpec(params: {
             stageIndex: 1,
             sceneKey: scene.sceneKey,
             trackType: "VISUAL",
-            dependsOnTempKeys: [],
+            dependsOnTempKeys: externalDeps,
             spec: vSpec,
             workerProfile: split.stage1.recommendedProfile,
             baseCheckpoint: vSpec.baseModel || "",
@@ -189,7 +191,7 @@ export async function createBatchFromSpec(params: {
           stageIndex: 1,
           sceneKey: scene.sceneKey,
           trackType: "VISUAL",
-          dependsOnTempKeys: [],
+          dependsOnTempKeys: externalDeps,
           spec: vSpec,
           workerProfile: compiled.recommendedProfile,
           baseCheckpoint: vSpec.baseModel || "",

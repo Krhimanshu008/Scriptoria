@@ -400,7 +400,12 @@ export function buildBaseModelLoader(
 
   if (arch === "qwen21") {
     const base = input.baseModel || "qwen_image_2.1_turbo_int8_convrot.safetensors";
-    const isI2I = Boolean(input.refImagePath);
+    const isI2I = Boolean(
+      input.refImagePath ||
+        (input.ipConnectors || []).some(
+          (c) => c && c.mode !== "none" && Boolean(c.refImagePath)
+        )
+    );
     const te =
       input.textEncoder1 ||
       (isI2I

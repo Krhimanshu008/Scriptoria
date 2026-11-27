@@ -106,6 +106,7 @@ export interface ModularWorkflowInput {
   prompt?: string;
   negativePrompt?: string;
   refImagePath?: string;
+  useEmptyLatent?: boolean;
   width?: number;
   height?: number;
   steps?: number;

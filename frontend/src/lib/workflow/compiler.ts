@@ -77,6 +77,7 @@ export interface WorkflowBuildSpec {
   durationSec?: number;
   sfxPrompt?: string;
   refImagePath?: string;
+  useEmptyLatent?: boolean;
   refAudioPath?: string;
   videoPath?: string;
   numFrames?: number;
@@ -232,6 +233,7 @@ export async function compileResourceAwareWorkflow(
         prompt: spec.prompt,
         negativePrompt: spec.negativePrompt,
         refImagePath: spec.refImagePath,
+        useEmptyLatent: spec.useEmptyLatent,
         width: spec.width,
         height: spec.height,
         steps: spec.steps,

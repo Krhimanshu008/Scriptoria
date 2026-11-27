@@ -51,6 +51,8 @@ export interface CanonicalVisualTrackSpec {
   batchSize?: number;
   seed?: number;
   refImagePath?: string;
+  useEmptyLatent?: boolean;
+  dependsOnSceneKeys?: string[];
 }
 
 export interface CanonicalSceneSpec {

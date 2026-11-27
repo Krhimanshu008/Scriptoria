@@ -10,12 +10,25 @@ import type {
 } from "@/lib/batch/ingestion-spec";
 
 interface ExpandPromptItem {
+  sceneKey?: string;
   title?: string;
   prompt: string;
   negativePrompt?: string;
+  pipeline?: CanonicalVisualTrackSpec["pipeline"];
+  architecture?: CanonicalVisualTrackSpec["architecture"];
   baseModel?: string;
+  vaeModel?: string;
+  textEncoder1?: string;
+  loras?: CanonicalVisualTrackSpec["loras"];
+  width?: number;
+  height?: number;
+  steps?: number;
+  cfg?: number;
   seed?: number;
   refImagePath?: string;
+  useEmptyLatent?: boolean;
+  ipConnectors?: CanonicalVisualTrackSpec["ipConnectors"];
+  dependsOnSceneKeys?: string[];
 }
 
 interface ExpandMatrixConfig {
@@ -105,16 +118,28 @@ export async function POST(req: NextRequest) {
         const it = rawLines[i];
         if (!it?.prompt?.trim()) continue;
         scenes.push({
-          sceneKey: `batch-${String(i + 1).padStart(3, "0")}`,
+          sceneKey: it.sceneKey?.trim() || `batch-${String(i + 1).padStart(3, "0")}`,
           title: it.title || `Shot ${i + 1}`,
           tracks: {
             visual: {
               ...baseVisual,
               prompt: it.prompt.trim(),
               negativePrompt: it.negativePrompt ?? baseVisual.negativePrompt,
+              pipeline: it.pipeline || baseVisual.pipeline,
+              architecture: it.architecture || baseVisual.architecture,
               baseModel: it.baseModel || baseVisual.baseModel,
+              vaeModel: it.vaeModel || baseVisual.vaeModel,
+              textEncoder1: it.textEncoder1 || baseVisual.textEncoder1,
+              loras: it.loras || baseVisual.loras,
+              width: it.width || baseVisual.width,
+              height: it.height || baseVisual.height,
+              steps: it.steps ?? baseVisual.steps,
+              cfg: it.cfg ?? baseVisual.cfg,
               seed: typeof it.seed === "number" ? it.seed : baseVisual.seed,
               refImagePath: it.refImagePath || baseVisual.refImagePath,
+              useEmptyLatent: it.useEmptyLatent ?? baseVisual.useEmptyLatent,
+              ipConnectors: it.ipConnectors || baseVisual.ipConnectors,
+              dependsOnSceneKeys: it.dependsOnSceneKeys,
             },
           },
         });
