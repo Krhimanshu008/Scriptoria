@@ -27,8 +27,13 @@ export async function prepareWorkerModel(
           sourceError = error.message;
           return [];
         });
+  const matchingMirrors = sources.filter((s) => !pin || !s.sha256 || s.sha256.toLowerCase() === pin);
+  // On Kaggle prefer HuggingFace/Direct first, keeping SHA-256 verified Civitai as backup when HF/Drive fail
   const mirrors = kaggle
-    ? sources.filter((s) => s.sourceKind !== "civitai" && (!pin || !s.sha256 || s.sha256.toLowerCase() === pin))
+    ? [
+        ...matchingMirrors.filter((s) => s.sourceKind !== "civitai"),
+        ...matchingMirrors.filter((s) => s.sourceKind === "civitai" && Boolean(s.sha256)),
+      ]
     : sources;
   return {
     assetSlug: asset.slug,
@@ -37,7 +42,7 @@ export async function prepareWorkerModel(
     subdir: asset.subdir,
     mirrors,
     sha256: pin || mirrors[0]?.sha256 || "",
-    expectedSizeBytes: mirrors[0]?.expectedSizeBytes || 0,
+    expectedSizeBytes: mirrors[0]?.expectedSizeBytes || asset.sizeBytes || 0,
     backupToGdrive: Boolean(options.backup && options.hasDrive && asset.backupStatus !== "BACKED_UP"),
     allowGdriveFallback,
     sourceError:

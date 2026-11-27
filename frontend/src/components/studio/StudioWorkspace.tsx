@@ -242,18 +242,20 @@ export function StudioWorkspace({ onOpenArchitect }: { onOpenArchitect?: () => v
     if (!activePreset) return;
     setStartingStream(true);
     try {
-      const res = await fetch("/api/models/stream", {
+      const res = await fetch("/api/catalog/ensure", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           target,
           category: "checkpoints",
-          name: activePreset.recommendedCheckpoint,
+          filename: activePreset.recommendedCheckpoint,
+          preferSource: "auto",
+          backupToGdrive: true,
         }),
       });
       const body = await res.json();
       if (!res.ok) {
-        toast.error(body.error || "Failed to stream recommended checkpoint");
+        toast.error(body.error || "Failed to fetch recommended checkpoint");
         return;
       }
 
@@ -266,16 +268,18 @@ export function StudioWorkspace({ onOpenArchitect }: { onOpenArchitect?: () => v
         return;
       }
 
+      const transport = body.transport === "rclone-gdrive" ? "rclone-gdrive" : "sidecar-fetch";
       toast.success(
-        body.status === "already_transferring"
-          ? `Attached to active download: ${activePreset.recommendedCheckpoint}`
-          : `Streaming ${activePreset.recommendedCheckpoint} ➔ ${target.toUpperCase()} via Rclone`
+        `Fetching ${activePreset.recommendedCheckpoint} ➔ ${target.toUpperCase()}`
       );
       startStream({
         target,
         jobId: body.jobid ?? null,
+        fetchJobId: body.fetchJobId ?? null,
+        transport,
         modelName: activePreset.recommendedCheckpoint,
         category: "checkpoints",
+        totalBytes: body.sizeBytes ?? 0,
       });
     } finally {
       setStartingStream(false);
@@ -667,7 +671,13 @@ export function StudioWorkspace({ onOpenArchitect }: { onOpenArchitect?: () => v
                 {isTargetStreamingThisModel && activeStream ? (
                   <div className="glass-card mt-1.5 space-y-1.5 rounded-xl border-indigo-400/40 bg-indigo-500/15 p-2.5 text-[11px]">
                     <div className="flex items-center justify-between font-mono text-indigo-200">
-                      <span>{activeStream.completed ? "Model Loaded!" : "Streaming via Rclone"}</span>
+                      <span>
+                        {activeStream.completed
+                          ? "Model Loaded!"
+                          : activeStream.transport === "rclone-gdrive"
+                          ? "Streaming via Drive"
+                          : "Downloading Model"}
+                      </span>
                       <span>
                         {activeStream.percentage}% · {activeStream.speedText}
                       </span>
@@ -1090,7 +1100,7 @@ export function StudioWorkspace({ onOpenArchitect }: { onOpenArchitect?: () => v
               <div className="flex flex-col items-center gap-3 text-xs text-zinc-300">
                 <Loader2 className="h-8 w-8 animate-spin text-indigo-400" />
                 <span>
-                  Executing workflow on {(studio.pollingTarget || target).toUpperCase()} &amp; syncing to Google Drive...
+                  Executing workflow on {(studio.pollingTarget || target).toUpperCase()} &amp; backing up outputs...
                 </span>
               </div>
             ) : (

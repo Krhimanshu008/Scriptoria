@@ -14,6 +14,7 @@ export interface EnsureModelResult {
   alreadyCached?: boolean;
   fetchJobId?: string | null;
   rcloneJobId?: number | null;
+  sizeBytes?: number;
   file: string;
   category: string;
   target: string;
@@ -107,6 +108,7 @@ export async function ensureModelReadyOnVm(params: {
       sourceMode: preferSource, backup: backupToGdrive && hasDrive,
     } });
     return { status: "started", transport: "sidecar-fetch", source: "worker", fetchJobId: "worker-" + job.id,
+      sizeBytes: asset.sizeBytes || undefined,
       file: asset.filename, category: asset.category, target: vm.target };
   }
   if (preferSource !== "gdrive" || vm.provider === "kaggle") {
@@ -146,6 +148,7 @@ export async function ensureModelReadyOnVm(params: {
         transport: "sidecar-fetch",
         source: primary?.sourceKind || "gdrive",
         fetchJobId: fetchRes.jobId ?? null,
+        sizeBytes: request.expectedSizeBytes || asset.sizeBytes || undefined,
         file: asset.filename,
         category: asset.category,
         target: vm.target,

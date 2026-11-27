@@ -21,6 +21,8 @@ import {
   Zap,
   RefreshCw,
   X,
+  Database,
+  Plus,
 } from "lucide-react";
 import type { PrewarmModelRef, PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
 import type { KaggleAccountSummary, ColabAccountSummary } from "@/app/api/vm/accounts/route";
@@ -140,7 +142,10 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
   const uptime = vms.reduce((acc, v) => Math.max(acc, v.uptimeSeconds || 0), 0);
   const activeProfile = getWorkerProfile(primaryVm?.workerProfile);
   const selectedPrewarm: PrewarmModelRef[] = primaryVm?.prewarmModels ?? [];
+  const attachedDatasets: string[] = primaryVm?.kaggleDatasets ?? [];
   const slotIdleOverride = primaryVm?.idleTimeoutMinutes ?? null;
+  const [datasetDraft, setDatasetDraft] = useState("");
+  const [buildingFastboot, setBuildingFastboot] = useState(false);
 
   const totalSec = kaggleAccount?.quota?.totalAllowedSeconds ?? 108000;
   const remainSec = kaggleAccount?.quota?.remainingSeconds ?? totalSec;
@@ -153,6 +158,7 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
       displayName?: string;
       idleTimeoutMinutes?: number | null;
       prewarmModels?: PrewarmModelRef[];
+      kaggleDatasets?: string[];
     },
     successMsg: string
   ) {
@@ -211,6 +217,48 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
     await patchBootConfig(primaryTarget, { prewarmModels: next }, "Updated pre-warm model list");
   }
 
+  async function handleAttachDataset() {
+    const cleaned = datasetDraft.trim();
+    if (!cleaned || !cleaned.includes("/")) {
+      toast.error("Enter dataset as 'owner/dataset-slug' (e.g. himanshukr7532/scriptoria-comfy-env).");
+      return;
+    }
+    if (attachedDatasets.includes(cleaned)) {
+      setDatasetDraft("");
+      return;
+    }
+    const next = [...attachedDatasets, cleaned].slice(0, 6);
+    await patchBootConfig(primaryTarget, { kaggleDatasets: next }, `Attached FastBoot dataset ${cleaned}`);
+    setDatasetDraft("");
+  }
+
+  async function handleRemoveDataset(slug: string) {
+    const next = attachedDatasets.filter((d) => d !== slug);
+    await patchBootConfig(primaryTarget, { kaggleDatasets: next }, `Detached ${slug}`);
+  }
+
+  async function handleBuildFastbootCache() {
+    setBuildingFastboot(true);
+    try {
+      const res = await fetch(`/api/vm/${encodeURIComponent(primaryTarget)}/build-fastboot`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profileId: activeProfile.id }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(body.error || "Failed to queue CPU FastBoot build");
+        return;
+      }
+      toast.success(
+        `Queued 0-GPU CPU build (${activeProfile.shortTag})! Open Output → New Dataset when done: ${body.url}`
+      );
+      onRefresh();
+    } finally {
+      setBuildingFastboot(false);
+    }
+  }
+
   async function handleBootOrKill(confirmKill = false) {
     const label =
       kind === "kaggle"
@@ -261,8 +309,8 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
         toast.success(`VM status synced: ${data.status}`);
       }
       onRefresh();
-    } catch (err: any) {
-      toast.error(err.message || "Failed to sync VM status");
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to sync VM status");
     } finally {
       setSyncLoading(false);
     }
@@ -283,8 +331,8 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
       }
       toast.success("Worker hot-reloaded! In-container restart in progress (<3s)...");
       onRefresh();
-    } catch (err: any) {
-      toast.error(err.message || "Failed to hot reload worker");
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to hot reload worker");
     } finally {
       setHotReloadLoading(false);
     }
@@ -630,6 +678,73 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
             ))}
           </select>
         </div>
+
+        {/* FastBoot Kaggle Dataset Row */}
+        {kind === "kaggle" && !isLlmWorkerProfile(activeProfile.id) && activeProfile.accelerator !== "tpu" && (
+          <div className="space-y-1.5 rounded-md border border-zinc-800/80 bg-zinc-950/50 px-2.5 py-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Database className="h-3 w-3 text-cyan-400" />
+                <span className="text-[10px] font-medium text-zinc-400">FastBoot Dataset:</span>
+                {attachedDatasets.length === 0 ? (
+                  <span className="text-[10px] text-zinc-600">None (Cold Boot ~150s)</span>
+                ) : (
+                  attachedDatasets.map((ds) => (
+                    <span
+                      key={ds}
+                      className="inline-flex items-center gap-1 rounded border border-cyan-500/35 bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[10px] text-cyan-200"
+                    >
+                      {ds}
+                      {!anyActive && (
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveDataset(ds)}
+                          className="text-cyan-400/80 hover:text-white"
+                        >
+                          <X className="h-2.5 w-2.5" />
+                        </button>
+                      )}
+                    </span>
+                  ))
+                )}
+              </div>
+              <button
+                type="button"
+                disabled={buildingFastboot || savingConfig || !kaggleAccount?.configured}
+                onClick={handleBuildFastbootCache}
+                title="Run 0-GPU CPU notebook on Kaggle to build comfy_env.tar.gz for FastBoot"
+                className="inline-flex items-center gap-1 rounded border border-indigo-500/35 bg-indigo-500/10 px-1.5 py-0.5 font-mono text-[10px] text-indigo-300 hover:bg-indigo-500/20 disabled:opacity-40"
+              >
+                {buildingFastboot ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <Zap className="h-2.5 w-2.5" />}
+                Build CPU Cache (0 GPU)
+              </button>
+            </div>
+            {!anyActive && (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleAttachDataset();
+                }}
+                className="flex items-center gap-1.5"
+              >
+                <input
+                  value={datasetDraft}
+                  onChange={(e) => setDatasetDraft(e.target.value)}
+                  placeholder="Attach Kaggle dataset slug (e.g. himanshukr7532/scriptoria-comfy-env)"
+                  className="h-6 min-w-0 flex-1 rounded border border-zinc-800 bg-zinc-900 px-2 font-mono text-[10px] text-zinc-200 placeholder:text-zinc-600"
+                />
+                <button
+                  type="submit"
+                  disabled={savingConfig || !datasetDraft.trim()}
+                  className="inline-flex h-6 items-center gap-1 rounded border border-zinc-700 bg-zinc-800 px-2 text-[10px] font-medium text-zinc-200 hover:bg-zinc-700 disabled:opacity-40"
+                >
+                  <Plus className="h-2.5 w-2.5" />
+                  Attach
+                </button>
+              </form>
+            )}
+          </div>
+        )}
 
         {isStarting && (
           <div className="space-y-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-2.5 text-[11px] text-amber-200">

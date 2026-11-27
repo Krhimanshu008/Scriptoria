@@ -55,6 +55,16 @@ export interface StudioFormState {
   queuePending: number;
 }
 
+export interface StreamQueueItem {
+  target: string;
+  jobId?: number | null;
+  fetchJobId?: string | null;
+  transport?: "rclone-gdrive" | "sidecar-fetch";
+  modelName: string;
+  category: string;
+  totalBytes?: number;
+}
+
 interface ClusterUiState {
   selectedTarget: string;
   manualTargetPinned: boolean;
@@ -62,14 +72,9 @@ interface ClusterUiState {
   syncTargetWithVms: (vms: PublicVmInstance[]) => void;
 
   activeStream: ActiveStreamState | null;
-  startStream: (params: {
-    target: string;
-    jobId?: number | null;
-    fetchJobId?: string | null;
-    transport?: "rclone-gdrive" | "sidecar-fetch";
-    modelName: string;
-    category: string;
-  }) => void;
+  queuedStreams: StreamQueueItem[];
+  startStream: (params: StreamQueueItem, queue?: StreamQueueItem[]) => void;
+  advanceStreamQueue: () => StreamQueueItem | null;
   setActiveStream: (stream: ActiveStreamState | null) => void;
 
   studio: StudioFormState;
@@ -105,8 +110,10 @@ export const useClusterStore = create<ClusterUiState>((set, get) => ({
   },
 
   activeStream: null,
-  startStream: ({ target, jobId, fetchJobId, transport, modelName, category }) =>
-    set({
+  queuedStreams: [],
+  startStream: ({ target, jobId, fetchJobId, transport, modelName, category, totalBytes }, queue) =>
+    set((state) => ({
+      queuedStreams: queue !== undefined ? queue : state.queuedStreams,
       activeStream: {
         target,
         jobId: jobId ?? null,
@@ -117,15 +124,41 @@ export const useClusterStore = create<ClusterUiState>((set, get) => ({
         percentage: 1,
         speedMbps: 0,
         bytesDone: 0,
-        totalBytes: 0,
+        totalBytes: totalBytes ?? 0,
         etaSeconds: null,
-        speedText: fetchJobId ? "Starting HF/Civitai aria2c fetch..." : "Starting Rclone...",
+        speedText: fetchJobId ? "Starting mirror fetch..." : "Starting Rclone...",
         active: true,
         completed: false,
         error: null,
       },
-    }),
-  setActiveStream: (activeStream) => set({ activeStream }),
+    })),
+  advanceStreamQueue: () => {
+    const [next, ...rest] = get().queuedStreams;
+    if (!next) return null;
+    set({
+      queuedStreams: rest,
+      activeStream: {
+        target: next.target,
+        jobId: next.jobId ?? null,
+        fetchJobId: next.fetchJobId ?? null,
+        transport: next.transport ?? (next.fetchJobId ? "sidecar-fetch" : "rclone-gdrive"),
+        modelName: next.modelName,
+        category: next.category,
+        percentage: 1,
+        speedMbps: 0,
+        bytesDone: 0,
+        totalBytes: next.totalBytes ?? 0,
+        etaSeconds: null,
+        speedText: next.fetchJobId ? "Starting mirror fetch..." : "Starting Rclone...",
+        active: true,
+        completed: false,
+        error: null,
+      },
+    });
+    return next;
+  },
+  setActiveStream: (activeStream) =>
+    set((state) => ({ activeStream, queuedStreams: activeStream ? state.queuedStreams : [] })),
 
   studio: {
     activePresetId: DEFAULT_PRESET.id,

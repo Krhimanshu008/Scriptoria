@@ -14,6 +14,8 @@ export async function POST(req: NextRequest) {
     const target = String(body.target || "gpu0");
     const slug = body.slug ? String(body.slug).trim() : "";
     const modelId = body.modelId ? String(body.modelId).trim() : "";
+    const filename = body.filename ? String(body.filename).trim() : "";
+    const category = body.category ? String(body.category).trim() : "";
     const backupToGdrive = body.backupToGdrive !== false;
     const rawPrefer = String(body.preferSource || "auto");
     const preferSource =
@@ -31,6 +33,8 @@ export async function POST(req: NextRequest) {
       vm,
       slug: slug || undefined,
       modelId: modelId || undefined,
+      filename: filename || undefined,
+      category: category || undefined,
       backupToGdrive,
       preferSource,
     });

@@ -141,6 +141,7 @@ export async function PATCH(
           ? `idle=${updateData.idleTimeoutMinutes ?? "global"}m`
           : null,
         updateData.prewarmModelsJson !== undefined ? "prewarm updated" : null,
+        updateData.kaggleDatasetsJson !== undefined ? `datasets=${JSON.parse(updateData.kaggleDatasetsJson || "[]").length}` : null,
         updateData.displayName !== undefined ? `name=${updateData.displayName}` : null,
       ]
         .filter(Boolean)

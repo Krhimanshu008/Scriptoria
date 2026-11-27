@@ -25,6 +25,7 @@ import type { DrivePreviewCandidate } from "@/app/api/catalog/scan-drive/route";
 import type { CompiledWorkflowResult, WorkflowBuildSpec, WorkflowPipelineKind } from "@/lib/workflow/compiler";
 import type { WorkflowStackRecommendation } from "@/lib/workflow/recommender";
 import type { StylePresetId } from "@/lib/workflow/modules";
+import { useClusterStore, type StreamQueueItem } from "@/store/cluster-store";
 import { WorkflowRecommenderBar } from "@/components/studio/WorkflowRecommenderBar";
 import {
   ModularAdaptersDrawer,
@@ -148,6 +149,9 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
     [vms]
   );
   const { configuredAccounts, bestOfflineAccount, refreshCluster } = useKaggleClusterAccounts(vms);
+  const activeStream = useClusterStore((s) => s.activeStream);
+  const queuedStreams = useClusterStore((s) => s.queuedStreams);
+  const startStream = useClusterStore((s) => s.startStream);
 
   const [target, setTarget] = useState(
     () => onlineVms[0]?.target || bestOfflineAccount?.primaryTarget || "gpu4"
@@ -461,7 +465,7 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
   async function handleStreamMissingModels() {
     if (!compiled || !selectedVmOnline) return;
     setStreamingMissing(true);
-    let startedCount = 0;
+    const startedItems: StreamQueueItem[] = [];
     try {
       for (const rm of compiled.requiredModels) {
         if (cachedSet.has(rm.filename.toLowerCase())) continue;
@@ -476,13 +480,24 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
           }),
         });
         const data = await res.json();
-        if (res.ok && data.status === "started") startedCount += 1;
+        if (res.ok && data.status === "started") {
+          startedItems.push({
+            target,
+            fetchJobId: data.fetchJobId ?? null,
+            jobId: data.jobid ?? null,
+            transport: data.transport === "rclone-gdrive" ? "rclone-gdrive" : "sidecar-fetch",
+            modelName: rm.filename,
+            category: rm.category,
+            totalBytes: data.sizeBytes ?? 0,
+          });
+        }
       }
-      toast.success(
-        startedCount > 0
-          ? `Started streaming ${startedCount} missing model(s) onto ${target.toUpperCase()}!`
-          : `All required models are already present on ${target.toUpperCase()}.`
-      );
+      if (startedItems.length > 0) {
+        startStream(startedItems[0], startedItems.slice(1));
+        toast.success(`Downloading ${startedItems.length} missing model(s) onto ${target.toUpperCase()}!`);
+      } else {
+        toast.success(`All required models are already present on ${target.toUpperCase()}.`);
+      }
     } finally {
       setStreamingMissing(false);
     }
@@ -1062,6 +1077,41 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
                     ))}
                   </div>
                 )}
+              </div>
+            )}
+
+            {activeStream?.active && activeStream.target === target && (
+              <div
+                className={`space-y-1.5 rounded-md border p-2.5 text-[11px] ${
+                  activeStream.completed
+                    ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-200"
+                    : "border-indigo-500/35 bg-indigo-500/10 text-indigo-200"
+                }`}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-[10px]">
+                  <span className="truncate font-semibold">
+                    {activeStream.completed ? "Loaded" : "Downloading"} {activeStream.modelName}
+                    {queuedStreams.length > 0 ? ` (+${queuedStreams.length} queued)` : ""}
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    {activeStream.speedMbps > 0 && (
+                      <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 font-semibold text-emerald-300">
+                        {activeStream.speedMbps.toFixed(1)} MB/s
+                      </span>
+                    )}
+                    <span>
+                      {activeStream.percentage}% · {activeStream.speedText}
+                    </span>
+                  </div>
+                </div>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-800">
+                  <div
+                    className={`h-full transition-all duration-300 ${
+                      activeStream.completed ? "bg-emerald-400" : "bg-indigo-400"
+                    }`}
+                    style={{ width: `${activeStream.percentage}%` }}
+                  />
+                </div>
               </div>
             )}
 

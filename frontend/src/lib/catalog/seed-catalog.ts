@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db/prisma";
 
-export const CATALOG_VERSION = 20261126;
+export const CATALOG_VERSION = 20261127;
 
 export type QuantFormat = "FP16" | "BF16" | "INT8_CONVROT" | "W4A8" | "GGUF" | "FP8";
 
@@ -941,6 +941,9 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     vramEstimateGb: 0.2,
     compatibleBase: "Illustrious",
     useCases: ["environment", "detail_enhance"],
+    sha256: "99a90b0bdfb31bd5cbdc2cabb4f579512d3b92f1d8a518d811f6125eceb1cfc6",
+    civitaiModelId: "2631850",
+    civitaiVersionId: "2954998",
   },
   {
     slug: "moss-image-8step-dmd2-lora",
@@ -1521,13 +1524,16 @@ export const SEED_MODEL_CATALOG: SeedModelSpec[] = [
     displayName: "Wan 2.1 I2V (GGUF Q4_K_M)",
     modality: "VIDEO",
     category: "unet",
-    filename: "wan2.1-i2v-Q4_K_M.gguf",
-    sizeBytes: Math.round(6.5 * GB),
+    filename: "wan2.1-i2v-14b-480p-Q4_K_M.gguf",
+    sizeBytes: 11341184384,
     vramEstimateGb: 10.5,
     compatibleBase: "Video",
     requiredCustomNodes: ["ComfyUI-WanVideoWrapper", "ComfyUI-VideoHelperSuite"],
     useCases: ["i2v"],
     recommendedConfig: { speed: "25-45s/clip" },
+    sha256: "d91f7139acadb42ea05cdf97b311e5099f714f11fbe4d90916500e2f53cbba82",
+    hfRepoId: "city96/Wan2.1-I2V-14B-480P-gguf",
+    hfFilePath: "wan2.1-i2v-14b-480p-Q4_K_M.gguf",
   },
   {
     slug: "latentsync-unet",

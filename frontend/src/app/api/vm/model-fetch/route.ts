@@ -21,8 +21,16 @@ export async function POST(req: NextRequest) {
     if (!report || typeof report.id !== "string" || !["downloading", "completed", "failed"].includes(report.status)) continue;
     const number = (value: unknown) => Math.max(0, Number(value) || 0);
     const progressJson = JSON.stringify({
-      bytesDone: number(report.bytesDone), totalBytes: number(report.totalBytes),
-      percentage: Math.min(100, number(report.percentage)), speedMbps: number(report.speedMbps),
+      bytesDone: number(report.bytesDone),
+      totalBytes: number(report.totalBytes),
+      percentage: Math.min(100, number(report.percentage)),
+      speedMbps: number(report.speedMbps),
+      etaSeconds:
+        report.etaSeconds != null && Number.isFinite(Number(report.etaSeconds))
+          ? Math.max(0, Math.round(Number(report.etaSeconds)))
+          : null,
+      source: typeof report.source === "string" ? report.source : undefined,
+      filename: typeof report.filename === "string" ? report.filename : undefined,
       error: typeof report.error === "string" ? report.error.slice(0, 350) : null,
     });
     await prisma.modelFetch.updateMany({ where: { ...scope, id: report.id, status: { in: ["queued", "downloading"] } },

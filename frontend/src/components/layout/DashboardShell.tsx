@@ -15,7 +15,6 @@ import {
   Sparkles,
   Bot,
   Zap,
-  Film,
   Clapperboard,
   X,
   PanelLeftClose,
@@ -84,16 +83,11 @@ export function DashboardShell({
   const [mobileOpen, setMobileOpen] = useState(false);
 
   const isFullBleed = pathname.startsWith("/testbench");
-
-  // Auto-collapse sidebar on /testbench to grant full viewport width (Argon layout spec)
-  useEffect(() => {
-    if (pathname.startsWith("/testbench")) {
-      setCollapsed(true);
-    }
-  }, [pathname]);
+  const isCollapsed = isFullBleed || collapsed;
 
   const activeStream = useClusterStore((s) => s.activeStream);
   const setActiveStream = useClusterStore((s) => s.setActiveStream);
+  const advanceStreamQueue = useClusterStore((s) => s.advanceStreamQueue);
   const syncTargetWithVms = useClusterStore((s) => s.syncTargetWithVms);
   const pollingJobId = useClusterStore((s) => s.studio.pollingJobId);
   const pollingTarget = useClusterStore((s) => s.studio.pollingTarget);
@@ -135,6 +129,7 @@ export function DashboardShell({
     const category = activeStream.category;
     const jobId = activeStream.jobId;
     const fetchJobId = activeStream.fetchJobId;
+    const prevTotalBytes = activeStream.totalBytes;
 
     let cancelled = false;
     const timer = setInterval(async () => {
@@ -159,7 +154,7 @@ export function DashboardShell({
         if (stats.status === "transferring" || stats.active) {
           const speedMbps = Number(stats.speedMbps || 0);
           const bytesDone = Number(stats.bytesDone || 0);
-          const totalBytes = Number(stats.totalBytes || 0);
+          const totalBytes = Number(stats.totalBytes || 0) || prevTotalBytes || 0;
           const etaSeconds = stats.etaSeconds != null ? Number(stats.etaSeconds) : null;
           const percentage = Number(stats.percentage || 0);
 
@@ -181,41 +176,47 @@ export function DashboardShell({
             error: null,
           });
         } else if (stats.completed) {
-          setActiveStream({
-            target,
-            jobId,
-            fetchJobId,
-            transport: fetchJobId ? "sidecar-fetch" : "rclone-gdrive",
-            modelName,
-            category,
-            percentage: 100,
-            speedMbps: 0,
-            bytesDone: stats.totalBytes || stats.bytes || 0,
-            totalBytes: stats.totalBytes || stats.bytes || 0,
-            etaSeconds: 0,
-            speedText: fetchJobId ? "Cached on worker disk" : "Ready on /tmp",
-            active: true,
-            completed: true,
-            error: null,
-          });
           toast.success(`${modelName} cached in /tmp/models/${category} on ${target.toUpperCase()}`);
           queryClient.invalidateQueries({ queryKey: ["vm-catalog", target] });
           queryClient.invalidateQueries({ queryKey: ["vm-storage", target] });
+          queryClient.invalidateQueries({ queryKey: ["vm-live-catalog", target] });
           queryClient.invalidateQueries({ queryKey: ["master-catalog"] });
-          setTimeout(() => {
-            const cur = useClusterStore.getState().activeStream;
-            if (cur?.completed && cur.modelName === modelName) {
-              useClusterStore.getState().setActiveStream(null);
-            }
-          }, 4000);
+          if (!advanceStreamQueue()) {
+            const finalBytes = Number(stats.totalBytes || stats.bytes || 0) || prevTotalBytes || 0;
+            setActiveStream({
+              target,
+              jobId,
+              fetchJobId,
+              transport: fetchJobId ? "sidecar-fetch" : "rclone-gdrive",
+              modelName,
+              category,
+              percentage: 100,
+              speedMbps: 0,
+              bytesDone: finalBytes,
+              totalBytes: finalBytes,
+              etaSeconds: 0,
+              speedText: fetchJobId ? "Cached on worker disk" : "Ready on /tmp",
+              active: true,
+              completed: true,
+              error: null,
+            });
+            setTimeout(() => {
+              const cur = useClusterStore.getState().activeStream;
+              if (cur?.completed && cur.modelName === modelName) {
+                useClusterStore.getState().setActiveStream(null);
+              }
+            }, 4000);
+          }
         } else if (stats.failed) {
           toast.error(stats.error || `Failed fetching ${modelName}`);
-          setActiveStream(null);
+          if (!advanceStreamQueue()) {
+            setActiveStream(null);
+          }
         }
       } catch {
         // Ignore transient polling errors
       }
-    }, 1500);
+    }, 1200);
 
     return () => {
       cancelled = true;
@@ -229,6 +230,8 @@ export function DashboardShell({
     activeStream?.category,
     activeStream?.jobId,
     activeStream?.fetchJobId,
+    activeStream?.totalBytes,
+    advanceStreamQueue,
     queryClient,
     setActiveStream,
   ]);
@@ -254,7 +257,13 @@ export function DashboardShell({
             queueElapsedMs: null,
             queuePending: 0,
           });
-          toast.success("Generation completed & saved permanently to Google Drive!");
+          const outs = Array.isArray(sData.outputs) ? sData.outputs : [];
+          const hasDriveBackup = outs.some((o: { gdriveFileId?: string }) => Boolean(o?.gdriveFileId));
+          toast.success(
+            hasDriveBackup
+              ? "Generation completed & saved permanently to Google Drive!"
+              : "Generation completed & backed up to Local Vault!"
+          );
           queryClient.invalidateQueries({ queryKey: ["outputs-history"] });
         } else if (sData.status === "FAILED") {
           updateStudio({
@@ -457,10 +466,10 @@ export function DashboardShell({
       {/* Desktop Collapsible Sidebar */}
       <aside
         className={`sticky top-0 hidden h-screen shrink-0 border-r border-zinc-800/90 transition-[width] duration-150 md:block ${
-          collapsed ? "w-14" : "w-56"
+          isCollapsed ? "w-14" : "w-56"
         }`}
       >
-        {renderSidebarNav(collapsed)}
+        {renderSidebarNav(isCollapsed)}
       </aside>
 
       {/* Mobile Drawer Overlay */}
@@ -497,10 +506,18 @@ export function DashboardShell({
 
             <div className="flex items-center gap-3">
               {activeStream?.active && (
-                <div className="hidden items-center gap-2 rounded-md border border-zinc-800 bg-zinc-900 px-2.5 py-1 font-mono text-[11px] text-zinc-200 sm:flex">
+                <div
+                  title={activeStream.speedText}
+                  className="hidden items-center gap-2 rounded-md border border-zinc-800 bg-zinc-900 px-2.5 py-1 font-mono text-[11px] text-zinc-200 sm:flex"
+                >
                   <HardDriveDownload className="h-3.5 w-3.5 text-indigo-400" />
-                  <span className="max-w-[180px] truncate">{activeStream.modelName}</span>
-                  <span className="text-zinc-400">{activeStream.percentage}%</span>
+                  <span className="max-w-[140px] truncate">{activeStream.modelName}</span>
+                  <span className="text-indigo-300">{activeStream.percentage}%</span>
+                  <span className={activeStream.speedMbps > 0 ? "text-emerald-300" : "text-zinc-400"}>
+                    {activeStream.speedMbps > 0
+                      ? `${activeStream.speedMbps.toFixed(1)} MB/s`
+                      : activeStream.speedText}
+                  </span>
                   <button
                     type="button"
                     onClick={() => setActiveStream(null)}

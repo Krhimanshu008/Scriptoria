@@ -7,6 +7,7 @@ export interface JobOutputFile {
   filename: string;
   gdriveFileId: string;
   gdrivePath: string;
+  storageUri?: string;
   previewUrl: string;
 }
 
@@ -39,7 +40,7 @@ function outputsToArtifacts(outputs: JobOutputFile[]): MediaArtifactV1[] {
       filename: o.filename,
       gdriveFileId: o.gdriveFileId || undefined,
       gdrivePath: o.gdrivePath || undefined,
-      storageUri: o.gdrivePath ? `gdrive://${o.gdrivePath}` : undefined,
+      storageUri: o.storageUri || (o.gdrivePath ? `gdrive://${o.gdrivePath}` : undefined),
       previewUrl: o.previewUrl || (o.gdriveFileId ? `/api/outputs/${o.gdriveFileId}` : undefined),
     };
   });

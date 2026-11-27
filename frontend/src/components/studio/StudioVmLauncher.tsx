@@ -14,6 +14,8 @@ import {
   Server,
   Clock,
   RefreshCw,
+  Database,
+  X,
 } from "lucide-react";
 import type { PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
 import type { KaggleAccountSummary } from "@/app/api/vm/accounts/route";
@@ -54,6 +56,7 @@ export interface EnrichedKaggleAccount {
   remainingSeconds: number;
   totalAllowedSeconds: number;
   activeProfile: string;
+  kaggleDatasets: string[];
   lastError?: string | null;
   quotaError?: string | null;
 }
@@ -134,6 +137,7 @@ export function useKaggleClusterAccounts(vms: PublicVmInstance[]) {
         remainingSeconds: remaining,
         totalAllowedSeconds: totalAllowed,
         activeProfile: slotVms[0]?.workerProfile || "BASE_COMFY",
+        kaggleDatasets: slotVms[0]?.kaggleDatasets ?? [],
         lastError: slotVms.find((v) => v.lastError)?.lastError,
         quotaError: acc.quotaError || null,
       };
@@ -278,8 +282,30 @@ export function KaggleVmLauncherDialog({
   const [attachPrewarm, setAttachPrewarm] = useState(true);
   const [workerMode, setWorkerMode] = useState<"headless_safe" | "interactive_tunnel">("headless_safe");
   const [profileOverrides, setProfileOverrides] = useState<Record<string, string>>({});
+  const [datasetDrafts, setDatasetDrafts] = useState<Record<string, string>>({});
+  const [savingDatasetAlias, setSavingDatasetAlias] = useState<string | null>(null);
 
   const imageProfiles = WORKER_PROFILE_LIST.filter((p) => !isLlmWorkerProfile(p.id) && p.accelerator !== "tpu");
+
+  async function updateAccountDatasets(acc: EnrichedKaggleAccount, nextDatasets: string[]) {
+    setSavingDatasetAlias(acc.alias);
+    try {
+      const res = await fetch(`/api/vm/${encodeURIComponent(acc.primaryTarget)}/profile`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ applyToGroup: true, kaggleDatasets: nextDatasets }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(body.error || "Failed updating FastBoot dataset");
+        return;
+      }
+      toast.success(`Updated FastBoot dataset on ${acc.displayName}`);
+      await refreshCluster();
+    } finally {
+      setSavingDatasetAlias(null);
+    }
+  }
 
   async function handleBootOne(acc: EnrichedKaggleAccount) {
     setBusyAlias(acc.alias);
@@ -628,6 +654,74 @@ export function KaggleVmLauncherDialog({
                         </Button>
                       )}
                     </div>
+                  </div>
+
+                  {/* Compact FastBoot Dataset Bar */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/5 pt-2 text-[10px]">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <Database className="h-3 w-3 text-cyan-400" />
+                      <span className="text-zinc-500">FastBoot:</span>
+                      {acc.kaggleDatasets.length === 0 ? (
+                        <span className="text-zinc-600">None (Cold Boot)</span>
+                      ) : (
+                        acc.kaggleDatasets.map((ds) => (
+                          <span
+                            key={ds}
+                            className="inline-flex items-center gap-1 rounded border border-cyan-500/35 bg-cyan-500/10 px-1.5 py-0.5 font-mono text-cyan-200"
+                          >
+                            {ds}
+                            {!acc.isOnline && !acc.isStarting && (
+                              <button
+                                type="button"
+                                disabled={savingDatasetAlias === acc.alias}
+                                onClick={() =>
+                                  updateAccountDatasets(
+                                    acc,
+                                    acc.kaggleDatasets.filter((d) => d !== ds)
+                                  )
+                                }
+                                className="text-cyan-400/80 hover:text-white"
+                              >
+                                <X className="h-2.5 w-2.5" />
+                              </button>
+                            )}
+                          </span>
+                        ))
+                      )}
+                    </div>
+                    {!acc.isOnline && !acc.isStarting && (
+                      <form
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          const val = (datasetDrafts[acc.alias] || "").trim();
+                          if (!val.includes("/")) {
+                            toast.error("Use format 'owner/dataset-slug'");
+                            return;
+                          }
+                          if (!acc.kaggleDatasets.includes(val)) {
+                            updateAccountDatasets(acc, [...acc.kaggleDatasets, val].slice(0, 6));
+                          }
+                          setDatasetDrafts((prev) => ({ ...prev, [acc.alias]: "" }));
+                        }}
+                        className="flex items-center gap-1"
+                      >
+                        <input
+                          value={datasetDrafts[acc.alias] || ""}
+                          onChange={(e) =>
+                            setDatasetDrafts((prev) => ({ ...prev, [acc.alias]: e.target.value }))
+                          }
+                          placeholder="owner/dataset-slug"
+                          className="h-6 w-40 rounded border border-zinc-800 bg-zinc-900 px-1.5 font-mono text-[10px] text-zinc-200 placeholder:text-zinc-600"
+                        />
+                        <button
+                          type="submit"
+                          disabled={savingDatasetAlias === acc.alias || !(datasetDrafts[acc.alias] || "").trim()}
+                          className="h-6 rounded border border-zinc-700 bg-zinc-800 px-2 font-medium text-zinc-200 hover:bg-zinc-700 disabled:opacity-40"
+                        >
+                          Attach
+                        </button>
+                      </form>
+                    )}
                   </div>
                 </div>
               );

@@ -108,6 +108,7 @@ export default function ModelsPage() {
   const setSelectedTarget = useClusterStore((s) => s.setSelectedTarget);
   const startStream = useClusterStore((s) => s.startStream);
   const activeStream = useClusterStore((s) => s.activeStream);
+  const queuedStreams = useClusterStore((s) => s.queuedStreams);
 
   const { data: vmData } = useQuery<{ vms: PublicVmInstance[] }>({
     queryKey: ["vm-status"],
@@ -251,6 +252,7 @@ export default function ModelsPage() {
           transport: "sidecar-fetch",
           modelName: model.filename,
           category: model.category,
+          totalBytes: body.sizeBytes ?? model.sizeBytes ?? 0,
         });
       } else {
         toast.success(`Streaming ${model.filename} from 5TB Drive -> ${target.toUpperCase()}`);
@@ -260,6 +262,7 @@ export default function ModelsPage() {
           transport: "rclone-gdrive",
           modelName: model.filename,
           category: model.category,
+          totalBytes: body.sizeBytes ?? model.sizeBytes ?? 0,
         });
       }
       refetchCatalog();
@@ -590,10 +593,18 @@ export default function ModelsPage() {
             >
               {activeStream.completed ? "Loaded" : "Fetching"} {activeStream.modelName} ➔{" "}
               {activeStream.target.toUpperCase()} ({activeStream.transport || "stream"})
+              {queuedStreams.length > 0 ? ` (+${queuedStreams.length} queued)` : ""}
             </span>
-            <span className="font-mono text-zinc-200">
-              {activeStream.percentage}% · {activeStream.speedText}
-            </span>
+            <div className="flex items-center gap-2 font-mono text-zinc-200">
+              {activeStream.speedMbps > 0 && (
+                <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 font-semibold text-emerald-300">
+                  {activeStream.speedMbps.toFixed(1)} MB/s
+                </span>
+              )}
+              <span>
+                {activeStream.percentage}% · {activeStream.speedText}
+              </span>
+            </div>
           </div>
           <div className="h-2.5 w-full overflow-hidden rounded-full bg-zinc-800">
             <div

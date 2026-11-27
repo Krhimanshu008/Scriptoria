@@ -48,7 +48,7 @@ def _verify_download(path, expected_sha, expected_size=0):
             raise ValueError("File SHA-256 does not match catalog")
     return size
 
-def _download_with_mirrors(mirrors, tmp_dl, default_sha="", progress_cb=None):
+def _download_with_mirrors(mirrors, tmp_dl, default_sha="", default_size=0, progress_cb=None):
     errors = []
     valid_mirrors = [m for m in (mirrors or []) if isinstance(m, dict) and str(m.get("url") or "").strip()]
     for idx, m in enumerate(valid_mirrors):
@@ -65,6 +65,21 @@ def _download_with_mirrors(mirrors, tmp_dl, default_sha="", progress_cb=None):
         try:
             t0 = time.time()
             used_aria2 = False
+            eff_dl_sz = exp_sz or int(default_size or 0)
+            win_samples = deque(maxlen=6)
+
+            def _emit_prog(done_b, total_b):
+                nonlocal win_samples
+                if not progress_cb:
+                    return
+                now_t = time.time()
+                win_samples.append((now_t, done_b))
+                if len(win_samples) >= 2 and (now_t - win_samples[0][0]) >= 0.4:
+                    inst_spd = (done_b - win_samples[0][1]) / max(0.1, now_t - win_samples[0][0])
+                else:
+                    inst_spd = done_b / max(0.1, now_t - t0)
+                progress_cb(done_b, total_b, inst_spd)
+
             if not auth_hdr and shutil.which("aria2c"):
                 cmd = [
                     "aria2c", "-x", "8", "-s", "8", "-k", "4M",
@@ -77,9 +92,8 @@ def _download_with_mirrors(mirrors, tmp_dl, default_sha="", progress_cb=None):
                 while proc.poll() is None:
                     if progress_cb and os.path.exists(tmp_dl):
                         done = os.path.getsize(tmp_dl)
-                        elapsed = max(0.1, time.time() - t0)
-                        progress_cb(done, exp_sz, elapsed)
-                    time.sleep(0.7)
+                        _emit_prog(done, eff_dl_sz)
+                    time.sleep(0.5)
                 if proc.returncode == 0 and os.path.exists(tmp_dl):
                     used_aria2 = True
 
@@ -91,7 +105,7 @@ def _download_with_mirrors(mirrors, tmp_dl, default_sha="", progress_cb=None):
                     req.add_unredirected_header("Authorization", auth_hdr)
                 with urllib.request.urlopen(req, timeout=90) as resp:
                     hdr_len = int(resp.headers.get("Content-Length") or 0)
-                    tot = exp_sz or hdr_len
+                    tot = eff_dl_sz or hdr_len
                     done = 0
                     with open(tmp_dl, "wb") as out:
                         while True:
@@ -100,8 +114,7 @@ def _download_with_mirrors(mirrors, tmp_dl, default_sha="", progress_cb=None):
                                 break
                             out.write(chunk)
                             done += len(chunk)
-                            if progress_cb:
-                                progress_cb(done, tot, max(0.1, time.time() - t0))
+                            _emit_prog(done, tot)
 
             _verify_download(tmp_dl, sha_exp, exp_sz if not sha_exp else 0)
             return {"sourceKind": src_kind, "url": url, "elapsed": round(time.time() - t0, 1)}
@@ -361,6 +374,7 @@ PENDING_LOGS = []
 FETCH_JOBS = {}
 FETCH_LOCK = threading.Lock()
 RCLONE_READY = False
+GDRIVE_HEALTHY = False
 RCLONE_LOCK = threading.Lock()
 GDRIVE_CFG = {}
 GDRIVE_CLIENT_ID = ""
@@ -373,6 +387,7 @@ CURRENT_STEP = 1
 T_BOOT_START = time.time()
 STEP_START = time.time()
 STEP_DURATIONS = {}
+BOOT_ONLINE_AT = None
 EVER_CONNECTED = False
 HEARTBEAT_FAIL_STREAK = 0
 STALE_410_STREAK = 0
@@ -426,25 +441,28 @@ def _terminate_worker_and_exit(reason="Session cancelled or superseded"):
     os._exit(0)
 
 def post_heartbeat(step, status="STARTING", telemetry=None):
-    global CURRENT_STEP, EVER_CONNECTED, HEARTBEAT_FAIL_STREAK, STALE_410_STREAK, LAST_HB_SENT, STEP_START, STEP_DURATIONS
+    global CURRENT_STEP, EVER_CONNECTED, HEARTBEAT_FAIL_STREAK, STALE_410_STREAK, LAST_HB_SENT, STEP_START, STEP_DURATIONS, BOOT_ONLINE_AT
     now = time.time()
     if step > CURRENT_STEP:
         prev_step = CURRENT_STEP
         STEP_DURATIONS[str(prev_step)] = round(now - STEP_START, 1)
         CURRENT_STEP = step
         STEP_START = now
-    elif step == 5 and CURRENT_STEP == 5 and "5" not in STEP_DURATIONS:
-        STEP_DURATIONS["5"] = round(now - STEP_START, 1)
+        if step == 5:
+            STEP_DURATIONS.setdefault("5", 0.0)
+            if BOOT_ONLINE_AT is None:
+                BOOT_ONLINE_AT = round(now - T_BOOT_START, 1)
     LAST_HB_SENT = now
     with LOG_LOCK:
         logs_batch = PENDING_LOGS[:]
         PENDING_LOGS.clear()
     telem = dict(telemetry or {})
     telem["stepDurations"] = dict(STEP_DURATIONS)
-    telem["currentStepElapsed"] = round(now - STEP_START, 1)
-    telem["totalBootElapsed"] = round(now - T_BOOT_START, 1)
+    telem["currentStepElapsed"] = 0.0 if CURRENT_STEP >= 5 else round(now - STEP_START, 1)
+    telem["totalBootElapsed"] = BOOT_ONLINE_AT if BOOT_ONLINE_AT is not None else round(now - T_BOOT_START, 1)
     telem["needsGdriveSync"] = bool(NEEDS_GDRIVE_SYNC)
     telem["gdriveSyncedAtMs"] = GDRIVE_SYNCED_AT_MS
+    telem["driveHealthy"] = bool(GDRIVE_HEALTHY)
     telem["headlessMode"] = bool(HEADLESS_MODE)
     telem["modelFetch"] = bool(HEADLESS_MODE)
     payload = {
@@ -659,6 +677,33 @@ def _post_backup_callback(slug, status, gdrive_path="", gdrive_file_id="", size_
     except Exception:
         pass
 
+def _upload_local_output_backup(task_id, worker_target, fn, src_file):
+    try:
+        file_sz = os.path.getsize(src_file)
+        if file_sz <= 0 or file_sz > 50 * 1024 * 1024:
+            return None
+        with open(src_file, "rb") as _lf:
+            raw_data = _lf.read()
+        req = urllib.request.Request(
+            f"{APP_URL}/api/v1/workers/upload-output",
+            data=raw_data,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Authorization": f"VmToken {REG_JWT}",
+                "X-Task-Id": str(task_id),
+                "X-Worker-Id": str(worker_target),
+                "X-Filename": urllib.parse.quote(str(fn)),
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            res = json.loads(resp.read().decode("utf-8") or "{}")
+        if res.get("ok") and res.get("previewUrl"):
+            return res
+    except Exception as _uerr:
+        log_event(f"[{worker_target}] Local vault backup warning ({fn}): {str(_uerr)[:100]}", category="RCLONE", level="WARN")
+    return None
+
 ${buildPythonMirrorDownloadHelper()}
 
 FETCH_SEMAPHORE = threading.Semaphore(2)
@@ -698,22 +743,21 @@ def _run_fetch_job(job_id, mirrors, category, subdir, filename, target_path, exp
             _upd(status="downloading", startedAt=time.time())
             t0 = time.time()
 
-            def _on_progress(done, tot, elapsed):
+            def _on_progress(done, tot, spd):
                 globals()["LAST_ACTIVE"] = time.time()
-                spd = done / max(0.1, elapsed)
                 eff_tot = tot or expected_size or 0
                 pct = min(99, round((done / eff_tot) * 100)) if eff_tot else 0
                 eta = max(1, round((eff_tot - done) / spd)) if (eff_tot and spd > 0 and eff_tot > done) else None
-                _upd(bytesDone=done, totalBytes=eff_tot, percentage=pct, speedMbps=round(spd / (1024 ** 2), 1), etaSeconds=eta)
+                _upd(bytesDone=done, totalBytes=eff_tot, percentage=pct, speedMbps=round(max(0.0, spd) / (1024 ** 2), 1), etaSeconds=eta)
 
             fetched_from = "http"
             try:
                 if not mirrors:
                     raise RuntimeError(source_error or "No eligible download source")
-                res_info = _download_with_mirrors(mirrors, tmp_dl, default_sha=sha256_hex, progress_cb=_on_progress)
+                res_info = _download_with_mirrors(mirrors, tmp_dl, default_sha=sha256_hex, default_size=expected_size, progress_cb=_on_progress)
                 fetched_from = res_info.get("sourceKind", "http")
             except Exception as mirror_err:
-                if allow_gdrive_fallback and RCLONE_READY:
+                if allow_gdrive_fallback and GDRIVE_HEALTHY:
                     log_event(f"Direct mirrors failed for {filename} ({mirror_err}); trying 5 TB Drive fallback...", category="RCLONE", level="WARN")
                     remote_dir = f"{GDRIVE_BASE}/models/{category}" + (f"/{subdir}" if subdir else "")
                     rc_copy_async({
@@ -725,6 +769,8 @@ def _run_fetch_job(job_id, mirrors, category, subdir, filename, target_path, exp
                     _verify_download(tmp_dl, sha256_hex, expected_size if not sha256_hex else 0)
                     fetched_from = "gdrive"
                 else:
+                    if allow_gdrive_fallback and RCLONE_READY and not GDRIVE_HEALTHY:
+                        raise RuntimeError(f"{mirror_err} (Google Drive API unavailable for fallback)")
                     raise
 
             os.replace(tmp_dl, target_path)
@@ -735,7 +781,7 @@ def _run_fetch_job(job_id, mirrors, category, subdir, filename, target_path, exp
             _upd(status="completed", bytesDone=final_size, totalBytes=final_size, percentage=100, speedMbps=0, etaSeconds=0, source=fetched_from)
             log_event(f"Fetch complete ({fetched_from}): {filename} ({round(final_size / (1024**3), 2)} GB) in {round(time.time() - t0, 1)}s", category="RCLONE", level="SUCCESS")
 
-            if backup_to_gdrive and fetched_from != "gdrive" and RCLONE_READY:
+            if backup_to_gdrive and fetched_from != "gdrive" and GDRIVE_HEALTHY:
                 def _bg_backup():
                     remote_dir = f"{GDRIVE_BASE}/models/{category}" + (f"/{subdir}" if subdir else "")
                     remote_path = f"{remote_dir}/{filename}"
@@ -998,25 +1044,37 @@ class SidecarHandler(BaseHTTPRequestHandler):
             src_dir = f"/tmp/outputs/{subfolder}" if subfolder else "/tmp/outputs"
             date_dir = time.strftime("%Y-%m-%d")
             remote_dir = f"{GDRIVE_BASE}/outputs/{date_dir}"
-            refresh_gdrive_oauth_in_vm(force=False)
-            try:
-                rc_post("operations/mkdir", {"fs": "gdrive:", "remote": remote_dir})
-            except Exception:
-                pass
-            rc_copy_async({
-                "srcFs": src_dir,
-                "srcRemote": filename,
-                "dstFs": f"gdrive:{remote_dir}",
-                "dstRemote": filename,
-            }, max_wait=240, label=f"Sync output {filename}")
-            stat = rc_post("operations/stat", {"fs": f"gdrive:{remote_dir}", "remote": filename})
-            file_id = (stat.get("item") or {}).get("ID", "")
+            file_id = ""
+            out_path = ""
+            if GDRIVE_HEALTHY:
+                try:
+                    refresh_gdrive_oauth_in_vm(force=False)
+                    try:
+                        rc_post("operations/mkdir", {"fs": "gdrive:", "remote": remote_dir})
+                    except Exception:
+                        pass
+                    rc_copy_async({
+                        "srcFs": src_dir,
+                        "srcRemote": filename,
+                        "dstFs": f"gdrive:{remote_dir}",
+                        "dstRemote": filename,
+                    }, max_wait=240, label=f"Sync output {filename}")
+                    stat = rc_post("operations/stat", {"fs": f"gdrive:{remote_dir}", "remote": filename})
+                    file_id = (stat.get("item") or {}).get("ID", "")
+                    out_path = f"{remote_dir}/{filename}"
+                except Exception as _g_err:
+                    log_event(f"Drive sync fallback for {filename}: {str(_g_err)[:100]}", category="RCLONE", level="WARN")
+            if not file_id:
+                local_res = _upload_local_output_backup("interactive", TARGETS[0] if TARGETS else "vm", filename, os.path.join(src_dir, filename))
+                if local_res:
+                    file_id = local_res.get("localFileId", "")
+                    out_path = local_res.get("localPath", "")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({
                 "gdriveFileId": file_id,
-                "gdrivePath": f"{remote_dir}/{filename}"
+                "gdrivePath": out_path
             }).encode())
             return
 
@@ -1103,8 +1161,10 @@ with open("/tmp/Caddyfile", "w", encoding="utf-8") as f:
 # -------------------------------------------------------------
 # 3. Parallel Stage: Rclone + Caddy + Cloudflared + uv Binary
 # -------------------------------------------------------------
+rclone_ok = False
+
 def setup_rclone():
-    global RCLONE_READY
+    global RCLONE_READY, GDRIVE_HEALTHY, rclone_ok
     if not gdrive_cfg:
         log_event("Google Drive token omitted; skipping Rclone Drive cache.", category="RCLONE", level="WARN")
         return False
@@ -1158,8 +1218,16 @@ def setup_rclone():
         try:
             rc_post("rc/noop", {}, timeout=2)
             RCLONE_READY = True
-            log_event(f"Rclone RC (:5572) ready in {round(time.time() - t0, 1)}s (HTTP/1.1 multi-thread)", category="RCLONE", level="SUCCESS")
-            return True
+            try:
+                rc_post("operations/about", {"fs": "gdrive:"}, timeout=6)
+                GDRIVE_HEALTHY = True
+                rclone_ok = True
+                log_event(f"Rclone RC (:5572) + Drive verified in {round(time.time() - t0, 1)}s", category="RCLONE", level="SUCCESS")
+            except Exception as g_err:
+                GDRIVE_HEALTHY = False
+                rclone_ok = False
+                log_event(f"Google Drive API unavailable ({str(g_err)[:100]}); using HuggingFace/Direct/Local fallback backups.", category="RCLONE", level="WARN")
+            return GDRIVE_HEALTHY
         except Exception:
             time.sleep(0.2)
     log_event("Rclone RC readiness check timed out", category="RCLONE", level="WARN")
@@ -1268,22 +1336,30 @@ def setup_aria2():
         except Exception:
             pass
 
+aria2_started = False
 if not HEADLESS_MODE:
     threading.Thread(target=setup_caddy, daemon=True).start()
     threading.Thread(target=setup_cloudflared, daemon=True).start()
 else:
     log_event("Safe Headless Mode active (tunnel/proxy disabled; outbound worker polling enabled).", category="NETWORK", level="INFO")
-threading.Thread(target=setup_aria2, daemon=True).start()
+if PREWARM_MODELS:
+    aria2_started = True
+    threading.Thread(target=setup_aria2, daemon=True).start()
 uv_thread = threading.Thread(target=setup_uv, daemon=True)
 uv_thread.start()
-rclone_ok = setup_rclone()
-for startup_model in PREWARM_MODELS:
-    start_model_fetch(startup_model)
+rclone_thread = threading.Thread(target=setup_rclone, daemon=True)
+rclone_thread.start()
+if PREWARM_MODELS:
+    rclone_thread.join(timeout=8)
+    for startup_model in PREWARM_MODELS:
+        start_model_fetch(startup_model)
 
 # -------------------------------------------------------------
 # 3B. Dedicated LLM Nodes (LLM_QWEN_VLM, LLM_QWEN_TEXT_TURBO, LLM_QWEN_MOE_35B & LLM_QWEN_FAST_8B on Dual-T4)
 # -------------------------------------------------------------
 if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B", "LLM_LIGHTWEIGHT_SWARM"):
+    if rclone_thread.is_alive():
+        rclone_thread.join(timeout=8)
     import http.client as _hc
     from http.server import ThreadingHTTPServer as _THS, BaseHTTPRequestHandler as _BHRH
     from pathlib import Path
@@ -2001,7 +2077,13 @@ if not os.path.exists(os.path.join(COMFY_DIR, "main.py")):
     cache_restored = False
     if os.path.exists("/kaggle/input"):
         from pathlib import Path as _Path
-        for _ds_name in ("comfy_env.tar.gz", "comfy_env.tar"):
+        _ds_candidates = (
+            f"comfy_env_{PROFILE_ID}.tar.gz",
+            f"comfy_env_{PROFILE_ID}.tar",
+            "comfy_env.tar.gz",
+            "comfy_env.tar",
+        )
+        for _ds_name in _ds_candidates:
             for _ds_arc in _Path("/kaggle/input").rglob(_ds_name):
                 if _ds_arc.is_file() and _ds_arc.stat().st_size > 100000:
                     try:
@@ -2017,6 +2099,24 @@ if not os.path.exists(os.path.join(COMFY_DIR, "main.py")):
                         log_event(f"Dataset restore failed ({_ds_err}); falling back.", category="COMFYUI", level="WARN")
             if cache_restored:
                 break
+        if not cache_restored:
+            for _main_py in _Path("/kaggle/input").rglob("ComfyUI/main.py"):
+                try:
+                    _t_ds = time.time()
+                    _src_comfy = _main_py.parent
+                    log_event(f"Unpacked Kaggle Dataset HIT ({_src_comfy})! Copying to /tmp...", category="COMFYUI", level="SUCCESS")
+                    subprocess.run(["cp", "-a", str(_src_comfy), COMFY_DIR], check=True)
+                    _src_site = _src_comfy.parent / "sc_site_packages"
+                    if _src_site.is_dir():
+                        subprocess.run(["cp", "-a", f"{_src_site}/.", FASTBOOT_SITE], check=True)
+                    if os.path.exists(os.path.join(COMFY_DIR, "main.py")):
+                        cache_restored = True
+                        log_event(f"Unpacked dataset restored in {round(time.time() - _t_ds, 1)}s!", category="COMFYUI", level="SUCCESS")
+                        break
+                except Exception as _cp_err:
+                    log_event(f"Unpacked dataset copy notice: {_cp_err}", category="COMFYUI", level="WARN")
+    if not cache_restored and gdrive_cfg and rclone_thread.is_alive():
+        rclone_thread.join(timeout=6)
     if not cache_restored and rclone_ok:
         candidate_remotes = [FASTBOOT_REMOTE]
         if PROFILE_ID == "BASE_COMFY":
@@ -2055,12 +2155,20 @@ if not os.path.exists(os.path.join(COMFY_DIR, "main.py")):
                     pass
                 log_event(f"FastBoot lookup ({remote_candidate.rsplit('/', 1)[1]}): {ce}", category="COMFYUI")
 
-    if not cache_restored:
+    missing_nodes = [
+        cn for cn in (CUSTOM_NODES or [])
+        if cn.get("name") and not os.path.exists(os.path.join(COMFY_DIR, "custom_nodes", cn["name"]))
+    ]
+    if not cache_restored or missing_nodes:
         t_cold = time.time()
-        log_event(f"Cloning ComfyUI (shallow) & installing {PROFILE_ID} delta packages via uv...", category="COMFYUI")
-        subprocess.run(["git", "clone", "--depth", "1", "--single-branch", "https://github.com/comfyanonymous/ComfyUI.git", COMFY_DIR], check=True)
+        nodes_to_install = list(CUSTOM_NODES or []) if not cache_restored else missing_nodes
+        if not cache_restored:
+            log_event(f"Cloning ComfyUI (shallow) & installing {PROFILE_ID} delta packages via uv...", category="COMFYUI")
+            subprocess.run(["git", "clone", "--depth", "1", "--single-branch", "https://github.com/comfyanonymous/ComfyUI.git", COMFY_DIR], check=True)
+        else:
+            log_event(f"Syncing {len(nodes_to_install)} missing delta node(s) onto FastBoot cache...", category="COMFYUI")
 
-        if CUSTOM_NODES:
+        if nodes_to_install:
             nodes_dir = os.path.join(COMFY_DIR, "custom_nodes")
             os.makedirs(nodes_dir, exist_ok=True)
             def _clone_node(cn):
@@ -2075,18 +2183,17 @@ if not os.path.exists(os.path.join(COMFY_DIR, "main.py")):
                     log_event(f"Cloned custom node: {cn_name}", category="COMFYUI")
                 except Exception as cne:
                     log_event(f"Custom node clone notice ({cn_name}): {cne}", category="COMFYUI", level="WARN")
-            clone_threads = [threading.Thread(target=_clone_node, args=(cn,), daemon=True) for cn in CUSTOM_NODES]
+            clone_threads = [threading.Thread(target=_clone_node, args=(cn,), daemon=True) for cn in nodes_to_install]
             for ct in clone_threads:
                 ct.start()
             for ct in clone_threads:
                 ct.join(timeout=65)
 
-        req_sources = [os.path.join(COMFY_DIR, "requirements.txt")]
-        if CUSTOM_NODES:
-            for cn in CUSTOM_NODES:
-                cn_req = os.path.join(COMFY_DIR, "custom_nodes", cn.get("name", ""), "requirements.txt")
-                if os.path.exists(cn_req):
-                    req_sources.append(cn_req)
+        req_sources = [] if cache_restored else [os.path.join(COMFY_DIR, "requirements.txt")]
+        for cn in nodes_to_install:
+            cn_req = os.path.join(COMFY_DIR, "custom_nodes", cn.get("name", ""), "requirements.txt")
+            if os.path.exists(cn_req):
+                req_sources.append(cn_req)
 
         filtered_reqs = "/tmp/comfy_reqs_delta.txt"
         skip_pkgs = {"torch", "torchvision", "torchaudio"}
@@ -2105,9 +2212,10 @@ if not os.path.exists(os.path.join(COMFY_DIR, "main.py")):
                             continue
                         seen_lines.add(clean)
                         wf.write(clean + "\\n")
-            if any("Impact-Pack" in cn.get("name", "") for cn in CUSTOM_NODES):
+            if any("Impact-Pack" in cn.get("name", "") for cn in nodes_to_install):
                 for extra_pkg in ("ultralytics", "segment-anything", "piexif", "scikit-image", "opencv-python-headless"):
                     if extra_pkg not in seen_lines:
+                        seen_lines.add(extra_pkg)
                         wf.write(extra_pkg + "\\n")
 
         def _snap_site_dirs(dirs):
@@ -2134,15 +2242,17 @@ if not os.path.exists(os.path.join(COMFY_DIR, "main.py")):
             res_pip = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", req_path], check=check_err)
             return res_pip.returncode == 0
 
-        site_dirs = list({sysconfig.get_paths()["purelib"], sysconfig.get_paths()["platlib"]})
-        before_snap = _snap_site_dirs(site_dirs)
-        uv_thread.join(timeout=45)
-        log_event("Installing ComfyUI + profile delta packages in single pass...", category="COMFYUI")
-        _uv_or_pip_install(filtered_reqs, check_err=True)
+        if seen_lines:
+            site_dirs = list({sysconfig.get_paths()["purelib"], sysconfig.get_paths()["platlib"]})
+            before_snap = _snap_site_dirs(site_dirs)
+            uv_thread.join(timeout=45)
+            log_event("Installing ComfyUI + profile delta packages in single pass...", category="COMFYUI")
+            _uv_or_pip_install(filtered_reqs, check_err=True)
+            if not cache_restored:
+                snapshot_meta = (site_dirs, before_snap)
+                should_upload_cache = True
 
         log_event(f"ComfyUI ({PROFILE_ID}) + dependencies ready in {round(time.time() - t_cold, 1)}s", category="COMFYUI", level="SUCCESS")
-        snapshot_meta = (site_dirs, before_snap)
-        should_upload_cache = True
 
 if ENABLE_OFFLINE_SCAN and os.path.exists("/kaggle/input"):
     for root, _, files in os.walk("/kaggle/input"):
@@ -2157,16 +2267,34 @@ if ENABLE_OFFLINE_SCAN and os.path.exists("/kaggle/input"):
                             except Exception:
                                 pass
 
+def _query_comfy_nvidia_smi():
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=name,memory.total,memory.used", "--format=csv,noheader,nounits"],
+            text=True,
+            timeout=3,
+        )
+        devs = []
+        for ln in out.strip().splitlines():
+            parts = [p.strip() for p in ln.split(",")]
+            if len(parts) >= 3:
+                tot_b = int(float(parts[1]) * 1024 * 1024)
+                used_b = int(float(parts[2]) * 1024 * 1024)
+                devs.append({
+                    "name": parts[0],
+                    "vram_total": tot_b,
+                    "vram_free": max(0, tot_b - used_b),
+                })
+        return devs
+    except Exception:
+        return []
+
 post_heartbeat(3, "STARTING")
 
 # -------------------------------------------------------------
 # 5. Boot ComfyUI Subprocess(es) with Strict CUDA Isolation
 # -------------------------------------------------------------
-try:
-    import torch
-    gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 1
-except Exception:
-    gpu_count = 1
+gpu_count = len(_query_comfy_nvidia_smi()) or 1
 
 if SINGLE_DUAL_GPU:
     active_ports = PORTS[:1]
@@ -2196,27 +2324,19 @@ def _tail_comfy_logs(max_lines=8):
 
 for idx, port in enumerate(active_ports):
     if idx > 0:
-        # Stagger GPU1 startup until GPU0 binds (or max 30s if custom nodes are present) to avoid Dual-T4 RAM OOM spike
-        stagger_wait = 30 if CUSTOM_NODES else 4
+        # Stagger GPU1 briefly (6s max) so GPU0 warms OS page cache before spawning concurrently
+        stagger_wait = 6 if CUSTOM_NODES else 2
         t_stg = time.time()
         while (time.time() - t_stg) < stagger_wait:
             try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{active_ports[0]}/system_stats", timeout=1.5) as r:
+                with urllib.request.urlopen(f"http://127.0.0.1:{active_ports[0]}/system_stats", timeout=1.0) as r:
                     if r.status == 200:
                         break
             except Exception:
                 pass
-            _tail_comfy_logs(4)
-            time.sleep(1.5)
+            time.sleep(1.0)
     # Mutual eviction: ensure no orphan llama-servers occupy GPU memory
     subprocess.run(["pkill", "-9", "-f", "llama-server"], check=False)
-    try:
-        import torch
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.ipc_collect()
-    except Exception:
-        pass
     env = os.environ.copy()
     cuda_vis = ",".join(str(i) for i in range(max(1, gpu_count))) if SINGLE_DUAL_GPU else str(idx)
     env["CUDA_VISIBLE_DEVICES"] = cuda_vis
@@ -2238,6 +2358,11 @@ for idx, port in enumerate(active_ports):
     COMFY_PROCS[port] = proc
     mode_suffix = " (Dual-T4 Split DiT+TE)" if SINGLE_DUAL_GPU else ""
     log_event(f"Launched ComfyUI on CUDA:{cuda_vis} -> 127.0.0.1:{port}{mode_suffix}", category="COMFYUI")
+
+if not aria2_started:
+    aria2_started = True
+    threading.Thread(target=setup_aria2, daemon=True).start()
+post_heartbeat(4, "STARTING")
 
 def _upload_fastboot_snapshot():
     try:
@@ -2299,28 +2424,6 @@ def _upload_fastboot_snapshot():
 # -------------------------------------------------------------
 # 6. Wait for Tunnel + ComfyUI Readiness & Run Heartbeat Loop
 # -------------------------------------------------------------
-def _query_comfy_nvidia_smi():
-    try:
-        out = subprocess.check_output(
-            ["nvidia-smi", "--query-gpu=name,memory.total,memory.used", "--format=csv,noheader,nounits"],
-            text=True,
-            timeout=3,
-        )
-        devs = []
-        for ln in out.strip().splitlines():
-            parts = [p.strip() for p in ln.split(",")]
-            if len(parts) >= 3:
-                tot_b = int(float(parts[1]) * 1024 * 1024)
-                used_b = int(float(parts[2]) * 1024 * 1024)
-                devs.append({
-                    "name": parts[0],
-                    "vram_total": tot_b,
-                    "vram_free": max(0, tot_b - used_b),
-                })
-        return devs
-    except Exception:
-        return []
-
 def probe_comfy_stats():
     global LAST_ACTIVE
     stats = {}
@@ -2412,23 +2515,25 @@ def _worker_api_post(path, body_dict, timeout=20):
 def poll_model_downloads():
     tracked = set()
     while True:
+        just_started = False
         try:
             with FETCH_LOCK:
                 reports = [dict(FETCH_JOBS[job_id], id=job_id) for job_id in tracked]
             for report in reports:
                 if report["status"] == "queued":
                     report["status"] = "downloading"
-            reply = _worker_api_post("/api/vm/model-fetch", {"reports": reports, "driveReady": bool(RCLONE_READY)}, timeout=30)
+            reply = _worker_api_post("/api/vm/model-fetch", {"reports": reports, "driveReady": bool(GDRIVE_HEALTHY)}, timeout=30)
             tracked.difference_update(reply.get("acknowledged", []))
             command = reply.get("command")
             if command:
                 tracked.add(start_model_fetch(command["request"], command["id"]))
+                just_started = True
         except urllib.error.HTTPError as err:
             if err.code in (401, 410):
                 return
         except (OSError, ValueError, KeyError) as err:
             log_event(f"Model download poll interrupted: {type(err).__name__}", category="NETWORK", level="WARN")
-        time.sleep(5)
+        time.sleep(0.5 if just_started else (1.5 if tracked else 5))
 
 def _extract_graph_models(graph, req_models):
     items = []
@@ -2520,7 +2625,7 @@ def _headless_worker_loop(worker_target, port):
     while True:
         task = None
         try:
-            res = _worker_api_post("/api/v1/workers/claim", {"workerId": worker_target, "capabilities": [PROFILE_ID], "driveReady": bool(RCLONE_READY)}, timeout=45)
+            res = _worker_api_post("/api/v1/workers/claim", {"workerId": worker_target, "capabilities": [PROFILE_ID], "driveReady": bool(GDRIVE_HEALTHY)}, timeout=45)
             task = res.get("task")
         except urllib.error.HTTPError as claim_http_err:
             if claim_http_err.code in (401, 410):
@@ -2563,6 +2668,7 @@ def _headless_worker_loop(worker_target, port):
                     continue
                 staged.add(key)
                 job_id = start_model_fetch(item)
+                _last_dl_log = 0.0
                 while True:
                     with FETCH_LOCK:
                         job = dict(FETCH_JOBS[job_id])
@@ -2570,6 +2676,9 @@ def _headless_worker_loop(worker_target, port):
                         break
                     if job["status"] == "failed":
                         raise RuntimeError(job.get("error") or f"Model download failed: {name}")
+                    if job.get("status") == "downloading" and (time.time() - _last_dl_log) >= 5.0:
+                        _last_dl_log = time.time()
+                        log_event(f"[{worker_target}] Downloading {filename}: {job.get('percentage', 0)}% ({job.get('speedMbps', 0)} MB/s)", category="RCLONE")
                     time.sleep(1)
 
             # Stage any inline base64 data:image LoadImage inputs into COMFY_DIR/input
@@ -2609,7 +2718,7 @@ def _headless_worker_loop(worker_target, port):
                         raise RuntimeError(f"ComfyUI execution error: {item.get('status')}")
                     date_dir = time.strftime("%Y-%m-%d")
                     remote_out = f"{GDRIVE_BASE}/outputs/{date_dir}"
-                    if RCLONE_READY:
+                    if GDRIVE_HEALTHY:
                         try:
                             rc_post("operations/mkdir", {"fs": "gdrive:", "remote": remote_out})
                         except Exception:
@@ -2622,8 +2731,9 @@ def _headless_worker_loop(worker_target, port):
                                 continue
                             src_dir = f"/tmp/outputs/{sub}" if sub else "/tmp/outputs"
                             file_id = ""
+                            local_bk = None
                             b64_preview = ""
-                            if RCLONE_READY:
+                            if GDRIVE_HEALTHY:
                                 try:
                                     rc_copy_async({
                                         "srcFs": src_dir, "srcRemote": fn,
@@ -2632,28 +2742,31 @@ def _headless_worker_loop(worker_target, port):
                                     stat = rc_post("operations/stat", {"fs": f"gdrive:{remote_out}", "remote": fn}, timeout=15)
                                     file_id = (stat.get("item") or {}).get("ID", "")
                                 except Exception as up_err:
-                                    log_event(f"[{worker_target}] Drive upload failed ({str(up_err)[:120]}); encoding inline preview fallback.", category="RCLONE", level="WARN")
+                                    log_event(f"[{worker_target}] Drive upload failed ({str(up_err)[:120]}); backing up to Local Vault.", category="RCLONE", level="WARN")
                             if not file_id:
                                 src_file = os.path.join(src_dir, fn)
                                 if os.path.exists(src_file):
-                                    try:
-                                        from PIL import Image as _PILImage
-                                        import io as _io
-                                        _im = _PILImage.open(src_file).convert("RGB")
-                                        _im.thumbnail((896, 896))
-                                        _buf = _io.BytesIO()
-                                        _im.save(_buf, format="JPEG", quality=84)
-                                        b64_preview = "data:image/jpeg;base64," + base64.b64encode(_buf.getvalue()).decode("ascii")
-                                    except Exception:
-                                        with open(src_file, "rb") as _rf:
-                                            _raw_b = _rf.read()
-                                        if len(_raw_b) <= 190000:
-                                            b64_preview = "data:image/png;base64," + base64.b64encode(_raw_b).decode("ascii")
+                                    local_bk = _upload_local_output_backup(task_id, worker_target, fn, src_file)
+                                    if not local_bk:
+                                        try:
+                                            from PIL import Image as _PILImage
+                                            import io as _io
+                                            _im = _PILImage.open(src_file).convert("RGB")
+                                            _im.thumbnail((896, 896))
+                                            _buf = _io.BytesIO()
+                                            _im.save(_buf, format="JPEG", quality=84)
+                                            b64_preview = "data:image/jpeg;base64," + base64.b64encode(_buf.getvalue()).decode("ascii")
+                                        except Exception:
+                                            with open(src_file, "rb") as _rf:
+                                                _raw_b = _rf.read()
+                                            if len(_raw_b) <= 190000:
+                                                b64_preview = "data:image/png;base64," + base64.b64encode(_raw_b).decode("ascii")
                             outputs_uploaded.append({
                                 "filename": fn,
                                 "gdriveFileId": file_id,
-                                "gdrivePath": f"{remote_out}/{fn}" if file_id else "",
-                                "previewUrl": f"/api/outputs/{file_id}" if file_id else b64_preview,
+                                "gdrivePath": (f"{remote_out}/{fn}" if file_id else (local_bk.get("localPath", "") if local_bk else "")),
+                                "storageUri": (f"gdrive://{remote_out}/{fn}" if file_id else (local_bk.get("storageUri", "") if local_bk else "")),
+                                "previewUrl": (f"/api/outputs/{file_id}" if file_id else (local_bk.get("previewUrl", "") if local_bk else b64_preview)),
                             })
                     log_event(f"[{worker_target}] Workflow executed with staged models: {', '.join(k[2] for k in sorted(staged))}", category="COMFYUI", level="SUCCESS")
                     break
