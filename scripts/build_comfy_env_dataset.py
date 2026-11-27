@@ -80,8 +80,14 @@ PROFILE_NODES = {
     ],
 }
 
-SKIP_PIP_PREFIXES = ("torch", "nvidia", "triton", "pip", "wheel", "setuptools")
+SKIP_EXACT = {"torch", "torchvision", "torchaudio", "torchgen", "functorch", "triton", "pip", "wheel", "setuptools", "__pycache__", "pkg_resources", "_distutils_hack"}
+SKIP_DIST_PREFIXES = ("torch-", "torchvision-", "torchaudio-", "torchgen-", "functorch-", "nvidia", "triton-", "pip-", "wheel-", "setuptools-")
 SKIP_REQ_PKGS = {"torch", "torchvision", "torchaudio"}
+
+
+def _is_skipped_site_entry(name: str) -> bool:
+    low = name.lower()
+    return low in SKIP_EXACT or low.startswith(SKIP_DIST_PREFIXES)
 
 
 def ensure_uv() -> str:
@@ -193,7 +199,7 @@ def build_cache(profile_id: str, output_path: str) -> None:
             continue
         prev = before.get(sd, {})
         for entry in os.listdir(sd):
-            if entry.lower().startswith(SKIP_PIP_PREFIXES) or entry == "__pycache__":
+            if _is_skipped_site_entry(entry):
                 continue
             src_p = os.path.join(sd, entry)
             try:
@@ -208,6 +214,9 @@ def build_cache(profile_id: str, output_path: str) -> None:
             else:
                 shutil.copy2(src_p, dst_p)
             copied += 1
+
+    if not os.path.isdir(os.path.join(SITE_OUT, "torchsde")):
+        raise RuntimeError("torchsde missing from sc_site_packages snapshot; aborting incomplete cache build.")
 
     print(f"[FastBoot Builder] Pre-compiling Python bytecode ({copied} site entries)...", flush=True)
     compileall.compile_dir(COMFY_DIR, quiet=1)

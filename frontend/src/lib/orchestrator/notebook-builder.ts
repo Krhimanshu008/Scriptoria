@@ -2157,6 +2157,13 @@ if not os.path.exists(os.path.join(COMFY_DIR, "main.py")):
                     pass
                 log_event(f"FastBoot lookup ({remote_candidate.rsplit('/', 1)[1]}): {ce}", category="COMFYUI")
 
+    if cache_restored and not any(
+        os.path.exists(os.path.join(_sd, "torchsde"))
+        for _sd in [FASTBOOT_SITE] + list({sysconfig.get_paths()["purelib"], sysconfig.get_paths()["platlib"]})
+    ):
+        log_event("Restoring missing torchsde onto FastBoot environment...", category="COMFYUI", level="WARN")
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "torchsde"], check=False)
+
     missing_nodes = [
         cn for cn in (CUSTOM_NODES or [])
         if cn.get("name") and not os.path.exists(os.path.join(COMFY_DIR, "custom_nodes", cn["name"]))
@@ -2376,7 +2383,11 @@ def _upload_fastboot_snapshot():
                     continue
                 prev = b_snap.get(sd, {})
                 for entry in os.listdir(sd):
-                    if entry.lower().startswith(("torch", "__pycache__", "pip", "wheel", "setuptools")):
+                    _low_e = entry.lower()
+                    if (
+                        _low_e in ("torch", "torchvision", "torchaudio", "torchgen", "functorch", "triton", "pip", "wheel", "setuptools", "__pycache__", "pkg_resources", "_distutils_hack")
+                        or _low_e.startswith(("torch-", "torchvision-", "torchaudio-", "torchgen-", "functorch-", "nvidia", "triton-", "pip-", "wheel-", "setuptools-"))
+                    ):
                         continue
                     src_p = os.path.join(sd, entry)
                     try:

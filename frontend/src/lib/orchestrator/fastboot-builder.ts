@@ -17,8 +17,13 @@ COMFY_DIR = "/tmp/ComfyUI"
 SITE_OUT = "/tmp/sc_site_packages"
 # Use .pak so Kaggle Datasets stores one single file instead of auto-extracting 20k files & choking on '&' workflow names
 OUT_ARC = "/kaggle/working/comfy_env.pak"
-SKIP_PREFIXES = ("torch", "nvidia", "triton", "pip", "wheel", "setuptools")
+SKIP_EXACT = {"torch", "torchvision", "torchaudio", "torchgen", "functorch", "triton", "pip", "wheel", "setuptools", "__pycache__", "pkg_resources", "_distutils_hack"}
+SKIP_DIST_PREFIXES = ("torch-", "torchvision-", "torchaudio-", "torchgen-", "functorch-", "nvidia", "triton-", "pip-", "wheel-", "setuptools-")
 SKIP_REQS = {"torch", "torchvision", "torchaudio"}
+
+def _is_skipped_site_entry(name: str) -> bool:
+    low = name.lower()
+    return low in SKIP_EXACT or low.startswith(SKIP_DIST_PREFIXES)
 
 t0 = time.time()
 print(f"[FastBoot Builder] Building {PROFILE_ID} environment on CPU (0 GPU quota)...", flush=True)
@@ -106,7 +111,7 @@ for sd in site_dirs:
         continue
     prev = before.get(sd, {})
     for e in os.listdir(sd):
-        if e.lower().startswith(SKIP_PREFIXES) or e == "__pycache__":
+        if _is_skipped_site_entry(e):
             continue
         sp = os.path.join(sd, e)
         try:
@@ -120,6 +125,9 @@ for sd in site_dirs:
             shutil.copytree(sp, dp, dirs_exist_ok=True)
         else:
             shutil.copy2(sp, dp)
+
+if not os.path.isdir(os.path.join(SITE_OUT, "torchsde")):
+    raise RuntimeError("torchsde missing from sc_site_packages snapshot; aborting incomplete cache build.")
 
 compileall.compile_dir(COMFY_DIR, quiet=1)
 compileall.compile_dir(SITE_OUT, quiet=1)
