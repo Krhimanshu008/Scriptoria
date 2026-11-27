@@ -2078,9 +2078,11 @@ if not os.path.exists(os.path.join(COMFY_DIR, "main.py")):
     if os.path.exists("/kaggle/input"):
         from pathlib import Path as _Path
         _ds_candidates = (
+            f"comfy_env_{PROFILE_ID}.pak",
+            "comfy_env.pak",
             f"comfy_env_{PROFILE_ID}.tar.gz",
-            f"comfy_env_{PROFILE_ID}.tar",
             "comfy_env.tar.gz",
+            f"comfy_env_{PROFILE_ID}.tar",
             "comfy_env.tar",
         )
         for _ds_name in _ds_candidates:
@@ -2089,7 +2091,7 @@ if not os.path.exists(os.path.join(COMFY_DIR, "main.py")):
                     try:
                         _t_ds = time.time()
                         log_event(f"Pre-built Kaggle Dataset HIT ({_ds_arc.name})! Extracting to /tmp...", category="COMFYUI", level="SUCCESS")
-                        _tar_flag = "-xzf" if str(_ds_arc).endswith(".gz") else "-xf"
+                        _tar_flag = "-xf" if str(_ds_arc).endswith(".tar") else "-xzf"
                         subprocess.run(["tar", _tar_flag, str(_ds_arc), "-C", "/tmp"], check=True)
                         if os.path.exists(os.path.join(COMFY_DIR, "main.py")):
                             cache_restored = True

@@ -25,7 +25,7 @@ import time
 
 COMFY_DIR = "/tmp/ComfyUI"
 SITE_OUT = "/tmp/sc_site_packages"
-DEFAULT_OUT = "/kaggle/working/comfy_env.tar.gz"
+DEFAULT_OUT = "/kaggle/working/comfy_env.pak"
 
 PROFILE_NODES = {
     "BASE_COMFY": [],
@@ -232,6 +232,8 @@ def build_cache(profile_id: str, output_path: str) -> None:
             "--warning=no-file-changed",
             "--ignore-failed-read",
             "--exclude=*.git*",
+            "--exclude=*&*",
+            "--exclude=*example_workflows*",
             "--exclude=ComfyUI/user/*",
             "--exclude=ComfyUI/output/*",
             "--exclude=ComfyUI/input/*",

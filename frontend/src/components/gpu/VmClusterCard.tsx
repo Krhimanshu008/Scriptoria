@@ -146,6 +146,7 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
   const slotIdleOverride = primaryVm?.idleTimeoutMinutes ?? null;
   const [datasetDraft, setDatasetDraft] = useState("");
   const [buildingFastboot, setBuildingFastboot] = useState(false);
+  const [fastbootBuildUrl, setFastbootBuildUrl] = useState<string | null>(null);
 
   const totalSec = kaggleAccount?.quota?.totalAllowedSeconds ?? 108000;
   const remainSec = kaggleAccount?.quota?.remainingSeconds ?? totalSec;
@@ -249,6 +250,9 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
       if (!res.ok) {
         toast.error(body.error || "Failed to queue CPU FastBoot build");
         return;
+      }
+      if (typeof body.url === "string") {
+        setFastbootBuildUrl(body.url);
       }
       toast.success(
         `Queued 0-GPU CPU build (${activeProfile.shortTag})! Open Output → New Dataset when done: ${body.url}`
@@ -720,28 +724,60 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
               </button>
             </div>
             {!anyActive && (
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  handleAttachDataset();
-                }}
-                className="flex items-center gap-1.5"
-              >
-                <input
-                  value={datasetDraft}
-                  onChange={(e) => setDatasetDraft(e.target.value)}
-                  placeholder="Attach Kaggle dataset slug (e.g. himanshukr7532/scriptoria-comfy-env)"
-                  className="h-6 min-w-0 flex-1 rounded border border-zinc-800 bg-zinc-900 px-2 font-mono text-[10px] text-zinc-200 placeholder:text-zinc-600"
-                />
-                <button
-                  type="submit"
-                  disabled={savingConfig || !datasetDraft.trim()}
-                  className="inline-flex h-6 items-center gap-1 rounded border border-zinc-700 bg-zinc-800 px-2 text-[10px] font-medium text-zinc-200 hover:bg-zinc-700 disabled:opacity-40"
+              <div className="space-y-1.5">
+                {fastbootBuildUrl && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-indigo-500/30 bg-indigo-500/10 px-2 py-1 text-[10px] text-indigo-200">
+                    <span>CPU build queued (0 GPU quota). Once finished (~3m), save Output → New Dataset:</span>
+                    <a
+                      href={fastbootBuildUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 font-mono font-semibold text-cyan-300 underline hover:text-white"
+                    >
+                      <ExternalLink className="h-2.5 w-2.5" />
+                      Open ml-env-cache-builder
+                    </a>
+                  </div>
+                )}
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    handleAttachDataset();
+                  }}
+                  className="flex items-center gap-1.5"
                 >
-                  <Plus className="h-2.5 w-2.5" />
-                  Attach
-                </button>
-              </form>
+                  <input
+                    value={datasetDraft}
+                    onChange={(e) => setDatasetDraft(e.target.value)}
+                    placeholder="Attach Kaggle dataset slug (e.g. himanshukr7532/scriptoria-comfy-env)"
+                    className="h-6 min-w-0 flex-1 rounded border border-zinc-800 bg-zinc-900 px-2 font-mono text-[10px] text-zinc-200 placeholder:text-zinc-600"
+                  />
+                  {attachedDatasets.length === 0 && kaggleAccount?.username && (
+                    <button
+                      type="button"
+                      disabled={savingConfig}
+                      onClick={() =>
+                        patchBootConfig(
+                          primaryTarget,
+                          { kaggleDatasets: [`${kaggleAccount.username}/scriptoria-comfy-env`] },
+                          `Attached FastBoot dataset ${kaggleAccount.username}/scriptoria-comfy-env`
+                        )
+                      }
+                      className="h-6 shrink-0 rounded border border-cyan-500/35 bg-cyan-500/10 px-2 font-mono text-[10px] text-cyan-200 hover:bg-cyan-500/20"
+                    >
+                      + {kaggleAccount.username}/scriptoria-comfy-env
+                    </button>
+                  )}
+                  <button
+                    type="submit"
+                    disabled={savingConfig || !datasetDraft.trim()}
+                    className="inline-flex h-6 items-center gap-1 rounded border border-zinc-700 bg-zinc-800 px-2 text-[10px] font-medium text-zinc-200 hover:bg-zinc-700 disabled:opacity-40"
+                  >
+                    <Plus className="h-2.5 w-2.5" />
+                    Attach
+                  </button>
+                </form>
+              </div>
             )}
           </div>
         )}

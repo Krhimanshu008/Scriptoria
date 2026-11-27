@@ -15,7 +15,8 @@ PROFILE_ID = ${JSON.stringify(profile.id)}
 NODES = ${nodesPayload}
 COMFY_DIR = "/tmp/ComfyUI"
 SITE_OUT = "/tmp/sc_site_packages"
-OUT_ARC = "/kaggle/working/comfy_env.tar.gz"
+# Use .pak so Kaggle Datasets stores one single file instead of auto-extracting 20k files & choking on '&' workflow names
+OUT_ARC = "/kaggle/working/comfy_env.pak"
 SKIP_PREFIXES = ("torch", "nvidia", "triton", "pip", "wheel", "setuptools")
 SKIP_REQS = {"torch", "torchvision", "torchaudio"}
 
@@ -129,7 +130,8 @@ env = os.environ.copy()
 env["GZIP"] = "-1"
 subprocess.run([
     "tar", "--warning=no-file-changed", "--ignore-failed-read",
-    "--exclude=*.git*", "--exclude=ComfyUI/user/*", "--exclude=ComfyUI/output/*", "--exclude=ComfyUI/input/*",
+    "--exclude=*.git*", "--exclude=*&*", "--exclude=*example_workflows*",
+    "--exclude=ComfyUI/user/*", "--exclude=ComfyUI/output/*", "--exclude=ComfyUI/input/*",
     "-czf", OUT_ARC, "-C", "/tmp", "ComfyUI", "sc_site_packages",
 ], env=env, check=True)
 print(f"[FastBoot Builder] Ready in {round(time.time() - t0, 1)}s -> {OUT_ARC} ({round(os.path.getsize(OUT_ARC)/(1024**2), 1)} MB)", flush=True)
