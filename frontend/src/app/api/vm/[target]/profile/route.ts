@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getAuthUser } from "@/lib/auth/session";
 import { isValidWorkerProfile, getWorkerProfile } from "@/lib/catalog/worker-profiles";
-import { sanitizeVmForClient, sortVmsByCanonicalTarget } from "@/lib/orchestrator/vm-helpers";
+import { mergeBootMetadata, sanitizeVmForClient, sortVmsByCanonicalTarget } from "@/lib/orchestrator/vm-helpers";
 import { appendSystemLog } from "@/lib/logs/logger";
 
 export async function PATCH(
@@ -32,6 +32,7 @@ export async function PATCH(
       idleTimeoutMinutes?: number | null;
       prewarmModelsJson?: string | null;
       kaggleDatasetsJson?: string | null;
+      bootMetadataJson?: string | null;
     } = {};
 
     if (body.workerProfile !== undefined) {
@@ -100,6 +101,13 @@ export async function PATCH(
       } else if (body.kaggleDatasets === null) {
         updateData.kaggleDatasetsJson = null;
       }
+    }
+
+    if (typeof body.autoLoadOnBoot === "boolean") {
+      const merged = mergeBootMetadata(vm.bootMetadataJson, {
+        autoLoadOnBoot: body.autoLoadOnBoot,
+      });
+      updateData.bootMetadataJson = merged ? JSON.stringify(merged) : null;
     }
 
     if (Object.keys(updateData).length === 0) {

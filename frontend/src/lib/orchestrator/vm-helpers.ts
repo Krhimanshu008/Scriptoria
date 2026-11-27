@@ -29,6 +29,12 @@ export interface LlmEndpointTelemetry {
 
 export interface BootMetadata {
   modelFetch?: boolean;
+  draftMode?: boolean;
+  draftArmedAt?: number;
+  autoLoadOnBoot?: boolean;
+  runtimeMode?: "idle_empty" | "loading_model" | "llm_ready" | "comfy_ready" | string;
+  activeModelName?: string | null;
+  activeModelRepo?: string | null;
   stepDurations?: Record<string, number>;
   currentStepElapsed?: number;
   totalBootElapsed?: number;
@@ -92,6 +98,20 @@ export function mergeBootMetadata(
     ...prev,
     modelFetch:
       rawTelem.modelFetch !== undefined ? rawTelem.modelFetch === true : prev.modelFetch,
+    draftMode: prev.draftMode,
+    draftArmedAt: prev.draftArmedAt,
+    autoLoadOnBoot:
+      rawTelem.autoLoadOnBoot !== undefined ? rawTelem.autoLoadOnBoot === true : prev.autoLoadOnBoot,
+    runtimeMode:
+      typeof rawTelem.runtimeMode === "string" ? rawTelem.runtimeMode : prev.runtimeMode,
+    activeModelName:
+      rawTelem.activeModelName !== undefined
+        ? (typeof rawTelem.activeModelName === "string" ? rawTelem.activeModelName : null)
+        : prev.activeModelName,
+    activeModelRepo:
+      rawTelem.activeModelRepo !== undefined
+        ? (typeof rawTelem.activeModelRepo === "string" ? rawTelem.activeModelRepo : null)
+        : prev.activeModelRepo,
     stepDurations:
       (rawTelem.stepDurations as Record<string, number> | undefined) ?? prev.stepDurations,
     currentStepElapsed:

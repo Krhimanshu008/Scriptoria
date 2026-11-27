@@ -1,5 +1,7 @@
 "use client";
 
+import { LLM_MODEL_PRESETS, getDefaultPresetForLlmProfile } from "@/lib/llm/llm-model-presets";
+
 import React, { useState } from "react";
 import {
   Power,
@@ -147,6 +149,20 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
   const [datasetDraft, setDatasetDraft] = useState("");
   const [buildingFastboot, setBuildingFastboot] = useState(false);
   const [fastbootBuildUrl, setFastbootBuildUrl] = useState<string | null>(null);
+  const isLlmProfile = isLlmWorkerProfile(activeProfile.id);
+  const defaultLlmPreset = getDefaultPresetForLlmProfile(activeProfile.id);
+  const [selectedLlmPresetId, setSelectedLlmPresetId] = useState<string>(defaultLlmPreset.id);
+  const [selectedImageSlug, setSelectedImageSlug] = useState<string>("");
+  const [modelControlLoading, setModelControlLoading] = useState<string | null>(null);
+  const effectiveLlmPresetId = LLM_MODEL_PRESETS.some((p) => p.id === selectedLlmPresetId)
+    ? selectedLlmPresetId
+    : defaultLlmPreset.id;
+  const runtimeMode =
+    primaryVm?.bootMetadata?.runtimeMode ||
+    (isOnline ? (isLlmProfile ? "idle_empty" : "comfy_ready") : "offline");
+  const activeModelName = primaryVm?.bootMetadata?.activeModelName ?? null;
+  const autoLoadOnBoot = primaryVm?.bootMetadata?.autoLoadOnBoot === true;
+  const freeDiskGb = primaryVm?.bootMetadata?.disk?.freeGb;
 
   const totalSec = kaggleAccount?.quota?.totalAllowedSeconds ?? 108000;
   const remainSec = kaggleAccount?.quota?.remainingSeconds ?? totalSec;
@@ -160,6 +176,7 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
       idleTimeoutMinutes?: number | null;
       prewarmModels?: PrewarmModelRef[];
       kaggleDatasets?: string[];
+      autoLoadOnBoot?: boolean;
     },
     successMsg: string
   ) {
@@ -238,28 +255,78 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
     await patchBootConfig(primaryTarget, { kaggleDatasets: next }, `Detached ${slug}`);
   }
 
-  async function handleBuildFastbootCache() {
+  async function handleTriggerDatasetBuild() {
+    if (!primaryTarget || buildingFastboot) return;
     setBuildingFastboot(true);
     try {
       const res = await fetch(`/api/vm/${encodeURIComponent(primaryTarget)}/build-fastboot`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ profileId: activeProfile.id }),
+        body: JSON.stringify({
+          profileId: activeProfile.id,
+          ...(isLlmProfile ? { presetId: effectiveLlmPresetId } : {}),
+        }),
       });
-      const body = await res.json().catch(() => ({}));
+      const body = await res.json();
       if (!res.ok) {
-        toast.error(body.error || "Failed to queue CPU FastBoot build");
+        toast.error(body.error || "Failed to queue 0-GPU dataset build");
         return;
       }
       if (typeof body.url === "string") {
         setFastbootBuildUrl(body.url);
       }
       toast.success(
-        `Queued 0-GPU CPU build (${activeProfile.shortTag})! Open Output → New Dataset when done: ${body.url}`
+        isLlmProfile
+          ? `Queued 0-GPU Qwen LLM Dataset builder (${body.presetId || activeProfile.shortTag})! Save Output → New Dataset when done.`
+          : `Queued 0-GPU CPU FastBoot build (${activeProfile.shortTag})! Save Output → New Dataset when done.`
       );
       onRefresh();
     } finally {
       setBuildingFastboot(false);
+    }
+  }
+
+  async function handleModelControl(
+    action: "stage_llm" | "load_llm" | "unload_llm" | "free_vram" | "stage_image_model",
+    extra?: { slug?: string; category?: string; filename?: string; force?: boolean }
+  ) {
+    if (!primaryTarget || modelControlLoading) return;
+    setModelControlLoading(action);
+    try {
+      const res = await fetch(`/api/vm/${encodeURIComponent(primaryTarget)}/model-control`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action,
+          ...(action === "stage_llm" || action === "load_llm" ? { presetId: effectiveLlmPresetId } : {}),
+          ...extra,
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        toast.error(body.error || `Failed to run ${action}`);
+        return;
+      }
+      if (action === "stage_llm") {
+        toast.success(`Staged model disk transfer on ${primaryTarget.toUpperCase()} (executes via heartbeat ~5-10s).`);
+      } else if (action === "load_llm") {
+        toast.success(`Queued VRAM model load on ${primaryTarget.toUpperCase()} (~15-45s depending on source).`);
+      } else if (action === "unload_llm") {
+        toast.success(`Unloaded LLM from VRAM -> Idle Empty Compute.`);
+      } else if (action === "free_vram") {
+        toast.success(`Cleared ComfyUI model cache & VRAM on ${primaryTarget.toUpperCase()}.`);
+      } else if (action === "stage_image_model") {
+        toast.success(
+          body.result?.status === "skipped"
+            ? "Image model already cached on VM!"
+            : `Queued image model staging on ${primaryTarget.toUpperCase()}.`
+        );
+      }
+      onRefresh();
+    } catch {
+      toast.error(`Network error executing ${action}`);
+    } finally {
+      setModelControlLoading(null);
     }
   }
 
@@ -293,6 +360,35 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
 
   const [hotReloadLoading, setHotReloadLoading] = useState(false);
   const [syncLoading, setSyncLoading] = useState(false);
+  const [draftCellLoading, setDraftCellLoading] = useState(false);
+
+  async function handleCopyDraftCell() {
+    if (!primaryTarget) return;
+    setDraftCellLoading(true);
+    try {
+      const res = await fetch(`/api/vm/${encodeURIComponent(primaryTarget)}/toggle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "draft_cell" }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || "Failed to generate Draft Cell code");
+        return;
+      }
+      if (data.draftCode) {
+        await navigator.clipboard.writeText(String(data.draftCode));
+      }
+      toast.success(
+        `Copied claim cell for Interactive Draft Session (${data.webhookUrl || "ready"}) — paste into Kaggle & click Run!`
+      );
+      onRefresh();
+    } catch {
+      toast.error("Failed to copy Kaggle Draft Cell");
+    } finally {
+      setDraftCellLoading(false);
+    }
+  }
 
   async function handleSyncVm() {
     if (!primaryTarget) return;
@@ -308,7 +404,12 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
       if (data.tunnelAlive) {
         toast.success(`VM Active & Verified! (${data.status})`);
       } else if (data.kaggleState) {
-        toast.info(`Kaggle: ${data.kaggleState} (VM: ${data.status})`);
+        const extraHint =
+          (data.kaggleState === "cancelAcknowledged" || data.kaggleState === "complete") &&
+          data.status === "OFFLINE"
+            ? " — If a GPU Draft Session is open in Kaggle, use 'Draft Cell' and press Run."
+            : "";
+        toast.info(`Kaggle: ${data.kaggleState} (VM: ${data.status})${extraHint}`);
       } else {
         toast.success(`VM status synced: ${data.status}`);
       }
@@ -442,6 +543,34 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
                 ? "ERROR"
                 : "OFFLINE"}
             </span>
+            {isOnline && (
+              <span
+                title={
+                  isLlmProfile
+                    ? activeModelName
+                      ? `Loaded in VRAM: ${activeModelName}`
+                      : "Pure Empty Compute: 0 models loaded"
+                    : "ComfyUI Runtime Ready"
+                }
+                className={`hidden sm:inline-flex items-center rounded px-1.5 py-0.5 font-mono text-[10px] font-medium ${
+                  isLlmProfile
+                    ? runtimeMode === "llm_ready" && activeModelName
+                      ? "bg-violet-500/15 text-violet-300 border border-violet-500/30"
+                      : runtimeMode === "loading_model"
+                      ? "bg-amber-500/15 text-amber-300 border border-amber-500/30 animate-pulse"
+                      : "bg-cyan-500/10 text-cyan-300 border border-cyan-500/25"
+                    : "bg-zinc-800/80 text-zinc-300 border border-zinc-700"
+                }`}
+              >
+                {isLlmProfile
+                  ? runtimeMode === "llm_ready" && activeModelName
+                    ? `VRAM: ${activeModelName}`
+                    : runtimeMode === "loading_model"
+                    ? `Loading ${activeModelName || "model"}...`
+                    : "Idle · Empty (0 Models)"
+                  : "Comfy Ready"}
+              </span>
+            )}
           </div>
         </div>
 
@@ -638,60 +767,100 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
           </div>
         </div>
 
-        {/* Inline Pre-warm Row */}
+        {/* Boot Policy & Optional Pre-warm Row */}
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-zinc-800/80 bg-zinc-950/50 px-2.5 py-1.5">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <Flame className="h-3 w-3 text-zinc-500" />
-            <span className="text-[10px] font-medium text-zinc-500">Pre-warm:</span>
-            {selectedPrewarm.length === 0 ? (
-              <span className="text-[10px] text-zinc-600">None</span>
-            ) : (
-              selectedPrewarm.map((m) => (
-                <span
-                  key={`${m.category}/${m.filename}`}
-                  className="inline-flex items-center gap-1 rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 font-mono text-[10px] text-zinc-300"
-                >
-                  {m.filename}
-                  {!anyActive && (
-                    <button
-                      type="button"
-                      onClick={() => handleRemovePrewarm(m.filename, m.category)}
-                      className="text-zinc-500 hover:text-white"
-                    >
-                      <X className="h-2.5 w-2.5" />
-                    </button>
-                  )}
+          <div className="flex flex-wrap items-center gap-2">
+            <label
+              className={`inline-flex items-center gap-1.5 text-[10px] ${
+                anyActive ? "text-zinc-500" : "cursor-pointer text-zinc-300 hover:text-white"
+              }`}
+              title="Off by default: boots pure empty GPU/CUDA runtime with 0 models downloaded. Enable to auto-download/load on boot."
+            >
+              <input
+                type="checkbox"
+                checked={autoLoadOnBoot}
+                disabled={anyActive || savingConfig}
+                onChange={(e) =>
+                  patchBootConfig(
+                    primaryTarget,
+                    { autoLoadOnBoot: e.target.checked },
+                    e.target.checked
+                      ? `Enabled auto-load on boot for ${primaryTarget.toUpperCase()}`
+                      : `Switched ${primaryTarget.toUpperCase()} to Pure Empty Compute Boot (0 models)`
+                  )
+                }
+                className="h-3 w-3 rounded border-zinc-700 bg-zinc-900 accent-violet-500"
+              />
+              <span className="font-medium">Auto-load on boot</span>
+              {!autoLoadOnBoot && (
+                <span className="rounded bg-cyan-500/10 px-1 py-0.5 font-mono text-[9px] text-cyan-300">
+                  Empty Boot (0 Models)
                 </span>
-              ))
+              )}
+            </label>
+
+            {!isLlmProfile && (
+              <>
+                <span className="text-zinc-700">|</span>
+                <Flame className="h-3 w-3 text-zinc-500" />
+                <span className="text-[10px] font-medium text-zinc-500">Pre-warm:</span>
+                {selectedPrewarm.length === 0 ? (
+                  <span className="text-[10px] text-zinc-600">None</span>
+                ) : (
+                  selectedPrewarm.map((m) => (
+                    <span
+                      key={`${m.category}/${m.filename}`}
+                      className="inline-flex items-center gap-1 rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 font-mono text-[10px] text-zinc-300"
+                    >
+                      {m.filename}
+                      {!anyActive && (
+                        <button
+                          type="button"
+                          onClick={() => handleRemovePrewarm(m.filename, m.category)}
+                          className="text-zinc-500 hover:text-white"
+                        >
+                          <X className="h-2.5 w-2.5" />
+                        </button>
+                      )}
+                    </span>
+                  ))
+                )}
+              </>
             )}
           </div>
 
-          <select
-            value=""
-            disabled={anyActive || savingConfig || selectedPrewarm.length >= 3}
-            onChange={(e) => handleAddPrewarm(e.target.value)}
-            className="max-w-[165px] rounded border border-zinc-800 bg-zinc-900 px-1.5 py-0.5 text-[10px] text-zinc-300 disabled:opacity-40"
-          >
-            <option value="" className="bg-zinc-900">
-              + Queue model ({selectedPrewarm.length}/3)
-            </option>
-            {catalogChoices.map((m) => (
-              <option key={m.slug} value={m.slug} className="bg-zinc-900">
-                [{m.modality}] {m.displayName}
+          {!isLlmProfile && (
+            <select
+              value=""
+              disabled={anyActive || savingConfig || selectedPrewarm.length >= 3}
+              onChange={(e) => handleAddPrewarm(e.target.value)}
+              className="max-w-[165px] rounded border border-zinc-800 bg-zinc-900 px-1.5 py-0.5 text-[10px] text-zinc-300 disabled:opacity-40"
+            >
+              <option value="" className="bg-zinc-900">
+                + Queue model ({selectedPrewarm.length}/3)
               </option>
-            ))}
-          </select>
+              {catalogChoices.map((m) => (
+                <option key={m.slug} value={m.slug} className="bg-zinc-900">
+                  [{m.modality}] {m.displayName}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
 
-        {/* FastBoot Kaggle Dataset Row */}
-        {kind === "kaggle" && !isLlmWorkerProfile(activeProfile.id) && activeProfile.accelerator !== "tpu" && (
+        {/* FastBoot / Qwen LLM Kaggle Dataset Row */}
+        {kind === "kaggle" && activeProfile.accelerator !== "tpu" && (
           <div className="space-y-1.5 rounded-md border border-zinc-800/80 bg-zinc-950/50 px-2.5 py-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap items-center gap-1.5">
                 <Database className="h-3 w-3 text-cyan-400" />
-                <span className="text-[10px] font-medium text-zinc-400">FastBoot Dataset:</span>
+                <span className="text-[10px] font-medium text-zinc-400">
+                  {isLlmProfile ? "Qwen LLM Dataset:" : "FastBoot Dataset:"}
+                </span>
                 {attachedDatasets.length === 0 ? (
-                  <span className="text-[10px] text-zinc-600">None (Cold Boot ~150s)</span>
+                  <span className="text-[10px] text-zinc-600">
+                    {isLlmProfile ? "None (Empty boot 0 GB -> load on demand)" : "None (Cold Boot ~150s)"}
+                  </span>
                 ) : (
                   attachedDatasets.map((ds) => (
                     <span
@@ -712,22 +881,47 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
                   ))
                 )}
               </div>
-              <button
-                type="button"
-                disabled={buildingFastboot || savingConfig || !kaggleAccount?.configured}
-                onClick={handleBuildFastbootCache}
-                title="Run 0-GPU CPU notebook on Kaggle to build comfy_env.tar.gz for FastBoot"
-                className="inline-flex items-center gap-1 rounded border border-indigo-500/35 bg-indigo-500/10 px-1.5 py-0.5 font-mono text-[10px] text-indigo-300 hover:bg-indigo-500/20 disabled:opacity-40"
-              >
-                {buildingFastboot ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <Zap className="h-2.5 w-2.5" />}
-                Build CPU Cache (0 GPU)
-              </button>
+              <div className="flex items-center gap-1.5">
+                {isLlmProfile && (
+                  <select
+                    value={effectiveLlmPresetId}
+                    disabled={buildingFastboot || savingConfig}
+                    onChange={(e) => setSelectedLlmPresetId(e.target.value)}
+                    className="h-6 max-w-[165px] rounded border border-zinc-800 bg-zinc-900 px-1.5 font-mono text-[10px] text-zinc-300"
+                    title="Select which Qwen model pack to bundle into Kaggle Dataset (<19.5 GiB)"
+                  >
+                    {LLM_MODEL_PRESETS.map((p) => (
+                      <option key={p.id} value={p.id} className="bg-zinc-900">
+                        {p.shortLabel} (~{p.approxDiskGb}G)
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <button
+                  type="button"
+                  disabled={buildingFastboot || savingConfig || !kaggleAccount?.configured}
+                  onClick={handleTriggerDatasetBuild}
+                  title={
+                    isLlmProfile
+                      ? "Run 0-GPU CPU Kaggle notebook to download Qwen GGUF + mmproj into Output for 1-click New Dataset"
+                      : "Run 0-GPU CPU notebook on Kaggle to build comfy_env.tar.gz for FastBoot"
+                  }
+                  className="inline-flex items-center gap-1 rounded border border-indigo-500/35 bg-indigo-500/10 px-1.5 py-0.5 font-mono text-[10px] text-indigo-300 hover:bg-indigo-500/20 disabled:opacity-40"
+                >
+                  {buildingFastboot ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <Zap className="h-2.5 w-2.5" />}
+                  {isLlmProfile ? "Build Qwen Dataset (0 GPU)" : "Build CPU Cache (0 GPU)"}
+                </button>
+              </div>
             </div>
             {!anyActive && (
               <div className="space-y-1.5">
                 {fastbootBuildUrl && (
                   <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-indigo-500/30 bg-indigo-500/10 px-2 py-1 text-[10px] text-indigo-200">
-                    <span>CPU build queued (0 GPU quota). Once finished (~3m), save Output → New Dataset:</span>
+                    <span>
+                      {isLlmProfile
+                        ? "0-GPU Qwen download queued. When done, open Output -> New Dataset:"
+                        : "CPU build queued (0 GPU quota). Once finished (~3m), save Output → New Dataset:"}
+                    </span>
                     <a
                       href={fastbootBuildUrl}
                       target="_blank"
@@ -735,7 +929,7 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
                       className="inline-flex items-center gap-1 font-mono font-semibold text-cyan-300 underline hover:text-white"
                     >
                       <ExternalLink className="h-2.5 w-2.5" />
-                      Open ml-env-cache-builder
+                      Open {isLlmProfile ? "ml-llm-dataset-builder" : "ml-env-cache-builder"}
                     </a>
                   </div>
                 )}
@@ -749,23 +943,30 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
                   <input
                     value={datasetDraft}
                     onChange={(e) => setDatasetDraft(e.target.value)}
-                    placeholder="Attach Kaggle dataset slug (e.g. himanshukr7532/scriptoria-comfy-env)"
+                    placeholder={
+                      isLlmProfile
+                        ? "Attach Qwen Kaggle dataset slug (e.g. krhimanshu001/scriptoria-qwen-llm)"
+                        : "Attach Kaggle dataset slug (e.g. himanshukr7532/scriptoria-comfy-env)"
+                    }
                     className="h-6 min-w-0 flex-1 rounded border border-zinc-800 bg-zinc-900 px-2 font-mono text-[10px] text-zinc-200 placeholder:text-zinc-600"
                   />
                   {attachedDatasets.length === 0 && kaggleAccount?.username && (
                     <button
                       type="button"
                       disabled={savingConfig}
-                      onClick={() =>
+                      onClick={() => {
+                        const slug = isLlmProfile
+                          ? `${kaggleAccount.username}/scriptoria-qwen-llm`
+                          : `${kaggleAccount.username}/scriptoria-comfy-env`;
                         patchBootConfig(
                           primaryTarget,
-                          { kaggleDatasets: [`${kaggleAccount.username}/scriptoria-comfy-env`] },
-                          `Attached FastBoot dataset ${kaggleAccount.username}/scriptoria-comfy-env`
-                        )
-                      }
+                          { kaggleDatasets: [slug] },
+                          `Attached dataset ${slug}`
+                        );
+                      }}
                       className="h-6 shrink-0 rounded border border-cyan-500/35 bg-cyan-500/10 px-2 font-mono text-[10px] text-cyan-200 hover:bg-cyan-500/20"
                     >
-                      + {kaggleAccount.username}/scriptoria-comfy-env
+                      + {kaggleAccount.username}/{isLlmProfile ? "scriptoria-qwen-llm" : "scriptoria-comfy-env"}
                     </button>
                   )}
                   <button
@@ -777,6 +978,114 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
                     Attach
                   </button>
                 </form>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Decoupled Online Model & VRAM Loader Strip */}
+        {isOnline && (
+          <div className="space-y-1.5 rounded-md border border-zinc-800 bg-zinc-950/75 px-2.5 py-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[10px]">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold uppercase tracking-wide text-zinc-400">
+                  Model & VRAM Loader
+                </span>
+                {typeof freeDiskGb === "number" && (
+                  <span className="font-mono text-zinc-500">
+                    /tmp free: <span className="text-zinc-300">{freeDiskGb.toFixed(1)} GB</span>
+                  </span>
+                )}
+              </div>
+              {isLlmProfile && activeModelName && (
+                <span className="font-mono text-[10px] text-violet-300 truncate max-w-[200px]">
+                  Active: {activeModelName}
+                </span>
+              )}
+            </div>
+
+            {isLlmProfile ? (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <select
+                  value={effectiveLlmPresetId}
+                  disabled={Boolean(modelControlLoading)}
+                  onChange={(e) => setSelectedLlmPresetId(e.target.value)}
+                  className="h-7 min-w-0 flex-1 rounded border border-zinc-800 bg-zinc-900 px-2 font-mono text-[10px] text-zinc-200"
+                >
+                  {LLM_MODEL_PRESETS.map((p) => (
+                    <option key={p.id} value={p.id} className="bg-zinc-900">
+                      {p.shortLabel} (~{p.approxDiskGb}G disk · {p.approxVramGb}G VRAM)
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  disabled={Boolean(modelControlLoading)}
+                  onClick={() => handleModelControl("stage_llm")}
+                  className="inline-flex h-7 items-center gap-1 rounded border border-zinc-700 bg-zinc-800 px-2 text-[10px] font-medium text-zinc-200 hover:bg-zinc-700 disabled:opacity-45"
+                  title="Download/verify GGUF onto /tmp disk only (0 VRAM used)"
+                >
+                  {modelControlLoading === "stage_llm" && <Loader2 className="h-2.5 w-2.5 animate-spin" />}
+                  Stage Disk
+                </button>
+                <button
+                  type="button"
+                  disabled={Boolean(modelControlLoading)}
+                  onClick={() => handleModelControl("load_llm")}
+                  className="inline-flex h-7 items-center gap-1 rounded border border-violet-500/45 bg-violet-600/20 px-2.5 text-[10px] font-medium text-violet-200 hover:bg-violet-600/35 disabled:opacity-45"
+                  title="Mount or download GGUF and launch llama-server into VRAM"
+                >
+                  {modelControlLoading === "load_llm" && <Loader2 className="h-2.5 w-2.5 animate-spin" />}
+                  Load VRAM
+                </button>
+                <button
+                  type="button"
+                  disabled={Boolean(modelControlLoading) || (runtimeMode === "idle_empty" && !activeModelName)}
+                  onClick={() => handleModelControl("unload_llm")}
+                  className="inline-flex h-7 items-center gap-1 rounded border border-rose-500/35 bg-rose-500/10 px-2 text-[10px] font-medium text-rose-300 hover:bg-rose-500/20 disabled:opacity-40"
+                  title="Unload model processes and free all GPU VRAM -> Idle Empty"
+                >
+                  {modelControlLoading === "unload_llm" && <Loader2 className="h-2.5 w-2.5 animate-spin" />}
+                  Unload
+                </button>
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <select
+                  value={selectedImageSlug || catalogChoices[0]?.slug || ""}
+                  disabled={Boolean(modelControlLoading)}
+                  onChange={(e) => setSelectedImageSlug(e.target.value)}
+                  className="h-7 min-w-0 flex-1 rounded border border-zinc-800 bg-zinc-900 px-2 font-mono text-[10px] text-zinc-200"
+                >
+                  {catalogChoices.map((m) => (
+                    <option key={m.slug} value={m.slug} className="bg-zinc-900">
+                      [{m.modality}] {m.displayName}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  disabled={Boolean(modelControlLoading) || !(selectedImageSlug || catalogChoices[0]?.slug)}
+                  onClick={() =>
+                    handleModelControl("stage_image_model", {
+                      slug: selectedImageSlug || catalogChoices[0]?.slug,
+                    })
+                  }
+                  className="inline-flex h-7 items-center gap-1 rounded border border-zinc-700 bg-zinc-800 px-2 text-[10px] font-medium text-zinc-200 hover:bg-zinc-700 disabled:opacity-45"
+                >
+                  {modelControlLoading === "stage_image_model" && <Loader2 className="h-2.5 w-2.5 animate-spin" />}
+                  Stage Model
+                </button>
+                <button
+                  type="button"
+                  disabled={Boolean(modelControlLoading)}
+                  onClick={() => handleModelControl("free_vram")}
+                  className="inline-flex h-7 items-center gap-1 rounded border border-amber-500/35 bg-amber-500/10 px-2 text-[10px] font-medium text-amber-300 hover:bg-amber-500/20 disabled:opacity-45"
+                  title="Call ComfyUI /free to unload checkpoint & clear VRAM"
+                >
+                  {modelControlLoading === "free_vram" && <Loader2 className="h-2.5 w-2.5 animate-spin" />}
+                  Free VRAM
+                </button>
               </div>
             )}
           </div>
@@ -916,6 +1225,23 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
             )}
             Fetch VM
           </button>
+
+          {kind === "kaggle" && !isOnline && (
+            <button
+              type="button"
+              onClick={handleCopyDraftCell}
+              disabled={draftCellLoading || actionLoading || !kaggleAccount?.configured}
+              title="Copy claim cell for an already-allotted Kaggle Interactive Draft Session without cancelling it"
+              className="inline-flex h-7 items-center gap-1 rounded-md border border-emerald-500/35 bg-emerald-500/10 px-2 text-[11px] font-medium text-emerald-200 hover:bg-emerald-500/20 disabled:opacity-40"
+            >
+              {draftCellLoading ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Copy className="h-3 w-3" />
+              )}
+              Draft Cell
+            </button>
+          )}
 
           {anyActive && primaryVm?.publicUrl && (
             <button

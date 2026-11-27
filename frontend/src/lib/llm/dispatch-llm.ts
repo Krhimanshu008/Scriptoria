@@ -185,6 +185,20 @@ export async function dispatchLlmChat(params: DispatchLlmParams): Promise<Dispat
     }
 
     if (onlineVm) {
+      const vmMeta = parseBootMetadata(onlineVm.bootMetadataJson);
+      const hasEndpoints = (vmMeta?.llmEndpoints?.length ?? 0) > 0;
+      if (vmMeta?.runtimeMode === "idle_empty" && !hasEndpoints) {
+        if (!fallbackToVault) {
+          throw new LlmDispatchError(
+            `VM '${onlineVm.target}' is ONLINE (Idle · Empty Compute) with no LLM model loaded in VRAM. Stage & Load a model from GPU Cluster or LLM Studio first.`,
+            409
+          );
+        }
+        onlineVm = null;
+      }
+    }
+
+    if (onlineVm) {
       const openAiMessages: Array<Record<string, unknown>> = [
         { role: "system", content: systemPrompt },
         ...messages.map((m) => {
@@ -245,7 +259,7 @@ export async function dispatchLlmChat(params: DispatchLlmParams): Promise<Dispat
           const errText = await res.text().catch(() => "");
           throw new LlmDispatchError(
             `LLM worker (${onlineVm.target}) returned HTTP ${res.status}: ${errText.slice(0, 300)}`,
-            502
+            res.status === 409 ? 409 : 502
           );
         }
 
@@ -334,7 +348,12 @@ export async function dispatchLlmChat(params: DispatchLlmParams): Promise<Dispat
         const row = await prisma.llmRelayRequest.findUnique({ where: { id: relay.id } });
         if (!row) break;
         if (row.status === "FAILED") {
-          throw new LlmDispatchError(row.errorMessage || "Safe Headless LLM execution failed.", 502);
+          const errMsg = row.errorMessage || "Safe Headless LLM execution failed.";
+          const errStatus =
+            errMsg.includes("409") || errMsg.toLowerCase().includes("no llm model loaded")
+              ? 409
+              : 502;
+          throw new LlmDispatchError(errMsg, errStatus);
         }
         if (row.status === "COMPLETED") {
           const latencyMs = row.latencyMs ?? Date.now() - startedAt;

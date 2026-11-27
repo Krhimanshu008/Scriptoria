@@ -28,6 +28,7 @@ export interface NotebookBuildConfig {
   headlessMode?: boolean;
   quietStdout?: boolean;
   llmTopologyMode?: string;
+  autoLoadOnBoot?: boolean;
 }
 
 /**
@@ -267,7 +268,7 @@ export interface KaggleThinStubConfig {
  */
 export function buildKaggleThinClaimStubCode(cfg: KaggleThinStubConfig): string {
   const cleanUrl = cfg.appWebhookUrl.replace(/\/$/, "");
-  return `import json, sys, urllib.request, urllib.error
+  return `import json, urllib.request, urllib.error
 
 APP_URL = ${JSON.stringify(cleanUrl)}
 TARGET = ${JSON.stringify(cfg.target)}
@@ -280,17 +281,19 @@ req = urllib.request.Request(
     headers={"Content-Type": "application/json", "User-Agent": "Scriptoria-Worker/1.0"},
     method="POST",
 )
+payload = None
 try:
     with urllib.request.urlopen(req, timeout=30) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
 except urllib.error.HTTPError as err:
     if err.code in (401, 410):
         print(f"Session inactive ({err.code}); exiting cleanly.", flush=True)
-        sys.exit(0)
-    raise RuntimeError(f"Session claim error ({err.code})")
+    else:
+        raise RuntimeError(f"Session claim error ({err.code})")
 
-print("Runtime active.", flush=True)
-exec(compile(payload["pythonCode"], "runtime_worker.py", "exec"), {"__name__": "__main__"})
+if payload:
+    print("Runtime active.", flush=True)
+    exec(compile(payload["pythonCode"], "runtime_worker.py", "exec"), {"__name__": "__main__"})
 `;
 }
 
@@ -367,8 +370,16 @@ ENABLE_OFFLINE_SCAN = ${cfg.enableOfflineDatasetScan ? "True" : "False"}
 PREWARM_MODELS = json.loads(${JSON.stringify(JSON.stringify(prewarmModels))})
 HEADLESS_MODE = ${cfg.headlessMode ? "True" : "False"}
 QUIET_STDOUT = ${cfg.quietStdout ? "True" : "False"}
+AUTO_LOAD_ON_BOOT = ${cfg.autoLoadOnBoot ? "True" : "False"}
 LLM_TOPO_MODE = ${JSON.stringify(cfg.llmTopologyMode || (cfg.workerProfile === "LLM_LIGHTWEIGHT_SWARM" ? "llm_swarm_multi" : "llm_layer_split"))}
 LLM_ACTIVE_ENDPOINTS = []
+RUNTIME_MODE = "idle_empty" if PROFILE_ID.startswith("LLM_") else "comfy_ready"
+ACTIVE_MODEL_NAME = None
+ACTIVE_MODEL_REPO = None
+CMD_ACKS = []
+CMD_SEEN_IDS = set()
+CMD_LOCK = threading.Lock()
+_VM_CMD_HANDLERS = {}
 
 LAST_ACTIVE = time.time()
 BOOT_LOGS = deque(maxlen=150)
@@ -547,6 +558,10 @@ def post_heartbeat(step, status="STARTING", telemetry=None):
     telem["driveHealthy"] = bool(GDRIVE_HEALTHY)
     telem["headlessMode"] = bool(HEADLESS_MODE)
     telem["modelFetch"] = bool(HEADLESS_MODE)
+    telem["autoLoadOnBoot"] = bool(AUTO_LOAD_ON_BOOT)
+    telem["runtimeMode"] = RUNTIME_MODE
+    telem["activeModelName"] = ACTIVE_MODEL_NAME
+    telem["activeModelRepo"] = ACTIVE_MODEL_REPO
     telem["topologyMode"] = TOPOLOGY_MODE
     telem["hotModels"] = {str(k): list(v) for k, v in HOT_MODELS_BY_PORT.items()}
     if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B", "LLM_LIGHTWEIGHT_SWARM"):
@@ -562,6 +577,9 @@ def post_heartbeat(step, status="STARTING", telemetry=None):
             MODEL_SCAN_CACHE["sentHash"] = scan_hash
     except Exception:
         pass
+    with CMD_LOCK:
+        acks_batch = CMD_ACKS[:]
+        CMD_ACKS.clear()
     payload = {
         "token": REG_JWT,
         "tunnelUrl": TUNNEL_URL or "",
@@ -570,6 +588,7 @@ def post_heartbeat(step, status="STARTING", telemetry=None):
         "status": status,
         "telemetry": telem,
         "logs": logs_batch,
+        **({"commandAcks": acks_batch} if acks_batch else {}),
     }
     try:
         req = urllib.request.Request(
@@ -593,6 +612,9 @@ def post_heartbeat(step, status="STARTING", telemetry=None):
                     req_llm_topo = hb_json.get("switchLlmTopology")
                     if req_llm_topo and req_llm_topo != LLM_TOPO_MODE and callable(globals().get("start_llm_workers")):
                         threading.Thread(target=globals()["start_llm_workers"], kwargs={"topo_mode": req_llm_topo}, daemon=True).start()
+                    pending_cmds = hb_json.get("pendingCommands") or []
+                    if isinstance(pending_cmds, list) and pending_cmds:
+                        _schedule_vm_commands(pending_cmds)
             except Exception:
                 pass
         EVER_CONNECTED = True
@@ -612,6 +634,62 @@ def post_heartbeat(step, status="STARTING", telemetry=None):
         HEARTBEAT_FAIL_STREAK += 1
         if not QUIET_STDOUT:
             print(f"[HEARTBEAT] Warning: {e}", flush=True)
+
+def _record_cmd_ack(cmd_id, status="COMPLETED", msg=None):
+    with CMD_LOCK:
+        CMD_ACKS.append({
+            "id": str(cmd_id),
+            "status": str(status),
+            **({"resultMessage": str(msg)[:450]} if msg else {}),
+        })
+
+def _execute_vm_command(cmd):
+    cmd_id = str(cmd.get("id") or "")
+    action = str(cmd.get("action") or "").upper()
+    try:
+        if action == "FREE_VRAM":
+            freed = []
+            for port in PORTS:
+                try:
+                    fr = urllib.request.Request(
+                        f"http://127.0.0.1:{port}/free",
+                        data=json.dumps({"unload_models": True, "free_memory": True}).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(fr, timeout=10):
+                        freed.append(str(port))
+                except Exception:
+                    pass
+            try:
+                HOT_MODELS_BY_PORT.clear()
+            except Exception:
+                pass
+            log_event(f"Cleared ComfyUI VRAM cache (ports={freed or PORTS}).", category="ACTION", level="SUCCESS")
+            _record_cmd_ack(cmd_id, "COMPLETED", f"Freed ComfyUI VRAM ({','.join(freed or ['done'])})")
+            return
+        llm_fn = _VM_CMD_HANDLERS.get("llm_command")
+        if callable(llm_fn):
+            msg = llm_fn(cmd)
+            _record_cmd_ack(cmd_id, "COMPLETED", msg or f"{action} ok")
+            return
+        _record_cmd_ack(cmd_id, "FAILED", f"Action '{action}' unsupported by current worker profile '{PROFILE_ID}'.")
+    except Exception as cmd_err:
+        log_event(f"Command {action} failed: {cmd_err}", category="ERROR", level="ERROR")
+        _record_cmd_ack(cmd_id, "FAILED", str(cmd_err))
+
+def _schedule_vm_commands(cmds):
+    for cmd in cmds:
+        if not isinstance(cmd, dict):
+            continue
+        cid = str(cmd.get("id") or "")
+        if not cid:
+            continue
+        with CMD_LOCK:
+            if cid in CMD_SEEN_IDS:
+                continue
+            CMD_SEEN_IDS.add(cid)
+        threading.Thread(target=_execute_vm_command, args=(cmd,), daemon=True).start()
 
 def _worker_api_post(path, body_dict, timeout=20):
     req = urllib.request.Request(
@@ -1529,17 +1607,19 @@ if not HEADLESS_MODE:
     threading.Thread(target=setup_cloudflared, daemon=True).start()
 else:
     log_event("Safe Headless Mode active (tunnel/proxy disabled; outbound worker polling enabled).", category="NETWORK", level="INFO")
-if PREWARM_MODELS:
+if PREWARM_MODELS and AUTO_LOAD_ON_BOOT:
     aria2_started = True
     threading.Thread(target=setup_aria2, daemon=True).start()
 uv_thread = threading.Thread(target=setup_uv, daemon=True)
 uv_thread.start()
 rclone_thread = threading.Thread(target=setup_rclone, daemon=True)
 rclone_thread.start()
-if PREWARM_MODELS:
+if PREWARM_MODELS and AUTO_LOAD_ON_BOOT:
     rclone_thread.join(timeout=8)
     for startup_model in PREWARM_MODELS:
         start_model_fetch(startup_model)
+elif PREWARM_MODELS:
+    log_event(f"Pure Compute Boot: skipped {len(PREWARM_MODELS)} queued pre-warm model(s) (autoLoadOnBoot=False).", category="SYSTEM")
 
 def _resolve_llama_bin():
     from pathlib import Path as _P
@@ -1660,10 +1740,18 @@ def _resolve_llama_bin():
 
 def _fast_download_hf(repo_id, filename, dst_dir="/tmp/models/llm/qwen3_vl_8b", label="Model"):
     os.makedirs(dst_dir, exist_ok=True)
-    final_path = os.path.join(dst_dir, filename)
+    final_path = os.path.join(dst_dir, os.path.basename(filename))
     if os.path.exists(final_path) and os.path.getsize(final_path) > 1000000:
-        log_event(f"Local cache hit for {filename} ({round(os.path.getsize(final_path)/(1024**3), 2)}GB)", category="SYSTEM", level="SUCCESS")
+        log_event(f"Local cache hit for {os.path.basename(filename)} ({round(os.path.getsize(final_path)/(1024**3), 2)}GB)", category="SYSTEM", level="SUCCESS")
         return final_path
+    try:
+        free_gb = shutil.disk_usage("/tmp").free / (1024 ** 3)
+        if free_gb < 1.5:
+            raise RuntimeError(f"Insufficient /tmp free disk space ({free_gb:.1f} GB free) to download {os.path.basename(filename)}. Attach a 0-GPU Qwen Dataset or free cache.")
+    except RuntimeError:
+        raise
+    except Exception:
+        pass
     hf_url = f"https://huggingface.co/{repo_id}/resolve/main/{filename}"
     part_path = final_path + ".part"
     t0 = time.time()
@@ -1692,11 +1780,14 @@ def _fast_download_hf(repo_id, filename, dst_dir="/tmp/models/llm/qwen3_vl_8b", 
             os.replace(part_path, final_path)
             dur = round(time.time() - t0, 1)
             spd_mb = round(os.path.getsize(final_path) / (max(0.1, dur) * 1024 * 1024), 1)
-            log_event(f"[{label}] {filename} ready in {dur}s ({spd_mb} MB/s)!", category="DOWNLOAD", level="SUCCESS")
+            log_event(f"[{label}] {os.path.basename(final_path)} ready in {dur}s ({spd_mb} MB/s)!", category="DOWNLOAD", level="SUCCESS")
             return final_path
     uv_thread.join(timeout=30)
     from huggingface_hub import hf_hub_download
-    return hf_hub_download(repo_id=repo_id, filename=filename, local_dir=dst_dir)
+    dl_p = hf_hub_download(repo_id=repo_id, filename=filename, local_dir=dst_dir)
+    if os.path.abspath(dl_p) != os.path.abspath(final_path) and os.path.exists(dl_p):
+        shutil.move(dl_p, final_path)
+    return final_path
 
 # -------------------------------------------------------------
 # 3B. Dedicated LLM Nodes (LLM_QWEN_VLM, LLM_QWEN_TEXT_TURBO, LLM_QWEN_MOE_35B & LLM_QWEN_FAST_8B on Dual-T4)
@@ -1729,20 +1820,92 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
     os.makedirs(LOCAL_LLM_DIR, exist_ok=True)
     os.makedirs("/tmp/llama_bin", exist_ok=True)
 
-    def _resolve_qwen_ggufs():
+    import fnmatch as _fnmatch
+
+    def _match_hint(fname, hints):
+        fn = os.path.basename(fname).lower()
+        for pat in (hints or []):
+            if _fnmatch.fnmatch(fn, pat.lower()):
+                return True
+        return False
+
+    def _find_or_download_gguf(repo_id, file_hints, mmproj_hints=None, dst_subdir=None, label="Qwen", allow_download=True):
+        sub_dir = os.path.join("/tmp/models/llm", dst_subdir or re.sub(r"[^a-zA-Z0-9._-]+", "_", repo_id))
+        os.makedirs(sub_dir, exist_ok=True)
+        m, mm = None, None
+        search_roots = []
+        if os.path.exists("/kaggle/input"):
+            search_roots.append("/kaggle/input")
+        if os.path.exists("/tmp/models/llm"):
+            search_roots.append("/tmp/models/llm")
+        for root_dir in search_roots:
+            ggufs = [str(p) for p in Path(root_dir).rglob("*.gguf")]
+            non_mm = [p for p in ggufs if "mmproj" not in os.path.basename(p).lower() and "dflash" not in os.path.basename(p).lower()]
+            m = next((p for pat in (file_hints or ["*.gguf"]) for p in sorted(non_mm) if _fnmatch.fnmatch(os.path.basename(p).lower(), pat.lower())), None)
+            if mmproj_hints:
+                mm_cand = [p for p in ggufs if "mmproj" in os.path.basename(p).lower()]
+                mm = next((p for pat in mmproj_hints for p in sorted(mm_cand) if _fnmatch.fnmatch(os.path.basename(p).lower(), pat.lower())), None)
+            if m:
+                src_tag = "Kaggle Dataset" if root_dir.startswith("/kaggle/input") else "local /tmp cache"
+                log_event(f"Mounted {src_tag} weights: {os.path.basename(m)}", category="SYSTEM", level="SUCCESS")
+                return m, mm, False
+
+        if not allow_download:
+            return None, None, False
+
+        uv_thread.join(timeout=30)
+        from huggingface_hub import list_repo_files
+        files = list(list_repo_files(repo_id))
+        ggufs = [f for f in files if f.lower().endswith(".gguf") and "mmproj" not in f.lower() and not f.lower().startswith("mtp/")]
+        chosen_gguf = None
+        for pat in (file_hints or ["*Q4_K_M*.gguf", "*IQ4_XS*.gguf", "*.gguf"]):
+            hit = [f for f in sorted(ggufs) if _fnmatch.fnmatch(os.path.basename(f).lower(), pat.lower()) and "-00002-of-" not in f.lower()]
+            if hit:
+                chosen_gguf = hit[0]
+                break
+        if not chosen_gguf and ggufs:
+            chosen_gguf = sorted(ggufs)[0]
+        if not chosen_gguf:
+            raise RuntimeError(f"No matching GGUF found in HuggingFace repo '{repo_id}'.")
+        m = _fast_download_hf(repo_id, chosen_gguf, sub_dir, label=label)
+        if mmproj_hints:
+            mms = [f for f in files if f.lower().endswith(".gguf") and "mmproj" in f.lower()]
+            chosen_mm = next((f for pat in mmproj_hints for f in sorted(mms) if _fnmatch.fnmatch(os.path.basename(f).lower(), pat.lower())), mms[0] if mms else None)
+            if chosen_mm:
+                mm = _fast_download_hf(repo_id, chosen_mm, sub_dir, label=f"{label} mmproj")
+        return m, mm, True
+
+    def _resolve_qwen_ggufs(repo_override=None, file_hints=None, mmproj_hints=None, model_label=None, companion_repos=None):
         from pathlib import Path as _P
+        if repo_override:
+            m, mm, dl = _find_or_download_gguf(
+                repo_override,
+                file_hints or ["*Q4_K_M*.gguf", "*IQ4_XS*.gguf", "*.gguf"],
+                mmproj_hints=mmproj_hints or [],
+                label=model_label or repo_override,
+                allow_download=True,
+            )
+            for comp in (companion_repos or []):
+                try:
+                    c_repo = comp.get("repoId")
+                    if c_repo:
+                        _find_or_download_gguf(
+                            c_repo,
+                            comp.get("fileHints") or ["*Q4_K_M*.gguf", "*.gguf"],
+                            mmproj_hints=comp.get("mmprojHints") or [],
+                            dst_subdir=f"{MODEL_SUBDIR}/{comp.get('role', 'comp')}",
+                            label=comp.get("role", "Companion"),
+                            allow_download=True,
+                        )
+                except Exception as ce:
+                    log_event(f"Companion repo stage notice ({comp.get('repoId')}): {ce}", category="SYSTEM", level="WARN")
+            return m, mm, bool(dl or companion_repos)
+
         if PROFILE_ID == "LLM_LIGHTWEIGHT_SWARM":
-            log_event("Resolving 5-Model Swarm weights (9B QC, 4B Extractor, MiniCPM-V 1B)...", category="SYSTEM")
-            q9_dir = f"{LOCAL_LLM_DIR}/qwen9b"
-            q4_dir = f"{LOCAL_LLM_DIR}/qwen4b"
-            cpm_dir = f"{LOCAL_LLM_DIR}/cpm1b"
-            os.makedirs(q9_dir, exist_ok=True)
-            os.makedirs(q4_dir, exist_ok=True)
-            os.makedirs(cpm_dir, exist_ok=True)
-            m9 = _fast_download_hf("unsloth/Qwen3.5-9B-GGUF", "Qwen3.5-9B-Q4_K_M.gguf", q9_dir, label="Qwen 9B QC")
-            mm9 = _fast_download_hf("unsloth/Qwen3.5-9B-GGUF", "mmproj-F16.gguf", q9_dir, label="Qwen 9B mmproj")
-            _fast_download_hf("unsloth/Qwen3.5-4B-GGUF", "Qwen3.5-4B-Q4_K_M.gguf", q4_dir, label="Qwen 4B Extractor")
-            _fast_download_hf("openbmb/MiniCPM-V-4.7-1B-gguf", "MiniCPM-V-4_7-1B-Q4_K_M.gguf", cpm_dir, label="MiniCPM-V 1B")
+            log_event("Resolving Swarm weights (9B QC, 4B Extractor, MiniCPM-V 1B)...", category="SYSTEM")
+            m9, mm9, _ = _find_or_download_gguf("unsloth/Qwen3.5-9B-GGUF", ["*Q4_K_M*.gguf"], ["*mmproj*.gguf"], dst_subdir=f"{MODEL_SUBDIR}/qwen9b", label="Qwen 9B QC")
+            _find_or_download_gguf("unsloth/Qwen3.5-4B-GGUF", ["*Q4_K_M*.gguf"], [], dst_subdir=f"{MODEL_SUBDIR}/qwen4b", label="Qwen 4B Extractor")
+            _find_or_download_gguf("openbmb/MiniCPM-V-4.7-1B-gguf", ["*Q4_K_M*.gguf", "*ggml-model*.gguf"], ["*mmproj*.gguf"], dst_subdir=f"{MODEL_SUBDIR}/cpm1b", label="MiniCPM-V 1B")
             return m9, mm9, True
 
         needs_vision = (PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B"))
@@ -1755,7 +1918,6 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
             fn = fname.lower()
             return token in fn and "mmproj" not in fn and "dflash" not in fn
 
-        # 1. Local Kaggle dataset mount (/kaggle/input) -> Instant NVMe (0s)
         if os.path.exists("/kaggle/input"):
             ggufs = list(_P("/kaggle/input").rglob("*.gguf"))
             m = next((str(p) for p in ggufs if _is_match(p.name, target_token)), None)
@@ -1765,7 +1927,6 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                 log_event(f"Mounted Kaggle Dataset Qwen weights: {os.path.basename(m)}", category="SYSTEM", level="SUCCESS")
                 return m, mm, False
 
-        # 2. Local isolated cache: /tmp/models/llm/{MODEL_SUBDIR}
         if os.path.exists(LOCAL_LLM_DIR):
             local_files = [str(p) for p in _P(LOCAL_LLM_DIR).glob("*.gguf")]
             m = next((p for p in local_files if _is_match(os.path.basename(p), target_token)), None)
@@ -1775,7 +1936,6 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                 log_event(f"Reusing cached Qwen weights in {MODEL_SUBDIR}: {os.path.basename(m)}", category="SYSTEM", level="SUCCESS")
                 return m, mm, False
 
-        # 3. FastBoot: Check persistent Google Drive isolated mirror: gdrive:{REMOTE_LLM_DIR}
         if rclone_ok:
             try:
                 ls = rc_post("operations/list", {"fs": f"gdrive:{REMOTE_LLM_DIR}", "remote": ""}, timeout=15)
@@ -1794,47 +1954,35 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
             except Exception as de:
                 log_event(f"Drive LLM weights check: {de}", category="RCLONE")
 
-        # 4. Hugging Face CDN (16 parallel streams)
         try:
-            uv_thread.join(timeout=30)
-            from huggingface_hub import list_repo_files
-            files = list_repo_files(LLM_MODEL_REPO)
-            ggufs = [f for f in files if f.lower().endswith(".gguf") and "mmproj" not in f.lower() and not f.lower().startswith("mtp/")]
-            chosen_gguf = None
-            for pat in ["UD-Q4_K_M", "Q4_K_M", "UD-Q4_K_XL", "Q4_K_S", "Q4_0"]:
-                hit = [f for f in ggufs if pat.lower() in f.lower() and "-00002-of-" not in f.lower()]
-                if hit:
-                    chosen_gguf = hit[0]
-                    break
-            if not chosen_gguf:
-                chosen_gguf = ggufs[0] if ggufs else None
-
-            if chosen_gguf:
-                lbl = (
-                    "Qwen 8B Fast" if is_fast_8b
-                    else ("Qwen 35B MoE" if is_moe_35b else "Qwen 27B")
-                )
-                m = _fast_download_hf(LLM_MODEL_REPO, chosen_gguf, LOCAL_LLM_DIR, label=lbl)
-
-            if needs_vision:
-                mms = [f for f in files if f.lower().endswith(".gguf") and "mmproj" in f.lower()]
-                chosen_mm = next((f for f in mms if "mmproj-f16" in f.lower()), next((f for f in mms if "f16" in f.lower() or "bf16" in f.lower()), mms[0] if mms else None))
-                if chosen_mm:
-                    mm = _fast_download_hf(LLM_MODEL_REPO, chosen_mm, LOCAL_LLM_DIR, label="mmproj Vision")
-
+            lbl = "Qwen 8B Fast" if is_fast_8b else ("Qwen 35B MoE" if is_moe_35b else "Qwen 27B")
+            m, mm, dl = _find_or_download_gguf(
+                LLM_MODEL_REPO,
+                ["*UD-Q4_K_M*.gguf", "*Q4_K_M*.gguf", "*IQ4_XS*.gguf", "*Q4_K_S*.gguf", "*Q4_0*.gguf"],
+                mmproj_hints=(["*mmproj*f16*.gguf", "*mmproj*bf16*.gguf", "*mmproj*.gguf"] if needs_vision else []),
+                dst_subdir=MODEL_SUBDIR,
+                label=lbl,
+                allow_download=True,
+            )
             if m and os.path.exists(m):
-                return m, mm, True
+                return m, mm, dl
         except Exception as hf_err:
             log_event(f"Hugging Face download failed: {hf_err}", category="SYSTEM", level="WARN")
 
         raise RuntimeError(f"Failed to resolve Qwen weights for {LLM_MODEL_REPO} from Kaggle dataset, Google Drive, or Hugging Face.")
 
     llama_bin = _resolve_llama_bin()
-    model_gguf, mmproj_gguf, downloaded_fresh = _resolve_qwen_ggufs()
     post_heartbeat(3, "STARTING")
 
+    model_gguf = None
+    mmproj_gguf = None
     dflash_gguf = None
-    if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"):
+    mode_label = "Idle Compute Ready"
+
+    def _resolve_dflash_for_27b():
+        global dflash_gguf
+        if dflash_gguf and os.path.exists(dflash_gguf):
+            return dflash_gguf
         try:
             if os.path.exists(LOCAL_LLM_DIR):
                 dflash_gguf = next((str(p) for p in Path(LOCAL_LLM_DIR).glob("*.gguf") if "dflash" in p.name.lower()), None)
@@ -1848,29 +1996,31 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                 except Exception:
                     pass
             if not dflash_gguf:
-                try:
-                    dflash_gguf = _fast_download_hf("z-lab/Qwen3.8-27B-DFlash2-GGUF", "Qwen3.8-27B-DFlash2-Q4_K_M.gguf", LOCAL_LLM_DIR, label="DFlash2 Drafter")
-                except Exception:
+                for df_repo in ("z-lab/Qwen3.8-27B-DFlash2-GGUF", "Akicou/Qwen3.8-27B-DFlash2-GGUF"):
                     try:
-                        dflash_gguf = _fast_download_hf("Akicou/Qwen3.8-27B-DFlash2-GGUF", "Qwen3.8-27B-DFlash2-Q4_K_M.gguf", LOCAL_LLM_DIR, label="DFlash2 Drafter")
+                        dflash_gguf = _fast_download_hf(df_repo, "Qwen3.8-27B-DFlash2-Q4_K_M.gguf", LOCAL_LLM_DIR, label="DFlash2 Drafter")
+                        break
                     except Exception:
                         pass
         except Exception as dfe:
             log_event(f"DFlash2 lookup: {dfe}", category="SYSTEM")
+        return dflash_gguf
 
-    if rclone_ok and downloaded_fresh:
-        def _backup_llm_to_drive():
+    def _maybe_backup_llm_to_drive(m_path, mm_path, df_path):
+        if not (rclone_ok and m_path and os.path.exists(m_path)):
+            return
+        def _bk():
             try:
                 rc_post("operations/mkdir", {"fs": "gdrive:", "remote": REMOTE_LLM_DIR})
-                rc_copy_async({"srcFs": LOCAL_LLM_DIR, "srcRemote": os.path.basename(model_gguf), "dstFs": f"gdrive:{REMOTE_LLM_DIR}", "dstRemote": os.path.basename(model_gguf)}, max_wait=900, label="Backup Qwen GGUF")
-                if mmproj_gguf:
-                    rc_copy_async({"srcFs": LOCAL_LLM_DIR, "srcRemote": os.path.basename(mmproj_gguf), "dstFs": f"gdrive:{REMOTE_LLM_DIR}", "dstRemote": os.path.basename(mmproj_gguf)}, max_wait=300, label="Backup mmproj")
-                if dflash_gguf and os.path.exists(dflash_gguf):
-                    rc_copy_async({"srcFs": LOCAL_LLM_DIR, "srcRemote": os.path.basename(dflash_gguf), "dstFs": f"gdrive:{REMOTE_LLM_DIR}", "dstRemote": os.path.basename(dflash_gguf)}, max_wait=300, label="Backup DFlash2")
-                log_event(f"Cached {MODEL_SUBDIR} weights to Google Drive backup in background!", category="RCLONE", level="SUCCESS")
+                rc_copy_async({"srcFs": os.path.dirname(m_path), "srcRemote": os.path.basename(m_path), "dstFs": f"gdrive:{REMOTE_LLM_DIR}", "dstRemote": os.path.basename(m_path)}, max_wait=900, label="Backup Qwen GGUF")
+                if mm_path and os.path.exists(mm_path):
+                    rc_copy_async({"srcFs": os.path.dirname(mm_path), "srcRemote": os.path.basename(mm_path), "dstFs": f"gdrive:{REMOTE_LLM_DIR}", "dstRemote": os.path.basename(mm_path)}, max_wait=300, label="Backup mmproj")
+                if df_path and os.path.exists(df_path):
+                    rc_copy_async({"srcFs": os.path.dirname(df_path), "srcRemote": os.path.basename(df_path), "dstFs": f"gdrive:{REMOTE_LLM_DIR}", "dstRemote": os.path.basename(df_path)}, max_wait=300, label="Backup DFlash2")
+                log_event(f"Cached {os.path.basename(m_path)} to Google Drive backup in background!", category="RCLONE", level="SUCCESS")
             except Exception as be:
                 log_event(f"Drive LLM backup skipped: {be}", category="RCLONE", level="WARN")
-        threading.Thread(target=_backup_llm_to_drive, daemon=True).start()
+        threading.Thread(target=_bk, daemon=True).start()
 
     ll_env = os.environ.copy()
     ll_env["LD_LIBRARY_PATH"] = f"/tmp/llama_bin:{ll_env.get('LD_LIBRARY_PATH', '')}"
@@ -1922,12 +2072,21 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
         WORKER_STATE["status"] = "STOPPED"
         log_event("Worker processes evicted & GPU VRAM cleared.", category="SYSTEM", level="WARN")
 
-    def stop_llm_workers():
+    def stop_llm_workers(update_mode=True):
+        global RUNTIME_MODE, ACTIVE_MODEL_NAME, ACTIVE_MODEL_REPO, LLM_ACTIVE_ENDPOINTS, model_gguf, mmproj_gguf, mode_label
         with WORKER_LOCK:
             _stop_llm_workers_unlocked()
+            LLM_ACTIVE_ENDPOINTS = []
+            model_gguf = None
+            mmproj_gguf = None
+            if update_mode:
+                RUNTIME_MODE = "idle_empty"
+                ACTIVE_MODEL_NAME = None
+                ACTIVE_MODEL_REPO = None
+                mode_label = "Idle Compute Ready"
 
-    def start_llm_workers(target_profile=None, topo_mode=None):
-        global PROFILE_ID, LLM_TOPO_MODE, LLM_ACTIVE_ENDPOINTS, is_moe_35b, is_fast_8b, is_vlm_27b, model_gguf, mmproj_gguf, mode_label
+    def start_llm_workers(target_profile=None, topo_mode=None, repo_override=None, file_hints=None, mmproj_hints=None, model_name=None, companion_repos=None):
+        global PROFILE_ID, LLM_TOPO_MODE, LLM_ACTIVE_ENDPOINTS, RUNTIME_MODE, ACTIVE_MODEL_NAME, ACTIVE_MODEL_REPO, is_moe_35b, is_fast_8b, is_vlm_27b, model_gguf, mmproj_gguf, mode_label
         with WORKER_LOCK:
             _stop_llm_workers_unlocked()
             if target_profile:
@@ -1940,27 +2099,45 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
             is_vlm_27b = (PROFILE_ID == "LLM_QWEN_VLM")
 
             WORKER_STATE["status"] = "STARTING"
-            model_gguf, mmproj_gguf, is_swarm = _resolve_qwen_ggufs()
-            q4_dir = f"{LOCAL_LLM_DIR}/qwen4b"
-            m4_path = f"{q4_dir}/Qwen3.5-4B-Q4_K_M.gguf"
+            RUNTIME_MODE = "loading_model"
+            ACTIVE_MODEL_NAME = model_name or LLM_MODEL_REPO
+            ACTIVE_MODEL_REPO = repo_override or LLM_MODEL_REPO
+            LLM_ACTIVE_ENDPOINTS = []
+            try:
+                model_gguf, mmproj_gguf, downloaded_fresh = _resolve_qwen_ggufs(
+                    repo_override=repo_override,
+                    file_hints=file_hints,
+                    mmproj_hints=mmproj_hints,
+                    model_label=model_name,
+                    companion_repos=companion_repos,
+                )
+            except Exception as load_err:
+                RUNTIME_MODE = "idle_empty"
+                ACTIVE_MODEL_NAME = None
+                ACTIVE_MODEL_REPO = None
+                WORKER_STATE["status"] = "IDLE"
+                raise load_err
+
+            m_low = (os.path.basename(model_gguf or "")).lower()
+            is_27b_model = ("27b" in m_low) or (not repo_override and PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO"))
+            if is_27b_model and not repo_override:
+                _resolve_dflash_for_27b()
+            if downloaded_fresh:
+                _maybe_backup_llm_to_drive(model_gguf, mmproj_gguf, dflash_gguf)
+
             model_gb = round(os.path.getsize(model_gguf) / (1024**3), 2) if (model_gguf and os.path.exists(model_gguf)) else 0.0
-            active_topo = "llm_swarm_multi" if (PROFILE_ID == "LLM_LIGHTWEIGHT_SWARM" or LLM_TOPO_MODE == "llm_swarm_multi") else LLM_TOPO_MODE
+            active_topo = "llm_swarm_multi" if ((not repo_override and PROFILE_ID == "LLM_LIGHTWEIGHT_SWARM") or LLM_TOPO_MODE == "llm_swarm_multi") else LLM_TOPO_MODE
             if active_topo in ("llm_dual_replica", "llm_ab_arena") and model_gb > 13.0:
                 log_event(f"Model ({os.path.basename(model_gguf)}, {model_gb}GB) exceeds 16GB single-T4 limit; using Dual-T4 layer split instead of {active_topo}.", category="SYSTEM", level="WARN")
                 active_topo = "llm_layer_split"
                 LLM_TOPO_MODE = active_topo
 
-            LLM_ACTIVE_ENDPOINTS = []
+            m4_path = None
+            if active_topo in ("llm_swarm_multi", "llm_ab_arena"):
+                m4_path, _, _ = _find_or_download_gguf("unsloth/Qwen3.5-4B-GGUF", ["*Q4_K_M*.gguf"], [], dst_subdir=f"{MODEL_SUBDIR}/qwen4b", label="Qwen 4B Extractor")
 
             if active_topo == "llm_swarm_multi":
-                if not os.path.exists(m4_path):
-                    os.makedirs(q4_dir, exist_ok=True)
-                    _fast_download_hf("unsloth/Qwen3.5-4B-GGUF", "Qwen3.5-4B-Q4_K_M.gguf", q4_dir, label="Qwen 4B Extractor")
-                cpm_dir = f"{LOCAL_LLM_DIR}/cpm1b"
-                cpm_path = f"{cpm_dir}/MiniCPM-V-4_7-1B-Q4_K_M.gguf"
-                if not os.path.exists(cpm_path):
-                    os.makedirs(cpm_dir, exist_ok=True)
-                    _fast_download_hf("openbmb/MiniCPM-V-4_7-1B-gguf", "MiniCPM-V-4_7-1B-Q4_K_M.gguf", cpm_dir, label="MiniCPM-V 1B")
+                cpm_path, cpm_mm, _ = _find_or_download_gguf("openbmb/MiniCPM-V-4.7-1B-gguf", ["*Q4_K_M*.gguf", "*ggml-model*.gguf"], ["*mmproj*.gguf"], dst_subdir=f"{MODEL_SUBDIR}/cpm1b", label="MiniCPM-V 1B")
 
                 # 1. Primary Qwen on CUDA 0 (:8190)
                 cmd_9b = [
@@ -1989,7 +2166,7 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                 env_4b = ll_env.copy()
                 env_4b["CUDA_VISIBLE_DEVICES"] = "1"
                 WORKER_PROCS["4b"] = subprocess.Popen(cmd_4b, env=env_4b, stdout=open("/tmp/llama_4b.log", "w"), stderr=subprocess.STDOUT)
-                LLM_ACTIVE_ENDPOINTS.append({"port": 8191, "gpu": "GPU1", "model": "Qwen3.5-4B-Q4_K_M.gguf", "service": "extract", "ready": True})
+                LLM_ACTIVE_ENDPOINTS.append({"port": 8191, "gpu": "GPU1", "model": os.path.basename(m4_path), "service": "extract", "ready": True})
                 log_event("Launched Qwen3.5-4B Fast Extractor -> CUDA:1 (:8191)", category="SYSTEM", level="SUCCESS")
 
                 # 3. MiniCPM-V 4.7-1B on CUDA 1 (:8192)
@@ -1999,10 +2176,12 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                     "--batch-size", "256", "--ubatch-size", "128",
                     "--parallel", "1",
                 ]
+                if cpm_mm:
+                    cmd_cpm.extend(["--mmproj", cpm_mm])
                 env_cpm = ll_env.copy()
                 env_cpm["CUDA_VISIBLE_DEVICES"] = "1"
                 WORKER_PROCS["cpm"] = subprocess.Popen(cmd_cpm, env=env_cpm, stdout=open("/tmp/llama_cpm.log", "w"), stderr=subprocess.STDOUT)
-                LLM_ACTIVE_ENDPOINTS.append({"port": 8192, "gpu": "GPU1", "model": "MiniCPM-V-4_7-1B-Q4_K_M.gguf", "service": "tag", "ready": True})
+                LLM_ACTIVE_ENDPOINTS.append({"port": 8192, "gpu": "GPU1", "model": os.path.basename(cpm_path), "service": "tag", "ready": True})
                 mode_label = "Multi-Model Swarm (GPU0:8190 + GPU1:8191/8192)"
                 log_event("Launched MiniCPM-V 4.7-1B Vision/OCR -> CUDA:1 (:8192)", category="SYSTEM", level="SUCCESS")
             elif active_topo == "llm_dual_replica":
@@ -2015,7 +2194,7 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                         "--batch-size", "512", "--ubatch-size", "256",
                         "--parallel", "1", "--jinja",
                     ]
-                    if mmproj_gguf and PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B"):
+                    if mmproj_gguf:
                         cmd_rep.extend(["--mmproj", mmproj_gguf])
                     env_rep = ll_env.copy()
                     env_rep["CUDA_VISIBLE_DEVICES"] = str(r_idx)
@@ -2025,9 +2204,6 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                 mode_label = f"2x Dual-T4 Replica ({os.path.basename(model_gguf)})"
                 log_event(f"Launched 2x Dual-T4 Replicas -> GPU0:8190 + GPU1:8191 ({os.path.basename(model_gguf)})", category="SYSTEM", level="SUCCESS")
             elif active_topo == "llm_ab_arena":
-                if not os.path.exists(m4_path):
-                    os.makedirs(q4_dir, exist_ok=True)
-                    _fast_download_hf("unsloth/Qwen3.5-4B-GGUF", "Qwen3.5-4B-Q4_K_M.gguf", q4_dir, label="Qwen 4B Model B")
                 cmd_a = [
                     llama_bin, "-m", model_gguf, "--host", "127.0.0.1", "--port", "8190",
                     "-ngl", "99", "-c", "16384", "--flash-attn", "on", "--parallel", "1", "--jinja",
@@ -2046,14 +2222,14 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                 env_b = ll_env.copy()
                 env_b["CUDA_VISIBLE_DEVICES"] = "1"
                 WORKER_PROCS["model_b"] = subprocess.Popen(cmd_b, env=env_b, stdout=open("/tmp/llama_model_b.log", "w"), stderr=subprocess.STDOUT)
-                LLM_ACTIVE_ENDPOINTS.append({"port": 8191, "gpu": "GPU1", "model": "Qwen3.5-4B-Q4_K_M.gguf", "service": "model_b", "ready": True})
-                mode_label = f"A/B Arena (GPU0: {os.path.basename(model_gguf)} vs GPU1: Qwen3.5-4B)"
-                log_event(f"Launched A/B Arena -> GPU0:8190 ({os.path.basename(model_gguf)}) vs GPU1:8191 (Qwen3.5-4B)", category="SYSTEM", level="SUCCESS")
+                LLM_ACTIVE_ENDPOINTS.append({"port": 8191, "gpu": "GPU1", "model": os.path.basename(m4_path), "service": "model_b", "ready": True})
+                mode_label = f"A/B Arena (GPU0: {os.path.basename(model_gguf)} vs GPU1: {os.path.basename(m4_path)})"
+                log_event(f"Launched A/B Arena -> GPU0:8190 ({os.path.basename(model_gguf)}) vs GPU1:8191 ({os.path.basename(m4_path)})", category="SYSTEM", level="SUCCESS")
             else:
-                has_dflash = bool(dflash_gguf and os.path.exists(dflash_gguf))
-                t_split = "52,48" if is_moe_35b else ("55,45" if is_vlm_27b else "50,50")
+                has_dflash = bool(is_27b_model and dflash_gguf and os.path.exists(dflash_gguf))
+                t_split = "52,48" if ("35b" in m_low or is_moe_35b) else ("55,45" if is_27b_model else "50,50")
                 ctx_size = "16384"
-                ubatch = "128" if (is_vlm_27b and has_dflash) else "256"
+                ubatch = "128" if (is_27b_model and has_dflash) else "256"
                 ll_cmd = [
                     llama_bin, "-m", model_gguf, "--host", "127.0.0.1", "--port", "8190",
                     "-ngl", "999",
@@ -2071,9 +2247,9 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                     "--jinja",
                     "--chat-template-kwargs", '{"enable_thinking":false}',
                 ]
-                if mmproj_gguf and PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B"):
+                if mmproj_gguf:
                     ll_cmd.extend(["--mmproj", mmproj_gguf])
-                if is_vlm_27b and has_dflash:
+                if is_27b_model and has_dflash:
                     ll_cmd.extend([
                         "-md", dflash_gguf,
                         "--spec-type", "draft-dflash",
@@ -2086,21 +2262,95 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                 ll_log = open("/tmp/llama_server.log", "w")
                 WORKER_PROCS["main"] = subprocess.Popen(ll_cmd, env=ll_env, stdout=ll_log, stderr=ll_log)
                 LLM_ACTIVE_ENDPOINTS.append({"port": 8190, "gpu": "GPU0+GPU1", "model": os.path.basename(model_gguf), "service": "default", "ready": True})
-                mode_label = (
-                    "Qwen 8B Fast Vision (~45-60 tok/s)" if is_fast_8b
-                    else ("Qwen 35B-A3B Vision MoE (~35-55 tok/s)" if is_moe_35b
-                    else (("Vision + DFlash2 (~35-45 tok/s)" if dflash_gguf else "Vision + LLM (~16 tok/s)") if is_vlm_27b else "Ultra Text Turbo"))
-                )
-                log_event(f"Launched llama-server ({mode_label}, 2x T4 split) -> 127.0.0.1:8190 ({os.path.basename(model_gguf)})", category="SYSTEM")
+                mode_label = f"Dual-T4 Split ({os.path.basename(model_gguf)})"
+                log_event(f"Launched llama-server ({mode_label}, 2x T4 split) -> 127.0.0.1:8190", category="SYSTEM")
 
-    start_llm_workers()
+            # Wait up to 75s for port 8190 health so UI shows accurate llm_ready vs failure
+            t_wait_hl = time.time()
+            healthy_up = False
+            while time.time() - t_wait_hl < 75:
+                main_p = WORKER_PROCS.get("main") or WORKER_PROCS.get("9b") or WORKER_PROCS.get("rep0") or WORKER_PROCS.get("model_a")
+                if main_p is not None and main_p.poll() is not None:
+                    err_tail = ""
+                    try:
+                        with open("/tmp/llama_server.log", "r", encoding="utf-8", errors="ignore") as lf:
+                            err_tail = lf.read()[-350:]
+                    except Exception:
+                        pass
+                    stop_llm_workers(update_mode=True)
+                    raise RuntimeError(f"llama-server exited early (rc={main_p.returncode}): {err_tail}")
+                try:
+                    with urllib.request.urlopen("http://127.0.0.1:8190/health", timeout=2) as hr:
+                        if hr.status == 200:
+                            healthy_up = True
+                            break
+                except Exception:
+                    pass
+                time.sleep(1.0)
+            if not healthy_up:
+                log_event("llama-server still warming up beyond 75s; marking active while health check continues.", category="SYSTEM", level="WARN")
+
+            RUNTIME_MODE = "llm_ready"
+            ACTIVE_MODEL_NAME = model_name or os.path.basename(model_gguf)
+            ACTIVE_MODEL_REPO = repo_override or LLM_MODEL_REPO
+            WORKER_STATE["status"] = "RUNNING"
+            MODEL_SCAN_CACHE["sentHash"] = ""
+            log_event(f"Model '{ACTIVE_MODEL_NAME}' loaded in VRAM and ready for inference!", category="SYSTEM", level="SUCCESS")
+
+    def _handle_llm_command(cmd):
+        action = str(cmd.get("action") or "").upper()
+        payload = cmd.get("payload") or {}
+        if action == "STAGE_LLM":
+            repo_id = payload.get("repoId") or LLM_MODEL_REPO
+            model_name = payload.get("modelName") or repo_id
+            m_p, _, _ = _resolve_qwen_ggufs(
+                repo_override=repo_id,
+                file_hints=payload.get("fileHints"),
+                mmproj_hints=payload.get("mmprojHints"),
+                model_label=model_name,
+                companion_repos=payload.get("companionRepos"),
+            )
+            MODEL_SCAN_CACHE["sentHash"] = ""
+            post_heartbeat(5 if EVER_CONNECTED else CURRENT_STEP, "ONLINE")
+            return f"Staged {os.path.basename(m_p)} on disk"
+        if action == "LOAD_LLM":
+            repo_id = payload.get("repoId")
+            model_name = payload.get("modelName")
+            topo_mode = payload.get("topologyMode")
+            start_llm_workers(
+                topo_mode=topo_mode,
+                repo_override=repo_id,
+                file_hints=payload.get("fileHints"),
+                mmproj_hints=payload.get("mmprojHints"),
+                model_name=model_name,
+                companion_repos=payload.get("companionRepos"),
+            )
+            post_heartbeat(5, "ONLINE")
+            return f"Loaded {ACTIVE_MODEL_NAME} in VRAM"
+        if action == "UNLOAD_LLM":
+            stop_llm_workers(update_mode=True)
+            post_heartbeat(5, "ONLINE")
+            return "Unloaded LLM from VRAM -> Idle (0 GB)"
+        return f"Ignored unknown LLM command {action}"
+
+    _VM_CMD_HANDLERS["llm_command"] = _handle_llm_command
+
+    if AUTO_LOAD_ON_BOOT:
+        log_event(f"autoLoadOnBoot enabled — loading default LLM for {PROFILE_ID}...", category="SYSTEM")
+        try:
+            start_llm_workers()
+        except Exception as _boot_err:
+            stop_llm_workers(update_mode=True)
+            log_event(f"Auto-load fallback to Idle Compute Mode: {_boot_err}", category="SYSTEM", level="WARN")
+    else:
+        RUNTIME_MODE = "idle_empty"
+        ACTIVE_MODEL_NAME = None
+        ACTIVE_MODEL_REPO = None
+        log_event("Pure Compute Boot active (0 models auto-downloaded or loaded in VRAM). Use GPU Cluster or LLM Studio to Stage/Load when ready.", category="SYSTEM", level="SUCCESS")
 
     def _tail_llama_log(log_path, label):
-        t0 = time.time()
-        while time.time() - t0 < 30 and not os.path.exists(log_path):
-            time.sleep(0.5)
-        if not os.path.exists(log_path):
-            return
+        while not os.path.exists(log_path):
+            time.sleep(2.0)
         try:
             with open(log_path, "r", encoding="utf-8", errors="replace") as lf:
                 while True:
@@ -2114,10 +2364,9 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
         except Exception:
             pass
 
-    threading.Thread(target=_tail_llama_log, args=("/tmp/llama_server.log", "9B"), daemon=True).start()
-    if PROFILE_ID == "LLM_LIGHTWEIGHT_SWARM":
-        threading.Thread(target=_tail_llama_log, args=("/tmp/llama_4b.log", "4B"), daemon=True).start()
-        threading.Thread(target=_tail_llama_log, args=("/tmp/llama_cpm.log", "CPM"), daemon=True).start()
+    threading.Thread(target=_tail_llama_log, args=("/tmp/llama_server.log", "LLM0"), daemon=True).start()
+    threading.Thread(target=_tail_llama_log, args=("/tmp/llama_4b.log", "LLM1"), daemon=True).start()
+    threading.Thread(target=_tail_llama_log, args=("/tmp/llama_cpm.log", "CPM"), daemon=True).start()
 
     def _query_nvidia_smi():
         try:
@@ -2128,10 +2377,7 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                 if len(parts) >= 3:
                     tot_b = int(float(parts[1]) * 1024 * 1024)
                     used_b = int(float(parts[2]) * 1024 * 1024)
-                    model_tag = (
-                        "Qwen 8B Fast" if PROFILE_ID == "LLM_QWEN_FAST_8B"
-                        else ("Qwen 35B MoE" if PROFILE_ID == "LLM_QWEN_MOE_35B" else "Qwen 27B")
-                    )
+                    model_tag = ACTIVE_MODEL_NAME or "Idle Empty"
                     devs.append({"name": f"{parts[0]} ({model_tag})", "vram_total": tot_b, "vram_free": max(0, tot_b - used_b)})
             return devs
         except Exception:
@@ -2150,7 +2396,16 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                 self.wfile.write(body)
                 return
             if self.path.startswith("/object_info/CheckpointLoaderSimple"):
-                body = json.dumps({"CheckpointLoaderSimple": {"input": {"required": {"ckpt_name": [[os.path.basename(model_gguf)]]}}}}).encode("utf-8")
+                ckpts = [ACTIVE_MODEL_NAME] if ACTIVE_MODEL_NAME else []
+                body = json.dumps({"CheckpointLoaderSimple": {"input": {"required": {"ckpt_name": [ckpts]}}}}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if self.path == "/v1/models" and (RUNTIME_MODE != "llm_ready" or not LLM_ACTIVE_ENDPOINTS):
+                body = json.dumps({"object": "list", "data": []}).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
@@ -2165,7 +2420,7 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                             status_dict[sn] = (hr.status == 200)
                     except Exception:
                         status_dict[sn] = False
-                body = json.dumps({"status": "ok", "services": status_dict, "devices": _query_nvidia_smi()}).encode("utf-8")
+                body = json.dumps({"status": RUNTIME_MODE, "services": status_dict, "devices": _query_nvidia_smi()}).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
@@ -2184,6 +2439,14 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+                return
+            if RUNTIME_MODE != "llm_ready" or not LLM_ACTIVE_ENDPOINTS:
+                err_body = json.dumps({"error": {"message": f"VM is ONLINE ({RUNTIME_MODE}) with no LLM model loaded in VRAM. Stage & Load a model from GPU Cluster or LLM Studio first.", "code": "no_model_loaded"}}).encode("utf-8")
+                self.send_response(409)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(err_body)))
+                self.end_headers()
+                self.wfile.write(err_body)
                 return
 
             length = int(self.headers.get("Content-Length", "0") or 0)
@@ -2290,6 +2553,14 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                     continue
                 globals()["LAST_ACTIVE"] = time.time()
                 rid = req_obj["id"]
+                if RUNTIME_MODE != "llm_ready" or not LLM_ACTIVE_ENDPOINTS:
+                    _worker_api_post("/api/v1/workers/llm-complete", {
+                        "requestId": rid,
+                        "workerId": TARGETS[0],
+                        "errorMessage": f"HTTP 409: No LLM model loaded in VRAM (runtimeMode={RUNTIME_MODE}). Load a model from GPU Cluster or LLM Studio first.",
+                        "latencyMs": 0,
+                    }, timeout=15)
+                    continue
                 svc_port = _resolve_svc_port(req_obj.get("targetService"))
                 t0_req = time.time()
                 try:
@@ -2329,16 +2600,20 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
     _llm_t0 = time.time()
     while True:
         llm_ok = False
-        try:
-            if LLM_TOPO_MODE == "llm_swarm_multi" or PROFILE_ID == "LLM_LIGHTWEIGHT_SWARM":
-                with urllib.request.urlopen("http://127.0.0.1:8190/health", timeout=2) as hr0:
-                    with urllib.request.urlopen("http://127.0.0.1:8191/health", timeout=2) as hr1:
-                        llm_ok = (hr0.status == 200 and hr1.status == 200)
-            else:
-                with urllib.request.urlopen("http://127.0.0.1:8190/health", timeout=2) as hr:
-                    llm_ok = hr.status == 200
-        except Exception:
-            llm_ok = False
+        if RUNTIME_MODE in ("idle_empty", "loading_model") or not LLM_ACTIVE_ENDPOINTS:
+            # Pure compute container is healthy and ready to accept STAGE_LLM / LOAD_LLM commands
+            llm_ok = True
+        else:
+            try:
+                if LLM_TOPO_MODE == "llm_swarm_multi" or (PROFILE_ID == "LLM_LIGHTWEIGHT_SWARM" and any(e.get("port") == 8191 for e in LLM_ACTIVE_ENDPOINTS)):
+                    with urllib.request.urlopen("http://127.0.0.1:8190/health", timeout=2) as hr0:
+                        with urllib.request.urlopen("http://127.0.0.1:8191/health", timeout=2) as hr1:
+                            llm_ok = (hr0.status == 200 and hr1.status == 200)
+                else:
+                    with urllib.request.urlopen("http://127.0.0.1:8190/health", timeout=2) as hr:
+                        llm_ok = hr.status == 200
+            except Exception:
+                llm_ok = False
 
         llm_tunnel_ok = True if HEADLESS_MODE else (bool(TUNNEL_URL) and is_caddy_ready())
         devs = _query_nvidia_smi()
@@ -2359,16 +2634,16 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
         next_status = "ONLINE" if all_ready else "STARTING"
 
         dead_proc = None
-        with WORKER_LOCK:
-            for wname, wproc in list(WORKER_PROCS.items()):
-                if wproc.poll() is not None:
-                    dead_proc = f"Worker {wname} (code={wproc.returncode})"
-                    break
+        if RUNTIME_MODE == "llm_ready":
+            with WORKER_LOCK:
+                for wname, wproc in list(WORKER_PROCS.items()):
+                    if wproc.poll() is not None:
+                        dead_proc = f"Worker {wname} (code={wproc.returncode})"
+                        break
 
-        if dead_proc and WORKER_STATE.get("status") not in ("STOPPED", "STARTING"):
-            log_event(f"Worker process died: {dead_proc}. Container daemon remains active for hot-reload.", category="ERROR", level="ERROR")
-            WORKER_STATE["status"] = "ERROR"
-            post_heartbeat(4, "ERROR", telem)
+        if dead_proc and WORKER_STATE.get("status") not in ("STOPPED", "STARTING", "IDLE"):
+            log_event(f"Worker process died: {dead_proc}. Falling back to Idle Compute Mode.", category="ERROR", level="WARN")
+            stop_llm_workers(update_mode=True)
 
         if all_ready and CURRENT_STEP < 5:
             lbl = f"{mode_label} ({'Safe Headless Relay' if HEADLESS_MODE else TUNNEL_URL})"
@@ -2376,7 +2651,7 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
 
         if RCLONE_READY:
             refresh_gdrive_oauth_in_vm(force=False)
-        hb_int = 20 if all_ready else 8
+        hb_int = 10 if all_ready else 5
         if next_step != _llm_last_step or has_pending_logs() or (time.time() - LAST_HB_SENT) >= hb_int:
             post_heartbeat(next_step, next_status, telem)
             _llm_last_step = next_step
@@ -2385,17 +2660,18 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
             break
         if IDLE_TIMEOUT_SEC > 0:
             try:
-                with urllib.request.urlopen("http://127.0.0.1:8190/slots", timeout=1.5) as sr:
-                    slots = json.loads(sr.read().decode("utf-8"))
-                    if isinstance(slots, list) and any(s.get("is_processing") or s.get("state", 0) != 0 for s in slots if isinstance(s, dict)):
-                        LAST_ACTIVE = time.time()
+                if RUNTIME_MODE == "llm_ready":
+                    with urllib.request.urlopen("http://127.0.0.1:8190/slots", timeout=1.5) as sr:
+                        slots = json.loads(sr.read().decode("utf-8"))
+                        if isinstance(slots, list) and any(s.get("is_processing") or s.get("state", 0) != 0 for s in slots if isinstance(s, dict)):
+                            LAST_ACTIVE = time.time()
             except Exception:
                 pass
         if IDLE_TIMEOUT_SEC > 0 and (time.time() - LAST_ACTIVE > IDLE_TIMEOUT_SEC):
             log_event("LLM idle timeout reached. Stopping to preserve Kaggle quota.", category="ACTION", level="WARN")
             post_heartbeat(0, "OFFLINE", {})
             break
-        time.sleep(15 if all_ready else 3)
+        time.sleep(5 if all_ready else 2)
 
     stop_llm_workers()
     sys.exit(0)
@@ -3424,7 +3700,7 @@ while True:
         refresh_gdrive_oauth_in_vm(force=False)
 
     steady_poll = all_ready or (any_ready and (time.time() - t_loop_start) > 90)
-    hb_interval = 20 if steady_poll else 8
+    hb_interval = 10 if steady_poll else 6
     if (
         next_step != last_step_sent
         or ready_count != last_ready_count
@@ -3453,7 +3729,7 @@ while True:
             except Exception:
                 pass
         break
-    time.sleep(15 if steady_poll else 2)
+    time.sleep(8 if steady_poll else 2)
 `;
 }
 

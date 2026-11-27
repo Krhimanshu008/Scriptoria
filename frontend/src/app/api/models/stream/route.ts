@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { getAuthUser } from "@/lib/auth/session";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
 import { GDriveModelStreamer, sanitizeModelCategory } from "@/lib/orchestrator/rclone-client";
+import { ensureModelReadyOnVm } from "@/lib/catalog/ensure-helper";
 import { appendSystemLog } from "@/lib/logs/logger";
 
 export async function POST(req: NextRequest) {
@@ -29,8 +30,33 @@ export async function POST(req: NextRequest) {
     const vm = await prisma.vmInstance.findUnique({
       where: { userId_target: { userId: user.userId, target } },
     });
-    if (!vm || vm.status !== "ONLINE" || !vm.publicUrl) {
+    if (!vm || vm.status !== "ONLINE") {
       return NextResponse.json({ error: `VM ${target} is not online.` }, { status: 400 });
+    }
+
+    // Safe Headless VMs (no inbound tunnel URL) stage models asynchronously via ModelFetch polling
+    if (!vm.publicUrl) {
+      try {
+        const headlessResult = await ensureModelReadyOnVm({
+          userId: user.userId,
+          vm,
+          category,
+          filename: name,
+          backupToGdrive: false,
+          preferSource: "gdrive",
+        });
+        return NextResponse.json(headlessResult);
+      } catch (headlessErr) {
+        const errStatus =
+          typeof (headlessErr as { status?: unknown })?.status === "number"
+            ? (headlessErr as { status: number }).status
+            : 400;
+        const errMessage =
+          headlessErr instanceof Error
+            ? headlessErr.message
+            : `Failed to queue Safe Headless stream for ${name}.`;
+        return NextResponse.json({ error: errMessage }, { status: errStatus });
+      }
     }
 
     const gdriveCred = await getUserGDriveCredential(user.userId);

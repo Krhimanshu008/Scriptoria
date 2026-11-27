@@ -13,6 +13,8 @@ export interface HealthOnlineVm {
   workerProfile: string;
   profileLabel: string;
   loadedModel: string | null;
+  runtimeMode?: string | null;
+  activeModelName?: string | null;
   publicUrl: string | null;
   headless: boolean;
   llmTopologyMode: LlmTopologyMode | string | null;
@@ -33,6 +35,8 @@ export interface LlmHealthResponse {
   endpointPreview: string | null;
   reachable: boolean;
   loadedModel: string | null;
+  runtimeMode?: string | null;
+  activeModelName?: string | null;
   probeLatencyMs: number | null;
   probeError: string | null;
   gpuName: string | null;

@@ -7,6 +7,7 @@ import { ComfyClient } from "@/lib/orchestrator/comfy-client";
 import { KaggleOrchestrator } from "@/lib/orchestrator/kaggle-client";
 import {
   getKaggleKernelSlug,
+  parseBootMetadata,
   sanitizeVmForClient,
   sortVmsByCanonicalTarget,
 } from "@/lib/orchestrator/vm-helpers";
@@ -107,6 +108,12 @@ export async function GET(req: NextRequest) {
     const startingKaggleGroups = new Map<string, { alias: string; sessionGroup: string; isTpu: boolean }>();
     for (const vm of updatedRows) {
       if (vm.provider !== "kaggle" || vm.status !== "STARTING") continue;
+      const meta = parseBootMetadata(vm.bootMetadataJson);
+      if (meta?.draftMode && (!meta.draftArmedAt || now - meta.draftArmedAt < 15 * 60_000)) {
+        // Interactive Draft sessions don't surface in Kaggle's batch /kernels/status API;
+        // skipping batch polling prevents stale prior batch errors from killing STARTING.
+        continue;
+      }
       const pollKey = `${user.userId}:${vm.sessionGroup}`;
       const lastPolledMs = lastKagglePollAt.get(pollKey) || 0;
       const lastActivityMs = Math.max(vm.updatedAt.getTime(), vm.lastHeartbeat?.getTime() || 0, lastPolledMs);

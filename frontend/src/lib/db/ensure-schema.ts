@@ -354,6 +354,22 @@ const SCHEMA_DDL_STATEMENTS: string[] = [
   `CREATE INDEX IF NOT EXISTS "Project_userId_updatedAt_idx" ON "Project"("userId", "updatedAt")`,
   `CREATE INDEX IF NOT EXISTS "CharacterProfile_projectId_idx" ON "CharacterProfile"("projectId")`,
   `CREATE INDEX IF NOT EXISTS "Scene_projectId_orderIndex_idx" ON "Scene"("projectId", "orderIndex")`,
+  `CREATE TABLE IF NOT EXISTS "VmCommand" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "vmInstanceId" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "sessionGroup" TEXT NOT NULL,
+    "target" TEXT NOT NULL,
+    "action" TEXT NOT NULL,
+    "payloadJson" TEXT,
+    "status" TEXT NOT NULL DEFAULT 'PENDING',
+    "resultMessage" TEXT,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "VmCommand_vmInstanceId_fkey" FOREIGN KEY ("vmInstanceId") REFERENCES "VmInstance" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+  )`,
+  `CREATE INDEX IF NOT EXISTS "VmCommand_sessionGroup_status_createdAt_idx" ON "VmCommand"("sessionGroup", "status", "createdAt")`,
+  `CREATE INDEX IF NOT EXISTS "VmCommand_vmInstanceId_status_idx" ON "VmCommand"("vmInstanceId", "status")`,
 ];
 
 async function runSchemaSync(): Promise<void> {

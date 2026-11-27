@@ -81,6 +81,7 @@ model VmInstance {
 
   jobs       Job[]
   modelFetches ModelFetch[]
+  vmCommands   VmCommand[]
   systemLogs SystemLog[]
 
   @@unique([userId, target])
@@ -521,4 +522,22 @@ model FlowAsset {
   @@index([sceneId])
   @@index([characterProfileId])
   @@index([sha256Hash])
+}
+
+model VmCommand {
+  id            String     @id @default(cuid())
+  vmInstanceId  String
+  vmInstance    VmInstance @relation(fields: [vmInstanceId], references: [id], onDelete: Cascade)
+  userId        String
+  sessionGroup  String
+  target        String
+  action        String     // STAGE_LLM | LOAD_LLM | UNLOAD_LLM | FREE_VRAM
+  payloadJson   String?
+  status        String     @default("PENDING") // PENDING | DISPATCHED | COMPLETED | FAILED
+  resultMessage String?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  @@index([sessionGroup, status, createdAt])
+  @@index([vmInstanceId, status])
 }

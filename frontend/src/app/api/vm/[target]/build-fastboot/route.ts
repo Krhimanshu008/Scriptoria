@@ -3,8 +3,15 @@ import { prisma } from "@/lib/db/prisma";
 import { getAuthUser } from "@/lib/auth/session";
 import { getDecryptedCredential } from "@/lib/crypto/credentials";
 import { KaggleOrchestrator } from "@/lib/orchestrator/kaggle-client";
-import { buildFastbootCachePythonCode } from "@/lib/orchestrator/fastboot-builder";
+import {
+  buildFastbootCachePythonCode,
+  buildLlmDatasetPythonCode,
+} from "@/lib/orchestrator/fastboot-builder";
 import { getWorkerProfile, isLlmWorkerProfile } from "@/lib/catalog/worker-profiles";
+import {
+  getDefaultPresetForLlmProfile,
+  resolveLlmPresetById,
+} from "@/lib/llm/llm-model-presets";
 import { appendSystemLog } from "@/lib/logs/logger";
 
 export async function POST(
@@ -25,11 +32,11 @@ export async function POST(
       return NextResponse.json({ error: `Kaggle VM target '${target}' not found.` }, { status: 404 });
     }
 
-    const body = (await req.json().catch(() => ({}))) as { profileId?: string };
+    const body = (await req.json().catch(() => ({}))) as { profileId?: string; presetId?: string };
     const profile = getWorkerProfile(body.profileId || vm.workerProfile || "IMAGE_CORE");
-    if (isLlmWorkerProfile(profile.id) || profile.accelerator === "tpu") {
+    if (profile.accelerator === "tpu") {
       return NextResponse.json(
-        { error: `Profile '${profile.id}' uses GGUF/TPU runtime rather than ComfyUI FastBoot cache.` },
+        { error: `Profile '${profile.id}' uses TPU HBM runtime and does not require a Kaggle Dataset build.` },
         { status: 400 }
       );
     }
@@ -42,7 +49,28 @@ export async function POST(
       );
     }
 
-    const kernelSlug = "ml-env-cache-builder";
+    const isLlm = isLlmWorkerProfile(profile.id);
+    const preset = isLlm
+      ? resolveLlmPresetById(body.presetId) || getDefaultPresetForLlmProfile(profile.id)
+      : null;
+
+    const kernelSlug = isLlm ? "ml-llm-dataset-builder" : "ml-env-cache-builder";
+    const pythonCode = isLlm && preset
+      ? buildLlmDatasetPythonCode({
+          presetId: preset.id,
+          shortLabel: preset.shortLabel,
+          primaryRepo: preset.repoId,
+          fileHints: preset.preferredFilenames,
+          mmprojHints: preset.mmprojHints,
+          companions: (preset.companionRepos || []).map((c) => ({
+            role: c.role,
+            repoId: c.repoId,
+            fileHints: c.preferredFilenames,
+            mmprojHints: c.mmprojHints,
+          })),
+        })
+      : buildFastbootCachePythonCode(profile.id);
+
     const pushRes = await KaggleOrchestrator.pushKernel({
       credentials: {
         username: cred.username,
@@ -50,7 +78,7 @@ export async function POST(
         authType: cred.authType === "bearer" ? "bearer" : "basic",
       },
       kernelSlug,
-      pythonCode: buildFastbootCachePythonCode(profile.id),
+      pythonCode,
       datasetDataSources: [],
       enableGpu: false,
       enableTpu: false,
@@ -61,14 +89,19 @@ export async function POST(
       vmInstanceId: vm.id,
       category: "KAGGLE",
       level: "SUCCESS",
-      message: `Triggered 0-GPU CPU FastBoot cache build (${profile.id}) -> ${pushRes.url}`,
+      message: isLlm && preset
+        ? `Triggered 0-GPU CPU Qwen LLM Dataset builder (${preset.shortLabel}) -> ${pushRes.url}`
+        : `Triggered 0-GPU CPU FastBoot cache build (${profile.id}) -> ${pushRes.url}`,
     });
 
     return NextResponse.json({
       ok: true,
+      kind: isLlm ? "llm_dataset" : "comfy_fastboot",
       profileId: profile.id,
+      presetId: preset?.id || null,
       kernelSlug,
       username: cred.username,
+      suggestedDatasetSlug: isLlm ? `${cred.username}/scriptoria-qwen-llm` : `${cred.username}/scriptoria-comfy-env`,
       url: pushRes.url,
     });
   } catch (error) {

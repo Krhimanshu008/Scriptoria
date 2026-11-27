@@ -145,3 +145,134 @@ subprocess.run([
 print(f"[FastBoot Builder] Ready in {round(time.time() - t0, 1)}s -> {OUT_ARC} ({round(os.path.getsize(OUT_ARC)/(1024**2), 1)} MB)", flush=True)
 `;
 }
+
+export interface LlmDatasetBuildSpec {
+  presetId: string;
+  shortLabel: string;
+  primaryRepo: string;
+  fileHints: string[];
+  mmprojHints: string[];
+  companions: Array<{
+    role: string;
+    repoId: string;
+    fileHints: string[];
+    mmprojHints: string[];
+  }>;
+}
+
+/**
+ * Generates a 0-GPU CPU Kaggle notebook script that downloads quantized Qwen GGUF
+ * models + mmproj vision files directly into /kaggle/working/qwen_llm_models/
+ * (under Kaggle's 19.5 GiB output cap) for instant Output -> New Dataset creation.
+ */
+export function buildLlmDatasetPythonCode(spec: LlmDatasetBuildSpec): string {
+  const safeSpecJson = JSON.stringify({
+    presetId: spec.presetId,
+    shortLabel: spec.shortLabel,
+    primaryRepo: spec.primaryRepo,
+    fileHints: spec.fileHints,
+    mmprojHints: spec.mmprojHints,
+    companions: spec.companions,
+  });
+
+  return `# Scriptoria 0-GPU Qwen LLM Dataset Builder (${spec.shortLabel})
+# Output in /kaggle/working/qwen_llm_models -> Save Version / Output -> New Dataset
+import os, sys, json, time, fnmatch, shutil, subprocess
+
+t0 = time.time()
+SPEC = json.loads(${JSON.stringify(safeSpecJson)})
+OUT_DIR = "/kaggle/working/qwen_llm_models"
+os.makedirs(OUT_DIR, exist_ok=True)
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+
+print(f"[Qwen Dataset Builder] Preparing preset '{SPEC['shortLabel']}' ({SPEC['presetId']})...", flush=True)
+subprocess.run(
+    [sys.executable, "-m", "pip", "install", "-q", "huggingface_hub", "hf_transfer"],
+    check=True,
+)
+
+from huggingface_hub import HfApi, hf_hub_download
+api = HfApi()
+
+def _pick_file(files, patterns):
+    lower_map = {f.lower(): f for f in files if f.lower().endswith(".gguf") and "mmproj" not in f.lower()}
+    for pat in patterns:
+        pat_l = pat.lower()
+        for f_low, orig in sorted(lower_map.items()):
+            if fnmatch.fnmatch(os.path.basename(f_low), pat_l):
+                return orig
+    # Fallback: smallest non-mmproj gguf file
+    ggufs = [f for f in files if f.lower().endswith(".gguf") and "mmproj" not in f.lower()]
+    return sorted(ggufs)[0] if ggufs else None
+
+def _pick_mmproj(files, patterns):
+    if not patterns:
+        return None
+    mm_files = [f for f in files if f.lower().endswith(".gguf") and "mmproj" in f.lower()]
+    for pat in patterns:
+        pat_l = pat.lower()
+        for orig in sorted(mm_files):
+            if fnmatch.fnmatch(os.path.basename(orig.lower()), pat_l):
+                return orig
+    return sorted(mm_files)[0] if mm_files else None
+
+def _ensure_free_gb(min_gb=1.2):
+    free_gb = shutil.disk_usage("/kaggle/working").free / (1024 ** 3)
+    print(f"[Qwen Dataset Builder] /kaggle/working free space: {free_gb:.2f} GiB", flush=True)
+    if free_gb < min_gb:
+        raise RuntimeError(f"Insufficient /kaggle/working space ({free_gb:.2f} GiB free < {min_gb:.2f} GiB).")
+
+def _fetch_repo_bundle(role, repo_id, file_hints, mmproj_hints):
+    _ensure_free_gb(1.0)
+    print(f"[Qwen Dataset Builder] Inspecting HF repo: {repo_id} (role={role})", flush=True)
+    files = list(api.list_repo_files(repo_id=repo_id))
+    main_file = _pick_file(files, file_hints)
+    if not main_file:
+        raise RuntimeError(f"No matching GGUF found in {repo_id} for hints {file_hints}")
+    mmproj_file = _pick_mmproj(files, mmproj_hints)
+    role_dir = os.path.join(OUT_DIR, role)
+    os.makedirs(role_dir, exist_ok=True)
+    downloaded = []
+    for target_file in ([main_file] + ([mmproj_file] if mmproj_file else [])):
+        _ensure_free_gb(0.8)
+        print(f"[Qwen Dataset Builder] Downloading {repo_id}/{target_file}...", flush=True)
+        local_path = hf_hub_download(
+            repo_id=repo_id,
+            filename=target_file,
+            local_dir=role_dir,
+        )
+        # Flatten into OUT_DIR/filename so Kaggle Dataset mount works with simple globs
+        flat_dest = os.path.join(OUT_DIR, os.path.basename(local_path))
+        if os.path.abspath(local_path) != os.path.abspath(flat_dest):
+            shutil.move(local_path, flat_dest)
+        size_mb = round(os.path.getsize(flat_dest) / (1024 ** 2), 1)
+        print(f"[Qwen Dataset Builder] Staged {os.path.basename(flat_dest)} ({size_mb} MB)", flush=True)
+        downloaded.append({"role": role, "repoId": repo_id, "filename": os.path.basename(flat_dest), "sizeMb": size_mb})
+    shutil.rmtree(role_dir, ignore_errors=True)
+    return downloaded
+
+staged_files = []
+staged_files.extend(_fetch_repo_bundle("primary", SPEC["primaryRepo"], SPEC["fileHints"], SPEC["mmprojHints"]))
+for comp in SPEC.get("companions") or []:
+    staged_files.extend(_fetch_repo_bundle(comp["role"], comp["repoId"], comp["fileHints"], comp["mmprojHints"]))
+
+# Clean huggingface temporary cache so Output stays strictly <= 19.5 GiB
+shutil.rmtree("/root/.cache/huggingface", ignore_errors=True)
+shutil.rmtree(os.path.join(OUT_DIR, ".cache"), ignore_errors=True)
+
+manifest = {
+    "presetId": SPEC["presetId"],
+    "shortLabel": SPEC["shortLabel"],
+    "createdAtEpoch": int(time.time()),
+    "files": staged_files,
+}
+manifest_path = os.path.join(OUT_DIR, "scriptoria_llm_manifest.json")
+with open(manifest_path, "w", encoding="utf-8") as mf:
+    json.dump(manifest, mf, indent=2)
+
+total_gb = round(sum(os.path.getsize(os.path.join(OUT_DIR, f)) for f in os.listdir(OUT_DIR)) / (1024 ** 3), 2)
+print(f"[Qwen Dataset Builder] Complete in {round(time.time() - t0, 1)}s -> {len(staged_files)} model file(s), {total_gb} GiB total in {OUT_DIR}", flush=True)
+print("[Qwen Dataset Builder] Next step: Save Version (if in editor) -> Output tab -> New Dataset, then attach <username>/scriptoria-qwen-llm in GPU Cluster!", flush=True)
+`;
+}
+

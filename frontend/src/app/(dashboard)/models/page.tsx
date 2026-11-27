@@ -372,18 +372,30 @@ export default function ModelsPage() {
         return;
       }
 
-      toast.success(
-        body.status === "already_transferring"
-          ? `Attached to active download: ${fileName}`
-          : `Streaming ${fileName} ➔ ${target.toUpperCase()} (/tmp/models/${category})`
-      );
-      startStream({
-        target,
-        jobId: body.jobid ?? null,
-        transport: "rclone-gdrive",
-        modelName: fileName,
-        category,
-      });
+      if (body.transport === "sidecar-fetch") {
+        toast.success(`Model download queued for ${fileName} on ${target.toUpperCase()}`);
+        startStream({
+          target,
+          fetchJobId: body.fetchJobId ?? null,
+          transport: "sidecar-fetch",
+          modelName: fileName,
+          category,
+          totalBytes: body.sizeBytes ?? opts?.expectedSizeBytes ?? 0,
+        });
+      } else {
+        toast.success(
+          body.status === "already_transferring"
+            ? `Attached to active download: ${fileName}`
+            : `Streaming ${fileName} ➔ ${target.toUpperCase()} (/tmp/models/${category})`
+        );
+        startStream({
+          target,
+          jobId: body.jobid ?? null,
+          transport: "rclone-gdrive",
+          modelName: fileName,
+          category,
+        });
+      }
     } catch {
       toast.error("Network error initiating stream");
     }

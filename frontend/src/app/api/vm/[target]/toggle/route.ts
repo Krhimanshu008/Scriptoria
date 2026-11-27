@@ -11,6 +11,7 @@ import { VmGateway } from "@/lib/orchestrator/vm-gateway";
 import { resolveReachableWebhookBaseUrl } from "@/lib/orchestrator/webhook-tunnel";
 import {
   getKaggleKernelSlug,
+  parseBootMetadata,
   sanitizeVmForClient,
   sortVmsByCanonicalTarget,
 } from "@/lib/orchestrator/vm-helpers";
@@ -48,17 +49,20 @@ export async function POST(
     };
     const requestedWorkerMode =
       body.workerMode === "interactive_tunnel" ? "interactive_tunnel" : "headless_safe";
+    const isDraftCellRequested = body.action === "draft_cell";
     const isKillRequested =
-      body.action === "kill" ||
-      body.action === "reset" ||
-      (body.action !== "boot" && Boolean(body.force));
+      !isDraftCellRequested &&
+      (body.action === "kill" ||
+        body.action === "reset" ||
+        (body.action !== "boot" && Boolean(body.force)));
 
     // TOGGLE OFF / FORCE KILL: Kill running, starting, or errored session across entire sessionGroup
     if (
-      isKillRequested ||
-      vm.status === "ONLINE" ||
-      vm.status === "BUSY" ||
-      vm.status === "STARTING"
+      !isDraftCellRequested &&
+      (isKillRequested ||
+        vm.status === "ONLINE" ||
+        vm.status === "BUSY" ||
+        vm.status === "STARTING")
     ) {
       const sidecarStopped = vm.publicUrl ? await VmGateway.killVm(vm) : false;
       if (!sidecarStopped && vm.provider === "kaggle") {
@@ -199,6 +203,66 @@ export async function POST(
         authType: (kaggleCred.authType === "bearer" ? "bearer" : "basic") as "bearer" | "basic",
       };
 
+      const mintClaimAndStub = async () => {
+        const claimToken = signVmClaimToken({
+          userId: user.userId,
+          sessionGroup: vm.sessionGroup,
+          targets: groupTargets,
+          claimSecret,
+          workerMode: requestedWorkerMode,
+          isTpu,
+          customDatasets,
+        });
+        const pythonCode = buildKaggleThinClaimStubCode({
+          appWebhookUrl,
+          target: groupTargets[0] || target,
+          claimToken,
+        });
+        const existingMeta = parseBootMetadata(vm.bootMetadataJson) || {};
+        const nextMeta = isDraftCellRequested
+          ? { ...existingMeta, draftMode: true, draftArmedAt: Date.now() }
+          : { ...existingMeta, draftMode: false };
+        await prisma.vmInstance.updateMany({
+          where: { userId: user.userId, sessionGroup: vm.sessionGroup },
+          data: {
+            status: "STARTING",
+            stepProgress: 1,
+            vmSecret: claimSecret,
+            publicUrl: "",
+            bootMetadataJson: JSON.stringify(nextMeta),
+            lastError: isDraftCellRequested
+              ? "Armed for Kaggle Interactive Draft Session — paste cell code & press Run."
+              : null,
+          },
+        });
+        return pythonCode;
+      };
+
+      // Fast path for already-allotted Kaggle Interactive Draft Sessions (/edit):
+      // Mints a fresh claimToken without cancelling or queueing a SaveKernel batch run.
+      if (isDraftCellRequested) {
+        const pythonCode = await mintClaimAndStub();
+        const notebookUrl = `https://www.kaggle.com/code/${kaggleCred.username}/${kernelSlug}/edit`;
+        await appendSystemLog({
+          userId: user.userId,
+          vmInstanceId: vm.id,
+          category: "KAGGLE",
+          level: "INFO",
+          message: `Generated Interactive Draft Cell for ${vm.accountAlias} (${groupTargets.join(" & ")}, callback=${appWebhookUrl}).`,
+        });
+        const refreshed = await prisma.vmInstance.findMany({
+          where: { userId: user.userId, sessionGroup: vm.sessionGroup },
+        });
+        return NextResponse.json({
+          message: "Copied fresh claim cell for Interactive Kaggle Draft Session",
+          draftCode: pythonCode,
+          webhookUrl: appWebhookUrl,
+          notebookUrl,
+          vm: sanitizeVmForClient(refreshed.find((r) => r.target === target) || vm),
+          groupVms: sortVmsByCanonicalTarget(refreshed).map(sanitizeVmForClient),
+        });
+      }
+
       // Anti-duplicate guard 1: cooldown right after a recent heartbeat so an exiting container never overlaps a new boot
       const newestHeartbeatMs = Math.max(
         0,
@@ -224,32 +288,8 @@ export async function POST(
         );
       }
 
-      const claimToken = signVmClaimToken({
-        userId: user.userId,
-        sessionGroup: vm.sessionGroup,
-        targets: groupTargets,
-        claimSecret,
-        workerMode: requestedWorkerMode,
-        isTpu,
-        customDatasets,
-      });
       // Push only a ~22-line dynamic claim stub (zero model lists, ComfyUI setup, or Vault secrets)
-      const pythonCode = buildKaggleThinClaimStubCode({
-        appWebhookUrl,
-        target: groupTargets[0] || target,
-        claimToken,
-      });
-
-      await prisma.vmInstance.updateMany({
-        where: { userId: user.userId, sessionGroup: vm.sessionGroup },
-        data: {
-          status: "STARTING",
-          stepProgress: 1,
-          vmSecret: claimSecret,
-          publicUrl: "",
-          lastError: null,
-        },
-      });
+      const pythonCode = await mintClaimAndStub();
 
       // Pre-Push Ghost Session Cancellation: Cancel any lingering previous session to prevent Kaggle queue lockout
       try {

@@ -36,12 +36,19 @@ export async function GET() {
         let loadedModel: string | null = null;
         let probeLatencyMs: number | null = null;
         let probeError: string | null = null;
+        const runtimeMode =
+          meta?.runtimeMode ||
+          ((meta?.llmEndpoints?.length || 0) > 0 ? "llm_ready" : "idle_empty");
+        const activeModelName =
+          meta?.activeModelName ?? meta?.llmEndpoints?.[0]?.model ?? null;
 
         if (headless) {
           const hbAgeMs = vm.lastHeartbeat ? Date.now() - vm.lastHeartbeat.getTime() : 999_999;
           reachable = hbAgeMs < 90_000;
           probeLatencyMs = reachable ? 15 : null;
-          loadedModel = meta?.llmEndpoints?.[0]?.model || profileSpec?.label || vm.workerProfile;
+          loadedModel =
+            meta?.llmEndpoints?.[0]?.model ||
+            (runtimeMode === "llm_ready" ? activeModelName || profileSpec?.label || vm.workerProfile : null);
           if (!reachable) probeError = "Heartbeat stale";
         } else {
           const base = vm.publicUrl!.replace(/\/$/, "");
@@ -86,9 +93,9 @@ export async function GET() {
         }
 
         const displayName =
-          loadedModel ||
-          profileSpec?.label ||
-          vm.workerProfile;
+          runtimeMode === "idle_empty" && !loadedModel && !meta?.llmEndpoints?.length
+            ? null
+            : loadedModel || activeModelName || profileSpec?.label || vm.workerProfile;
 
         return {
           target: vm.target,
@@ -96,6 +103,8 @@ export async function GET() {
           workerProfile: vm.workerProfile,
           profileLabel: profileSpec?.label || vm.workerProfile,
           loadedModel: displayName,
+          runtimeMode,
+          activeModelName: activeModelName || displayName,
           publicUrl: vm.publicUrl || null,
           headless,
           llmTopologyMode: meta?.llmTopologyMode || null,
@@ -127,6 +136,8 @@ export async function GET() {
         : null,
       reachable: Boolean(primaryVm?.reachable),
       loadedModel: primaryVm?.loadedModel || null,
+      runtimeMode: primaryVm?.runtimeMode || null,
+      activeModelName: primaryVm?.activeModelName || null,
       probeLatencyMs: primaryVm?.probeLatencyMs || null,
       probeError: primaryVm?.probeError || null,
       gpuName: primaryVm?.gpuName || llmVms[0]?.gpuName || null,

@@ -6,6 +6,7 @@ import {
   assembleWorkerRuntimePayload,
   WorkerPayloadError,
 } from "@/lib/orchestrator/worker-payload";
+import { parseBootMetadata } from "@/lib/orchestrator/vm-helpers";
 import { appendSystemLog } from "@/lib/logs/logger";
 
 export async function POST(req: NextRequest) {
@@ -62,6 +63,17 @@ export async function POST(req: NextRequest) {
         { error: `Kaggle slot '${target}' not found.` },
         { status: 404 }
       );
+    }
+
+    // Clear Interactive draftMode marker now that a live container has claimed the session
+    const prevMeta = parseBootMetadata(vm.bootMetadataJson);
+    if (prevMeta?.draftMode) {
+      await prisma.vmInstance.updateMany({
+        where: { userId: verified.userId, sessionGroup: verified.sessionGroup },
+        data: {
+          bootMetadataJson: JSON.stringify({ ...prevMeta, draftMode: false }),
+        },
+      });
     }
 
     const assembled = await assembleWorkerRuntimePayload({

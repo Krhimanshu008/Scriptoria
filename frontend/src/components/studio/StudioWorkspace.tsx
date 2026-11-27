@@ -64,6 +64,7 @@ export function StudioWorkspace({ onOpenArchitect }: { onOpenArchitect?: () => v
   const [showAllSlots, setShowAllSlots] = useState(false);
   const [multiGpuMode, setMultiGpuMode] = useState(false);
   const [selectedTargets, setSelectedTargets] = useState<string[]>([]);
+  const [freeingVram, setFreeingVram] = useState(false);
 
   const { data: vmData } = useQuery<{ vms: PublicVmInstance[] }>({
     queryKey: ["vm-status"],
@@ -139,6 +140,25 @@ export function StudioWorkspace({ onOpenArchitect }: { onOpenArchitect?: () => v
     studio.selectedCheckpoint && checkpoints.includes(studio.selectedCheckpoint)
       ? studio.selectedCheckpoint
       : checkpoints[0] ?? "";
+
+  async function handleFreeVram() {
+    if (!isTargetOnline || freeingVram) return;
+    setFreeingVram(true);
+    try {
+      const res = await fetch(`/api/vm/${encodeURIComponent(target)}/model-control`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "free_vram" }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+      toast.success(`Queued ComfyUI VRAM clear on ${target.toUpperCase()}`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to free VRAM");
+    } finally {
+      setFreeingVram(false);
+    }
+  }
 
   function handleSelectPreset(preset: WorkflowPreset) {
     applyStudioPreset(preset, checkpoints);
@@ -477,6 +497,15 @@ export function StudioWorkspace({ onOpenArchitect }: { onOpenArchitect?: () => v
               <HardDrive className="h-3 w-3 text-emerald-400" />
               <span>{storedFiles.length} models</span>
               {storageData?.disk && <span className="font-mono text-zinc-400">· {storageData.disk.freeGb}GB free</span>}
+              <button
+                type="button"
+                disabled={freeingVram}
+                onClick={handleFreeVram}
+                title="Unload models & free GPU VRAM (/free)"
+                className="rounded border border-amber-500/35 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-300 hover:bg-amber-500/20 disabled:opacity-45"
+              >
+                {freeingVram ? "..." : "Free VRAM"}
+              </button>
               <button
                 type="button"
                 onClick={() => {

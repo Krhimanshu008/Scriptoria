@@ -5,6 +5,11 @@ import { verifyVmRegistrationToken } from "@/lib/auth/session";
 import { appendSystemLog } from "@/lib/logs/logger";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
 import { mergeBootMetadata } from "@/lib/orchestrator/vm-helpers";
+import {
+  ackVmCommands,
+  listPendingVmCommandsForSessionGroup,
+  type VmCommandAckInput,
+} from "@/lib/orchestrator/vm-commands";
 
 interface HeartbeatTelemetryEntry {
   ready?: boolean;
@@ -38,6 +43,11 @@ export async function POST(req: NextRequest) {
     const rawTelem = (body.telemetry || {}) as Record<string, unknown>;
     const telemetry = rawTelem as Record<string, HeartbeatTelemetryEntry>;
     const logs = (Array.isArray(body.logs) ? body.logs : []) as HeartbeatLogEntry[];
+    const commandAcks = (Array.isArray(body.commandAcks) ? body.commandAcks : []) as VmCommandAckInput[];
+
+    if (commandAcks.length > 0) {
+      await ackVmCommands(payload.sessionGroup, commandAcks);
+    }
 
     const vms = await prisma.vmInstance.findMany({
       where: {
@@ -163,11 +173,14 @@ export async function POST(req: NextRequest) {
       console.warn("[vm/heartbeat] GDrive live token sync notice:", syncErr);
     }
 
+    const pendingCommands = await listPendingVmCommandsForSessionGroup(payload.sessionGroup);
+
     return NextResponse.json({
       ok: true,
       updatedTargets,
       ...(pendingSwitchTopology ? { switchTopology: pendingSwitchTopology } : {}),
       ...(pendingSwitchLlmTopology ? { switchLlmTopology: pendingSwitchLlmTopology } : {}),
+      ...(pendingCommands.length > 0 ? { pendingCommands } : {}),
       ...(gdriveTokenPayload ? { gdriveTokenPayload, gdriveUpdatedAtMs } : {}),
     });
   } catch (error) {

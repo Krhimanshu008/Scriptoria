@@ -32,6 +32,7 @@ import {
 import { KaggleVmLauncherDialog } from "@/components/studio/StudioVmLauncher";
 import type { LlmTopologyMode, PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
 import type { WorkerProfileId } from "@/lib/catalog/worker-profiles";
+import { LLM_MODEL_PRESETS, getDefaultPresetForLlmProfile } from "@/lib/llm/llm-model-presets";
 import {
   LLM_LAUNCH_PROFILES,
   LLM_TOPOLOGY_OPTIONS,
@@ -71,6 +72,8 @@ export function LlmStudioTab({
   const [apiDialogOpen, setApiDialogOpen] = useState(false);
   const [switchingTopo, setSwitchingTopo] = useState<string | null>(null);
   const [copiedCurl, setCopiedCurl] = useState(false);
+  const [selectedPresetId, setSelectedPresetId] = useState<string>("");
+  const [modelActionBusy, setModelActionBusy] = useState<string | null>(null);
 
   const {
     data: health,
@@ -145,6 +148,44 @@ export function LlmStudioTab({
     }
   }
 
+  const effectiveQuickPresetId =
+    selectedPresetId && LLM_MODEL_PRESETS.some((p) => p.id === selectedPresetId)
+      ? selectedPresetId
+      : getDefaultPresetForLlmProfile(onlineGpuLlmVm?.workerProfile || launchProfile).id;
+
+  async function handleModelControlAction(action: "stage_llm" | "load_llm" | "unload_llm") {
+    if (!onlineGpuLlmVm || modelActionBusy) return;
+    setModelActionBusy(action);
+    try {
+      const res = await fetch(
+        `/api/vm/${encodeURIComponent(onlineGpuLlmVm.target)}/model-control`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action,
+            ...(action !== "unload_llm" ? { presetId: effectiveQuickPresetId } : {}),
+          }),
+        }
+      );
+      const json = (await res.json()) as { error?: string };
+      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+      toast.success(
+        action === "stage_llm"
+          ? `Queued model staging onto ${onlineGpuLlmVm.target.toUpperCase()} disk`
+          : action === "load_llm"
+          ? `Queued VRAM load on ${onlineGpuLlmVm.target.toUpperCase()} (~15-45s)`
+          : `Unloaded LLM from ${onlineGpuLlmVm.target.toUpperCase()} VRAM`
+      );
+      await refetchHealth();
+      onVmsUpdated?.();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : `Failed ${action}`);
+    } finally {
+      setModelActionBusy(null);
+    }
+  }
+
   const originUrl =
     typeof window !== "undefined" ? window.location.origin : "http://localhost:3000";
   const curlSample = endpointInfo?.relayEndpoint
@@ -178,11 +219,24 @@ export function LlmStudioTab({
                   ? `STARTING · ${health.target?.toUpperCase() || "VM"}`
                   : "GPU/TPU OFFLINE"}
               </Badge>
-              {health?.loadedModel && (
+              {health?.loadedModel ? (
                 <Badge variant="secondary" className="text-[11px]">
-                  {health.loadedModel}
+                  VRAM: {health.loadedModel}
                 </Badge>
-              )}
+              ) : health?.reachable ? (
+                <Badge
+                  variant="outline"
+                  className={`text-[11px] ${
+                    health?.runtimeMode === "loading_model"
+                      ? "border-amber-500/40 text-amber-300 animate-pulse"
+                      : "border-cyan-500/35 text-cyan-300"
+                  }`}
+                >
+                  {health?.runtimeMode === "loading_model"
+                    ? `LOADING ${health.activeModelName || "MODEL"}...`
+                    : "IDLE · EMPTY COMPUTE (0 MODELS)"}
+                </Badge>
+              ) : null}
               {(health?.vaultFallbackCount || 0) > 0 && (
                 <Badge variant="outline" className="text-[11px] border-cyan-500/30 text-cyan-300">
                   +{health?.vaultFallbackCount} Vault API
@@ -300,6 +354,68 @@ export function LlmStudioTab({
             })}
           </div>
         </div>
+
+        {/* Decoupled Model Stage / VRAM Loader Strip (only when an online GPU LLM VM exists) */}
+        {onlineGpuLlmVm && (
+          <div className="border-t border-zinc-800/90 pt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-2 text-xs text-zinc-400">
+              <span className="font-medium text-zinc-300">
+                Model Loader ({onlineGpuLlmVm.target.toUpperCase()}):
+              </span>
+              <span className="text-[11px] text-zinc-500">
+                {onlineGpuLlmVm.loadedModel
+                  ? `Active in VRAM: ${onlineGpuLlmVm.loadedModel}`
+                  : onlineGpuLlmVm.runtimeMode === "loading_model"
+                  ? `Loading ${onlineGpuLlmVm.activeModelName || "model"} into VRAM...`
+                  : "Compute booted empty (0 models). Stage or Load a model before running local inference."}
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <select
+                value={effectiveQuickPresetId}
+                disabled={Boolean(modelActionBusy)}
+                onChange={(e) => setSelectedPresetId(e.target.value)}
+                className="h-8 rounded-lg border border-zinc-800 bg-zinc-900 px-2 text-xs text-zinc-200 outline-none focus:border-violet-500"
+              >
+                {LLM_MODEL_PRESETS.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.shortLabel} (~{p.approxDiskGb}G · {p.approxVramGb}G VRAM)
+                  </option>
+                ))}
+              </select>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={Boolean(modelActionBusy)}
+                onClick={() => handleModelControlAction("stage_llm")}
+              >
+                {modelActionBusy === "stage_llm" && <Loader2 className="size-3 animate-spin" />}
+                Stage Disk
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={Boolean(modelActionBusy)}
+                onClick={() => handleModelControlAction("load_llm")}
+              >
+                {modelActionBusy === "load_llm" && <Loader2 className="size-3 animate-spin" />}
+                Load VRAM
+              </Button>
+              {onlineGpuLlmVm.loadedModel && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={Boolean(modelActionBusy)}
+                  onClick={() => handleModelControlAction("unload_llm")}
+                  className="border-rose-500/35 text-rose-300 hover:bg-rose-500/15"
+                >
+                  {modelActionBusy === "unload_llm" && <Loader2 className="size-3 animate-spin" />}
+                  Unload
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 4 Clean LLM Studio Workspace Tabs */}

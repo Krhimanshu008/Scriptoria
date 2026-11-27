@@ -4,7 +4,7 @@ import type { NextRequest } from "next/server";
 import type { VmInstance } from "@prisma/client";
 import { signVmRegistrationToken } from "@/lib/auth/session";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
-import { getWorkerProfile, isLlmWorkerProfile } from "@/lib/catalog/worker-profiles";
+import { getWorkerProfile } from "@/lib/catalog/worker-profiles";
 import { getOrCreateWorkspaceSettings } from "@/lib/settings/workspace-settings";
 import { buildUnifiedNotebookPythonCode } from "@/lib/orchestrator/notebook-builder";
 import { buildTpuNotebookPythonCode } from "@/lib/orchestrator/tpu-notebook-builder";
@@ -50,7 +50,6 @@ export async function assembleWorkerRuntimePayload(
     input;
 
   const gdriveCred = await getUserGDriveCredential(userId, undefined, { ensureFresh: true }).catch(() => null);
-  const isLlmProfile = isLlmWorkerProfile(vm.workerProfile);
 
   const sortedGroupVms = sortVmsByCanonicalTarget(groupVms);
   const groupTargets = sortedGroupVms.map((gv) => gv.target);
@@ -168,6 +167,7 @@ export async function assembleWorkerRuntimePayload(
         headlessMode: isKaggle && workerMode === "headless_safe",
         quietStdout: isKaggle,
         llmTopologyMode: initialLlmTopology,
+        autoLoadOnBoot: bootMeta?.autoLoadOnBoot === true,
       });
 
   return {
