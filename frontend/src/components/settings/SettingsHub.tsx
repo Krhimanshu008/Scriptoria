@@ -1110,6 +1110,46 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
               </div>
             </div>
 
+            {/* Studio Standalone Mode */}
+            <div className="flex items-center justify-between gap-4 px-4 py-3">
+              <div>
+                <div className="text-xs font-medium text-zinc-100">
+                  Studio Standalone Mode (Recommended)
+                </div>
+                <div className="text-[11px] text-zinc-500">
+                  Keeps the navigation focused strictly on Media Studio &amp; LLM Studio.
+                </div>
+              </div>
+              <input
+                type="checkbox"
+                checked={prefsDraft.studioStandaloneMode !== false}
+                onChange={(e) =>
+                  setPrefsDraft({ ...prefsDraft, studioStandaloneMode: e.target.checked })
+                }
+                className="h-4 w-4 rounded border-zinc-700 bg-zinc-900"
+              />
+            </div>
+
+            {/* Legacy Book Visualiser Routes */}
+            <div className="flex items-center justify-between gap-4 px-4 py-3">
+              <div>
+                <div className="text-xs font-medium text-zinc-100">
+                  Show Legacy Book Visualiser Routes
+                </div>
+                <div className="text-[11px] text-zinc-500">
+                  Displays legacy Flow &amp; TTS Studio and Pipeline Testbench links in the left sidebar.
+                </div>
+              </div>
+              <input
+                type="checkbox"
+                checked={Boolean(prefsDraft.showLegacyPipelineRoutes)}
+                onChange={(e) =>
+                  setPrefsDraft({ ...prefsDraft, showLegacyPipelineRoutes: e.target.checked })
+                }
+                className="h-4 w-4 rounded border-zinc-700 bg-zinc-900"
+              />
+            </div>
+
             {/* Drive Base Folder */}
             <div className="flex flex-wrap items-center justify-between gap-4 px-4 py-3">
               <div>

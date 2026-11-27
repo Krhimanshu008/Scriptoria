@@ -2,7 +2,12 @@ import crypto from "node:crypto";
 import { prisma } from "@/lib/db/prisma";
 import { ensureDbSchemaReady } from "@/lib/db/ensure-schema";
 import { ComfyClient } from "@/lib/orchestrator/comfy-client";
-import { compileResourceAwareWorkflow, type WorkflowBuildSpec } from "@/lib/workflow/compiler";
+import {
+  compileResourceAwareWorkflow,
+  splitWorkflowIntoTwoStages,
+  type WorkflowBuildSpec,
+} from "@/lib/workflow/compiler";
+import { parseBootMetadata } from "@/lib/orchestrator/vm-helpers";
 import { studioTargetForTask } from "./studio-headless";
 import { ensureModelReadyOnVm } from "@/lib/catalog/ensure-helper";
 import { appendSystemLog } from "@/lib/logs/logger";
@@ -78,6 +83,7 @@ export async function createBatchFromSpec(params: {
 
   interface DraftTask {
     tempKey: string;
+    stageIndex: number;
     sceneKey: string;
     trackType: BatchTrackKind;
     dependsOnTempKeys: string[];
@@ -89,6 +95,7 @@ export async function createBatchFromSpec(params: {
     vramEstimateGb: number;
   }
 
+  const executionMode = spec.executionMode || "dual_parallel";
   const drafts: DraftTask[] = [];
 
   for (const scene of spec.scenes) {
@@ -96,30 +103,101 @@ export async function createBatchFromSpec(params: {
     const ttsKey = `${scene.sceneKey}::AUDIO_TTS`;
 
     if (scene.tracks.visual) {
+      const vt = scene.tracks.visual;
       const vSpec: WorkflowBuildSpec = {
-        pipeline: scene.tracks.visual.pipeline || "sdxl_txt2img",
-        baseModel: scene.tracks.visual.baseModel || spec.defaults?.baseModel || "Illustrious-XL-v2.0.safetensors",
-        loras: scene.tracks.visual.loras,
-        prompt: scene.tracks.visual.prompt,
-        negativePrompt: scene.tracks.visual.negativePrompt,
-        width: scene.tracks.visual.width || spec.defaults?.width || 1024,
-        height: scene.tracks.visual.height || spec.defaults?.height || 1024,
-        steps: scene.tracks.visual.steps,
-        cfg: scene.tracks.visual.cfg,
+        pipeline: vt.pipeline || "sdxl_txt2img",
+        architecture: vt.architecture,
+        stylePreset: vt.stylePreset ?? (spec.defaults?.stylePreset as WorkflowBuildSpec["stylePreset"]),
+        baseModel: vt.baseModel || spec.defaults?.baseModel || "Illustrious-XL-v2.0.safetensors",
+        vaeModel: vt.vaeModel,
+        textEncoder1: vt.textEncoder1,
+        textEncoder2: vt.textEncoder2,
+        loras: vt.loras,
+        ipConnectors: vt.ipConnectors,
+        controlNets: vt.controlNets,
+        characters: vt.characters,
+        relight: vt.relight,
+        relightRefImagePath: vt.relightRefImagePath,
+        inpaintMaskImagePath: vt.inpaintMaskImagePath,
+        upscalerModel: vt.upscalerModel,
+        enableFaceDetailer: vt.enableFaceDetailer,
+        enableHandDetailer: vt.enableHandDetailer,
+        enable360Preview: vt.enable360Preview,
+        dualGpuSplit: executionMode === "dual_split" ? true : vt.dualGpuSplit,
+        prompt: vt.prompt,
+        negativePrompt: vt.negativePrompt,
+        width: vt.width || spec.defaults?.width || 1024,
+        height: vt.height || spec.defaults?.height || 1024,
+        steps: vt.steps,
+        cfg: vt.cfg,
+        samplerName: vt.samplerName,
+        scheduler: vt.scheduler,
+        batchSize: vt.batchSize,
+        seed: vt.seed,
+        refImagePath: vt.refImagePath,
       };
-      const compiled = await compileResourceAwareWorkflow(userId, vSpec);
-      drafts.push({
-        tempKey: visualKey,
-        sceneKey: scene.sceneKey,
-        trackType: "VISUAL",
-        dependsOnTempKeys: [],
-        spec: vSpec,
-        workerProfile: compiled.recommendedProfile,
-        baseCheckpoint: vSpec.baseModel || "",
-        requiredModels: compiled.requiredModels,
-        compiledGraph: compiled.graph,
-        vramEstimateGb: compiled.vramEstimateGb,
-      });
+
+      if (executionMode === "dual_pipeline") {
+        const split = await splitWorkflowIntoTwoStages(userId, vSpec);
+        if (split.isTwoStage && split.stage2) {
+          const s1Key = `${visualKey}::S1`;
+          drafts.push({
+            tempKey: s1Key,
+            stageIndex: 1,
+            sceneKey: scene.sceneKey,
+            trackType: "VISUAL",
+            dependsOnTempKeys: [],
+            spec: { ...vSpec, enableFaceDetailer: false, enableHandDetailer: false, upscalerModel: undefined, relight: "none" },
+            workerProfile: split.stage1.recommendedProfile,
+            baseCheckpoint: vSpec.baseModel || "",
+            requiredModels: split.stage1.requiredModels,
+            compiledGraph: split.stage1.graph,
+            vramEstimateGb: split.stage1.vramEstimateGb,
+          });
+          drafts.push({
+            tempKey: visualKey,
+            stageIndex: 2,
+            sceneKey: `${scene.sceneKey} (Stage 2)`,
+            trackType: "VISUAL",
+            dependsOnTempKeys: [s1Key],
+            spec: vSpec,
+            workerProfile: split.stage2.recommendedProfile,
+            baseCheckpoint: split.stage2Checkpoint || vSpec.baseModel || "",
+            requiredModels: split.stage2.requiredModels,
+            compiledGraph: split.stage2.graph,
+            vramEstimateGb: split.stage2.vramEstimateGb,
+          });
+        } else {
+          drafts.push({
+            tempKey: visualKey,
+            stageIndex: 1,
+            sceneKey: scene.sceneKey,
+            trackType: "VISUAL",
+            dependsOnTempKeys: [],
+            spec: vSpec,
+            workerProfile: split.stage1.recommendedProfile,
+            baseCheckpoint: vSpec.baseModel || "",
+            requiredModels: split.stage1.requiredModels,
+            compiledGraph: split.stage1.graph,
+            vramEstimateGb: split.stage1.vramEstimateGb,
+          });
+        }
+      } else {
+        const compiled = await compileResourceAwareWorkflow(userId, vSpec);
+        drafts.push({
+          tempKey: visualKey,
+          stageIndex: 1,
+          sceneKey: scene.sceneKey,
+          trackType: "VISUAL",
+          dependsOnTempKeys: [],
+          spec: vSpec,
+          workerProfile: compiled.recommendedProfile,
+          baseCheckpoint: vSpec.baseModel || "",
+          requiredModels: compiled.requiredModels,
+          compiledGraph: compiled.graph,
+          vramEstimateGb: compiled.vramEstimateGb,
+        });
+      }
     }
 
     if (scene.tracks.audio_tts) {
@@ -133,6 +211,7 @@ export async function createBatchFromSpec(params: {
       const compiled = await compileResourceAwareWorkflow(userId, aSpec);
       drafts.push({
         tempKey: ttsKey,
+        stageIndex: 1,
         sceneKey: scene.sceneKey,
         trackType: "AUDIO_TTS",
         dependsOnTempKeys: [],
@@ -154,6 +233,7 @@ export async function createBatchFromSpec(params: {
       const compiled = await compileResourceAwareWorkflow(userId, sSpec);
       drafts.push({
         tempKey: `${scene.sceneKey}::AUDIO_SFX`,
+        stageIndex: 1,
         sceneKey: scene.sceneKey,
         trackType: "AUDIO_SFX",
         dependsOnTempKeys: [],
@@ -175,6 +255,7 @@ export async function createBatchFromSpec(params: {
       const compiled = await compileResourceAwareWorkflow(userId, bSpec);
       drafts.push({
         tempKey: `${scene.sceneKey}::AUDIO_BGM`,
+        stageIndex: 1,
         sceneKey: scene.sceneKey,
         trackType: "AUDIO_BGM",
         dependsOnTempKeys: [],
@@ -198,6 +279,7 @@ export async function createBatchFromSpec(params: {
         scene.tracks.video_i2v.dependsOnVisual !== false && scene.tracks.visual ? [visualKey] : [];
       drafts.push({
         tempKey: `${scene.sceneKey}::VIDEO_I2V`,
+        stageIndex: 1,
         sceneKey: scene.sceneKey,
         trackType: "VIDEO_I2V",
         dependsOnTempKeys: deps,
@@ -218,6 +300,7 @@ export async function createBatchFromSpec(params: {
       if (scene.tracks.lipsync.dependsOnTts !== false && scene.tracks.audio_tts) deps.push(ttsKey);
       drafts.push({
         tempKey: `${scene.sceneKey}::LIPSYNC`,
+        stageIndex: 1,
         sceneKey: scene.sceneKey,
         trackType: "LIPSYNC",
         dependsOnTempKeys: deps,
@@ -231,12 +314,14 @@ export async function createBatchFromSpec(params: {
     }
   }
 
-  // Coalesce order: root tasks sorted by (workerProfile, baseCheckpoint) so GPUs avoid swapping models, followed by dependent tasks
+  // Coalesce order: root tasks sorted by (workerProfile, stageIndex, baseCheckpoint) so GPUs avoid swapping models, followed by dependent tasks
   drafts.sort((a, b) => {
     const depDiff = a.dependsOnTempKeys.length - b.dependsOnTempKeys.length;
     if (depDiff !== 0) return depDiff;
     const pCmp = a.workerProfile.localeCompare(b.workerProfile);
     if (pCmp !== 0) return pCmp;
+    const stDiff = a.stageIndex - b.stageIndex;
+    if (stDiff !== 0) return stDiff;
     return a.baseCheckpoint.localeCompare(b.baseCheckpoint);
   });
 
@@ -277,6 +362,8 @@ export async function createBatchFromSpec(params: {
       userId,
       title: spec.title,
       sourceApp: spec.sourceApp,
+      executionMode,
+      baseSpecJson: spec.baseSpec ? JSON.stringify(spec.baseSpec) : null,
       idempotencyKey: spec.idempotencyKey || null,
       webhookUrl: spec.webhookCallbackUrl || null,
       rawPayloadJson: JSON.stringify(spec),
@@ -294,6 +381,7 @@ export async function createBatchFromSpec(params: {
       data: {
         batchId: batch.id,
         sequenceIndex: i,
+        stageIndex: d.stageIndex,
         sceneKey: d.sceneKey,
         trackType: d.trackType,
         dependsOnTaskIdsJson: "[]",
@@ -356,7 +444,7 @@ export async function rankOnlineGpusForTask(
   task: BatchTask
 ): Promise<GpuAffinityScore[]> {
   const online = vms.filter(
-    (v) => v.status === "ONLINE" && v.publicUrl && !isLlmWorkerProfile(v.workerProfile)
+    (v) => v.status === "ONLINE" && !isLlmWorkerProfile(v.workerProfile)
   );
   const scores: GpuAffinityScore[] = [];
 
@@ -395,28 +483,51 @@ export async function rankOnlineGpusForTask(
       reasons.push(`${freeVram.toFixed(1)} GB free VRAM`);
     }
 
-    try {
-      const client = new ComfyClient(vm);
-      const [cat, q] = await Promise.all([
-        client.getCatalog(vm.target).catch(() => null),
-        client.getQueueSummary().catch(() => ({ runningCount: 0, pendingCount: 0 })),
-      ]);
-
-      if (q.runningCount + q.pendingCount >= 2) {
-        score -= 40;
-        reasons.push(`Busy queue (${q.runningCount} running, ${q.pendingCount} pending)`);
+    if (!vm.publicUrl) {
+      const meta = parseBootMetadata(vm.bootMetadataJson);
+      const ckptLower = (task.baseCheckpoint || "").toLowerCase();
+      if (ckptLower && meta?.hotModels) {
+        const allHot = Object.values(meta.hotModels).flat().map((s) => s.toLowerCase());
+        if (allHot.includes(ckptLower)) {
+          score += 65;
+          reasons.push(`Hot VRAM hit (headless): ${task.baseCheckpoint}`);
+        }
       }
-
-      if (
-        cat &&
-        task.baseCheckpoint &&
-        cat.models.checkpoints.some((c) => c.toLowerCase() === task.baseCheckpoint.toLowerCase())
-      ) {
-        score += 50;
-        reasons.push(`Warm cache hit: ${task.baseCheckpoint}`);
+      if (ckptLower && meta?.cachedModels) {
+        const allCached = Object.values(meta.cachedModels).flat().map((s) => s.toLowerCase());
+        if (allCached.includes(ckptLower)) {
+          score += 50;
+          reasons.push(`Warm /tmp cache hit (headless): ${task.baseCheckpoint}`);
+        }
       }
-    } catch {
-      score -= 10;
+      if (meta?.topologyMode === "dual_pipeline") {
+        if (task.stageIndex === 1 && vm.target.endsWith("0")) score += 35;
+        if (task.stageIndex === 2 && vm.target.endsWith("1")) score += 35;
+      }
+    } else {
+      try {
+        const client = new ComfyClient(vm);
+        const [cat, q] = await Promise.all([
+          client.getCatalog(vm.target).catch(() => null),
+          client.getQueueSummary().catch(() => ({ runningCount: 0, pendingCount: 0 })),
+        ]);
+
+        if (q.runningCount + q.pendingCount >= 2) {
+          score -= 40;
+          reasons.push(`Busy queue (${q.runningCount} running, ${q.pendingCount} pending)`);
+        }
+
+        if (
+          cat &&
+          task.baseCheckpoint &&
+          cat.models.checkpoints.some((c) => c.toLowerCase() === task.baseCheckpoint.toLowerCase())
+        ) {
+          score += 50;
+          reasons.push(`Warm cache hit: ${task.baseCheckpoint}`);
+        }
+      } catch {
+        score -= 10;
+      }
     }
 
     scores.push({
@@ -531,13 +642,14 @@ export async function tickBatchScheduler(userId: string, batchId: string) {
   });
   const taskStatusMap = new Map(freshTasks.map((t) => [t.id, t.status]));
 
-  // 2. Dispatch ready PENDING tasks across available idle ONLINE GPUs
+  // 2. Dispatch ready PENDING tasks across available idle ONLINE GPUs (skip if PAUSED)
   const availableVms = vms.filter(
     (v) => v.status === "ONLINE" && v.publicUrl && !busyTargets.has(v.target)
   );
   const dispatched: Array<{ taskId: string; target: string; score: number; reasons: string[] }> = [];
 
   for (const task of freshTasks) {
+    if (batch.status === "PAUSED") break;
     if (task.status !== "PENDING") continue;
     if (availableVms.length === 0) break;
 
@@ -654,13 +766,16 @@ export async function tickBatchScheduler(userId: string, batchId: string) {
   const failedCount = latestTasks.filter((t) => t.status === "FAILED" || t.status === "BLOCKED").length;
   const anyActive = latestTasks.some((t) => t.status === "PENDING" || t.status === "PROCESSING");
 
-  const nextBatchStatus = anyActive
-    ? "RUNNING"
-    : failedCount === 0
-    ? "COMPLETED"
-    : completedCount > 0
-    ? "PARTIAL"
-    : "FAILED";
+  const nextBatchStatus =
+    batch.status === "PAUSED"
+      ? "PAUSED"
+      : anyActive
+      ? "RUNNING"
+      : failedCount === 0
+      ? "COMPLETED"
+      : completedCount > 0
+      ? "PARTIAL"
+      : "FAILED";
 
   const updatedBatch = await prisma.batchJob.update({
     where: { id: batch.id },

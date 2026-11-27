@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getAuthUser } from "@/lib/auth/session";
 import { VmGateway } from "@/lib/orchestrator/vm-gateway";
+import { parseBootMetadata } from "@/lib/orchestrator/vm-helpers";
 import {
   GDriveModelStreamer,
   sanitizeModelCategory,
@@ -37,12 +38,22 @@ export async function GET(
     }
 
     if (!vm.publicUrl) {
+      const bootMeta = parseBootMetadata(vm.bootMetadataJson);
+      const modifiedFallback = vm.lastHeartbeat ? vm.lastHeartbeat.toISOString() : "";
+      const files: VmStoredModelItem[] = (bootMeta?.storageFiles || []).map((f) => ({
+        category: f.category,
+        name: f.name,
+        sizeBytes: f.sizeBytes,
+        modifiedAt: modifiedFallback,
+      }));
       return NextResponse.json({
         headless: true,
         target,
-        disk: null,
-        files: [],
-        source: "headless",
+        disk: bootMeta?.disk ?? null,
+        files,
+        topologyMode: bootMeta?.topologyMode ?? null,
+        hotModels: bootMeta?.hotModels ?? null,
+        source: "headless-heartbeat",
       });
     }
 
@@ -104,12 +115,22 @@ export async function DELETE(
     }
 
     if (!vm.publicUrl) {
+      const bootMeta = parseBootMetadata(vm.bootMetadataJson);
+      const modifiedFallback = vm.lastHeartbeat ? vm.lastHeartbeat.toISOString() : "";
+      const files: VmStoredModelItem[] = (bootMeta?.storageFiles || []).map((f) => ({
+        category: f.category,
+        name: f.name,
+        sizeBytes: f.sizeBytes,
+        modifiedAt: modifiedFallback,
+      }));
       return NextResponse.json({
         headless: true,
         target,
-        disk: null,
-        files: [],
-        source: "headless",
+        disk: bootMeta?.disk ?? null,
+        files,
+        topologyMode: bootMeta?.topologyMode ?? null,
+        hotModels: bootMeta?.hotModels ?? null,
+        source: "headless-heartbeat",
       });
     }
 

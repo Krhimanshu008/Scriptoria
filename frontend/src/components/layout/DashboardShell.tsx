@@ -5,6 +5,8 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  ChevronDown,
+  ChevronRight,
   Server,
   HardDriveDownload,
   Images,
@@ -28,29 +30,37 @@ import { useClusterStore } from "@/store/cluster-store";
 import { formatStreamSummary } from "@/lib/format";
 import { toast } from "sonner";
 
-const NAV_GROUPS = [
+const CORE_NAV_GROUPS = [
+  {
+    section: "Studios",
+    items: [
+      { href: "/studio", label: "Studio", icon: Sparkles },
+      { href: "/llm-studio", label: "LLM Studio", icon: Bot },
+    ],
+  },
+  {
+    section: "Library",
+    items: [
+      { href: "/history", label: "Outputs", icon: Images },
+      { href: "/models", label: "Models & Drive", icon: HardDriveDownload },
+    ],
+  },
   {
     section: "Compute",
     items: [
       { href: "/vms", label: "GPU Cluster", icon: Server },
       { href: "/tpu-cluster", label: "TPU Cluster", icon: Zap },
-      { href: "/models", label: "Models & Drive", icon: HardDriveDownload },
-    ],
-  },
-  {
-    section: "Intelligence & Studio",
-    items: [
-      { href: "/flow-studio", label: "Flow & TTS Studio", icon: Clapperboard },
-      { href: "/testbench", label: "Pipeline Testbench", icon: Wrench },
-      { href: "/llm-studio", label: "LLM Studio", icon: Bot },
-      { href: "/studio", label: "Studio", icon: Sparkles },
-      { href: "/history", label: "Outputs", icon: Images },
     ],
   },
   {
     section: "System",
     items: [{ href: "/settings", label: "Settings", icon: Settings }],
   },
+];
+
+const LEGACY_PIPELINE_ITEMS = [
+  { href: "/flow-studio", label: "Flow & TTS Studio", icon: Clapperboard },
+  { href: "/testbench", label: "Pipeline Testbench", icon: Wrench },
 ];
 
 function pageTitleForPath(pathname: string): string {
@@ -81,6 +91,22 @@ export function DashboardShell({
   const [stoppingAll, setStoppingAll] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [legacyExpanded, setLegacyExpanded] = useState(() =>
+    LEGACY_PIPELINE_ITEMS.some((i) => pathname.startsWith(i.href))
+  );
+
+  const { data: settingsData } = useQuery<{
+    settings?: { showLegacyPipelineRoutes?: boolean };
+  }>({
+    queryKey: ["workspace-settings"],
+    queryFn: async () => {
+      const res = await fetch("/api/settings");
+      if (!res.ok) return {};
+      return res.json();
+    },
+    staleTime: 60000,
+  });
+  const showLegacyRoutes = Boolean(settingsData?.settings?.showLegacyPipelineRoutes);
 
   const isFullBleed = pathname.startsWith("/testbench");
   const isCollapsed = isFullBleed || collapsed;
@@ -91,6 +117,7 @@ export function DashboardShell({
   const syncTargetWithVms = useClusterStore((s) => s.syncTargetWithVms);
   const pollingJobId = useClusterStore((s) => s.studio.pollingJobId);
   const pollingTarget = useClusterStore((s) => s.studio.pollingTarget);
+  const pollingJobs = useClusterStore((s) => s.studio.pollingJobs);
   const updateStudio = useClusterStore((s) => s.updateStudio);
 
   const { data } = useQuery<{ vms: PublicVmInstance[] }>({
@@ -237,47 +264,106 @@ export function DashboardShell({
   ]);
 
   useEffect(() => {
-    if (!pollingJobId) return;
+    const activePollList =
+      pollingJobs.length > 0
+        ? pollingJobs
+        : pollingJobId
+        ? [{ jobId: pollingJobId, target: pollingTarget || "gpu0" }]
+        : [];
+    if (activePollList.length === 0) return;
 
     let cancelled = false;
     const timer = setInterval(async () => {
       if (cancelled) return;
       try {
-        const res = await fetch(`/api/workflow/${encodeURIComponent(pollingJobId)}/status`);
-        if (!res.ok || cancelled) return;
-        const sData = await res.json();
+        const snapshots = await Promise.all(
+          activePollList.map(async (item) => {
+            const res = await fetch(`/api/workflow/${encodeURIComponent(item.jobId)}/status`);
+            if (!res.ok) return null;
+            const sData = await res.json();
+            return { ...item, sData };
+          })
+        );
+        if (cancelled) return;
 
-        if (sData.status === "COMPLETED") {
+        const remaining: Array<{ jobId: string; target: string }> = [];
+        const newlyFinishedOutputs: Array<{
+          filename: string;
+          gdriveFileId: string;
+          gdrivePath: string;
+          previewUrl: string;
+          target?: string;
+          jobId?: string;
+        }> = [];
+        let maxDurationMs: number | null = null;
+        let maxElapsedMs: number | null = null;
+        let sumQueuePending = 0;
+        let completedDrive = 0;
+        let completedLocal = 0;
+
+        for (const snap of snapshots) {
+          if (!snap) continue;
+          const { jobId, target, sData } = snap;
+          if (sData.status === "COMPLETED") {
+            const outs = (Array.isArray(sData.outputs) ? sData.outputs : []).map(
+              (o: { filename: string; gdriveFileId: string; gdrivePath: string; previewUrl: string }) => ({
+                ...o,
+                target,
+                jobId,
+              })
+            );
+            newlyFinishedOutputs.push(...outs);
+            if (typeof sData.executionTimeMs === "number") {
+              maxDurationMs = Math.max(maxDurationMs ?? 0, sData.executionTimeMs);
+            }
+            if (outs.some((o: { gdriveFileId?: string }) => Boolean(o?.gdriveFileId))) {
+              completedDrive++;
+            } else {
+              completedLocal++;
+            }
+          } else if (sData.status === "FAILED") {
+            toast.error(`${target.toUpperCase()}: ${sData.errorMessage || "Workflow failed on GPU"}`);
+          } else {
+            remaining.push({ jobId, target });
+            if (typeof sData.elapsedMs === "number") {
+              maxElapsedMs = Math.max(maxElapsedMs ?? 0, sData.elapsedMs);
+            }
+            sumQueuePending += Number(sData.queuePending || 0);
+          }
+        }
+
+        if (newlyFinishedOutputs.length > 0 || remaining.length < activePollList.length) {
+          const curStudio = useClusterStore.getState().studio;
+          const mergedOutputs = [...curStudio.outputs];
+          for (const out of newlyFinishedOutputs) {
+            if (!mergedOutputs.some((x) => x.filename === out.filename && x.jobId === out.jobId)) {
+              mergedOutputs.push(out);
+            }
+          }
+          const mergedRecent = [...newlyFinishedOutputs, ...curStudio.recentOutputs].slice(0, 24);
           updateStudio({
-            outputs: sData.outputs || [],
-            durationMs: sData.executionTimeMs || null,
-            pollingJobId: null,
-            pollingTarget: null,
-            submitting: false,
-            queueElapsedMs: null,
-            queuePending: 0,
+            outputs: mergedOutputs,
+            recentOutputs: mergedRecent,
+            durationMs: maxDurationMs ?? curStudio.durationMs,
+            pollingJobs: remaining,
+            pollingJobId: remaining[0]?.jobId ?? null,
+            pollingTarget: remaining[0]?.target ?? null,
+            submitting: remaining.length > 0,
+            queueElapsedMs: remaining.length > 0 ? maxElapsedMs : null,
+            queuePending: remaining.length > 0 ? sumQueuePending : 0,
           });
-          const outs = Array.isArray(sData.outputs) ? sData.outputs : [];
-          const hasDriveBackup = outs.some((o: { gdriveFileId?: string }) => Boolean(o?.gdriveFileId));
-          toast.success(
-            hasDriveBackup
-              ? "Generation completed & saved permanently to Google Drive!"
-              : "Generation completed & backed up to Local Vault!"
-          );
-          queryClient.invalidateQueries({ queryKey: ["outputs-history"] });
-        } else if (sData.status === "FAILED") {
+          if (completedDrive > 0 || completedLocal > 0) {
+            toast.success(
+              completedDrive > 0
+                ? "Generation completed & saved to Google Drive!"
+                : "Generation completed & backed up to Local Vault!"
+            );
+            queryClient.invalidateQueries({ queryKey: ["outputs-history"] });
+          }
+        } else if (remaining.length > 0) {
           updateStudio({
-            pollingJobId: null,
-            pollingTarget: null,
-            submitting: false,
-            queueElapsedMs: null,
-            queuePending: 0,
-          });
-          toast.error(sData.errorMessage || "Workflow failed on GPU");
-        } else {
-          updateStudio({
-            queueElapsedMs: sData.elapsedMs ?? null,
-            queuePending: sData.queuePending ?? 0,
+            queueElapsedMs: maxElapsedMs,
+            queuePending: sumQueuePending,
           });
         }
       } catch {
@@ -289,7 +375,7 @@ export function DashboardShell({
       cancelled = true;
       clearInterval(timer);
     };
-  }, [pollingJobId, pollingTarget, queryClient, updateStudio]);
+  }, [pollingJobId, pollingTarget, pollingJobs, queryClient, updateStudio]);
 
   async function handleEmergencyStopAll() {
     if (!confirm("Immediately terminate ALL active Kaggle/Colab GPU sessions?")) return;
@@ -367,8 +453,8 @@ export function DashboardShell({
         )}
 
         {/* Categorized Navigation */}
-        <nav className="space-y-5 px-2.5 py-4">
-          {NAV_GROUPS.map((group) => (
+        <nav className="space-y-4 px-2.5 py-4">
+          {CORE_NAV_GROUPS.map((group) => (
             <div key={group.section} className="space-y-1">
               {!isCompact && (
                 <div className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
@@ -404,6 +490,55 @@ export function DashboardShell({
               })}
             </div>
           ))}
+
+          {/* Legacy Book Visualiser routes — hidden unless enabled in Settings */}
+          {(showLegacyRoutes || LEGACY_PIPELINE_ITEMS.some((i) => pathname.startsWith(i.href))) && (
+            <div className="space-y-1 border-t border-zinc-800/70 pt-3">
+              {!isCompact && (
+                <button
+                  type="button"
+                  onClick={() => setLegacyExpanded((v) => !v)}
+                  className="flex w-full items-center justify-between px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 hover:text-zinc-300"
+                >
+                  <span>Legacy Pipeline</span>
+                  {legacyExpanded ? (
+                    <ChevronDown className="h-3 w-3" />
+                  ) : (
+                    <ChevronRight className="h-3 w-3" />
+                  )}
+                </button>
+              )}
+
+              {(isCompact || legacyExpanded) &&
+                LEGACY_PIPELINE_ITEMS.map((item) => {
+                  const Icon = item.icon;
+                  const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+                  return (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      prefetch={true}
+                      onClick={onNavigate}
+                      title={isCompact ? item.label : undefined}
+                      className={`flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[12px] font-medium transition ${
+                        isCompact ? "justify-center px-0" : ""
+                      } ${
+                        active
+                          ? "bg-zinc-800/90 text-white"
+                          : "text-zinc-500 hover:bg-zinc-900 hover:text-zinc-200"
+                      }`}
+                    >
+                      <Icon
+                        className={`h-3.5 w-3.5 shrink-0 ${
+                          active ? "text-indigo-400" : "text-zinc-600"
+                        }`}
+                      />
+                      {!isCompact && <span className="truncate">{item.label}</span>}
+                    </Link>
+                  );
+                })}
+            </div>
+          )}
         </nav>
       </div>
 

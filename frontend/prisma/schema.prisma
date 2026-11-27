@@ -207,7 +207,9 @@ model WorkspaceSettings {
   id                     String   @id @default(cuid())
   userId                 String   @unique
   user                   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  defaultDashboard       String   @default("vms") // "vms" | "studio"
+  defaultDashboard       String   @default("studio") // "vms" | "studio"
+  studioStandaloneMode   Boolean  @default(true)
+  showLegacyPipelineRoutes Boolean @default(false)
   gdriveBaseFolder       String   @default("NovelVisualizer/ComfyUI_Storage")
   autoBackupToDrive      Boolean  @default(true)
   diskCleanupThresholdGb Float    @default(6.0)
@@ -269,11 +271,13 @@ model BatchJob {
   user           User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   title          String
   sourceApp      String      @default("studio")
+  executionMode  String      @default("dual_parallel") // "dual_parallel" | "dual_pipeline" | "dual_split" | "single"
+  baseSpecJson   String?
   idempotencyKey String?
   webhookUrl     String?
   rawPayloadJson String?
   strategyJson   String?
-  status         String      @default("QUEUED") // QUEUED, RUNNING, COMPLETED, PARTIAL, FAILED
+  status         String      @default("QUEUED") // QUEUED, RUNNING, PAUSED, COMPLETED, PARTIAL, FAILED
   totalTasks     Int         @default(0)
   completedTasks Int         @default(0)
   failedTasks    Int         @default(0)
@@ -290,6 +294,7 @@ model BatchTask {
   batchId              String
   batch                BatchJob @relation(fields: [batchId], references: [id], onDelete: Cascade)
   sequenceIndex        Int      @default(0)
+  stageIndex           Int      @default(1) // 1 = base generation, 2 = detailer/relight/upscale
   sceneKey             String
   trackType            String   @default("VISUAL") // VISUAL, AUDIO_TTS, AUDIO_SFX, AUDIO_BGM, VIDEO_I2V, LIPSYNC
   dependsOnTaskIdsJson String?
@@ -305,6 +310,7 @@ model BatchTask {
   outputFilesJson      String?
   errorMessage         String?
   attempts             Int      @default(0)
+  durationMs           Int?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
@@ -397,6 +403,23 @@ model LlmChatMessage {
   createdAt   DateTime       @default(now())
 
   @@index([sessionId, createdAt])
+}
+
+model LlmRelayRequest {
+  id                 String   @id @default(cuid())
+  userId             String
+  targetVm           String?
+  targetService      String   @default("default")
+  requestPayloadJson String
+  status             String   @default("PENDING") // PENDING, PROCESSING, COMPLETED, FAILED
+  assignedTarget     String?
+  responseJson       String?
+  errorMessage       String?
+  latencyMs          Int?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([userId, status, createdAt])
 }
 
 // ============================================================================

@@ -4,6 +4,8 @@ import { isValidWorkerProfile } from "@/lib/catalog/worker-profiles";
 
 export interface PublicWorkspaceSettings {
   defaultDashboard: "vms" | "studio";
+  studioStandaloneMode: boolean;
+  showLegacyPipelineRoutes: boolean;
   gdriveBaseFolder: string;
   autoBackupToDrive: boolean;
   diskCleanupThresholdGb: number;
@@ -30,7 +32,9 @@ export async function getOrCreateWorkspaceSettings(
     update: {},
     create: {
       userId,
-      defaultDashboard: "vms",
+      defaultDashboard: "studio",
+      studioStandaloneMode: true,
+      showLegacyPipelineRoutes: false,
       gdriveBaseFolder: DEFAULT_BASE_FOLDER,
       autoBackupToDrive: true,
       diskCleanupThresholdGb: 6.0,
@@ -46,6 +50,8 @@ export async function getOrCreateWorkspaceSettings(
 
   return {
     defaultDashboard: row.defaultDashboard === "studio" ? "studio" : "vms",
+    studioStandaloneMode: row.studioStandaloneMode !== false,
+    showLegacyPipelineRoutes: Boolean(row.showLegacyPipelineRoutes),
     gdriveBaseFolder: row.gdriveBaseFolder,
     autoBackupToDrive: row.autoBackupToDrive,
     diskCleanupThresholdGb: row.diskCleanupThresholdGb,

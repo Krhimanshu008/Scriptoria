@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Wand2,
@@ -18,6 +18,8 @@ import {
   Code2,
   ChevronDown,
   ChevronRight,
+  Shuffle,
+  Download,
 } from "lucide-react";
 import type { PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
 import type { WorkerProfileId } from "@/lib/catalog/worker-profiles";
@@ -143,7 +145,13 @@ function defaultSamplingForPipeline(pipeline: WorkflowPipelineKind): {
   }
 }
 
-export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
+export function SmartWorkflowCreator({
+  vms,
+  onOpenBatch,
+}: {
+  vms: PublicVmInstance[];
+  onOpenBatch?: () => void;
+}) {
   const onlineVms = useMemo(
     () => vms.filter((v) => v.status === "ONLINE" || v.status === "BUSY"),
     [vms]
@@ -152,6 +160,11 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
   const activeStream = useClusterStore((s) => s.activeStream);
   const queuedStreams = useClusterStore((s) => s.queuedStreams);
   const startStream = useClusterStore((s) => s.startStream);
+  const [initialDraft] = useState(() => useClusterStore.getState().architectDraftSpec);
+  const setArchitectDraftSpec = useClusterStore((s) => s.setArchitectDraftSpec);
+  const setBatchDraft = useClusterStore((s) => s.setBatchDraft);
+  const recentOutputs = useClusterStore((s) => s.studio.recentOutputs);
+  const updateStudio = useClusterStore((s) => s.updateStudio);
 
   const [target, setTarget] = useState(
     () => onlineVms[0]?.target || bestOfflineAccount?.primaryTarget || "gpu4"
@@ -161,27 +174,76 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
   const [showAllGpuSlots, setShowAllGpuSlots] = useState(false);
   const [showRawJson, setShowRawJson] = useState(false);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
-  const [pipeline, setPipeline] = useState<WorkflowPipelineKind>("sdxl_txt2img");
-  const [baseModel, setBaseModel] = useState("Illustrious-XL-v2.0.safetensors");
-  const [vaeModel, setVaeModel] = useState("sdxl_vae_fp16_fix.safetensors");
-  const [lora1, setLora1] = useState("");
-  const [lora1Strength, setLora1Strength] = useState(0.8);
-  const [upscalerModel, setUpscalerModel] = useState("");
-  const [enableFaceDetailer, setEnableFaceDetailer] = useState(true);
+  const [raceJobId, setRaceJobId] = useState<string | null>(null);
+  const [pipeline, setPipeline] = useState<WorkflowPipelineKind>(
+    () => initialDraft?.pipeline || "sdxl_txt2img"
+  );
+  const [baseModel, setBaseModel] = useState(() =>
+    initialDraft ? initialDraft.baseModel || "" : "Illustrious-XL-v2.0.safetensors"
+  );
+  const [vaeModel, setVaeModel] = useState(() =>
+    initialDraft
+      ? initialDraft.vaeModel ?? defaultVaeForPipeline(initialDraft.pipeline)
+      : "sdxl_vae_fp16_fix.safetensors"
+  );
+  const [lora1, setLora1] = useState(() => initialDraft?.loras?.[0]?.filename || "");
+  const [lora1Strength, setLora1Strength] = useState(
+    () => initialDraft?.loras?.[0]?.strength ?? 0.8
+  );
+  const [upscalerModel, setUpscalerModel] = useState(() => initialDraft?.upscalerModel || "");
+  const [enableFaceDetailer, setEnableFaceDetailer] = useState(() =>
+    initialDraft ? Boolean(initialDraft.enableFaceDetailer) : true
+  );
   const [prompt, setPrompt] = useState(
-    "masterpiece, best quality, expressive anime hero portrait, golden hour rim lighting"
+    () =>
+      initialDraft?.prompt ||
+      "masterpiece, best quality, expressive anime hero portrait, golden hour rim lighting"
   );
   const [negativePrompt, setNegativePrompt] = useState(
-    "bad quality, blurry, deformed, lowres, extra limbs, watermark"
+    () =>
+      initialDraft?.negativePrompt ??
+      "bad quality, blurry, deformed, lowres, extra limbs, watermark"
   );
-  const [width, setWidth] = useState(1024);
-  const [height, setHeight] = useState(1024);
-  const [steps, setSteps] = useState(24);
-  const [cfg, setCfg] = useState(6.0);
-  const [dialogueText, setDialogueText] = useState("");
-  const [voice, setVoice] = useState("af_heart");
-  const [stylePreset, setStylePreset] = useState<StylePresetId>("anime_vibrant");
-  const [adapters, setAdapters] = useState<ModularAdaptersState>(DEFAULT_MODULAR_ADAPTERS);
+  const [width, setWidth] = useState(
+    () => initialDraft?.width ?? defaultSamplingForPipeline(initialDraft?.pipeline || "sdxl_txt2img").width
+  );
+  const [height, setHeight] = useState(
+    () => initialDraft?.height ?? defaultSamplingForPipeline(initialDraft?.pipeline || "sdxl_txt2img").height
+  );
+  const [steps, setSteps] = useState(
+    () => initialDraft?.steps ?? defaultSamplingForPipeline(initialDraft?.pipeline || "sdxl_txt2img").steps
+  );
+  const [cfg, setCfg] = useState(
+    () => initialDraft?.cfg ?? defaultSamplingForPipeline(initialDraft?.pipeline || "sdxl_txt2img").cfg
+  );
+  const [dialogueText, setDialogueText] = useState(() => initialDraft?.dialogueText || "");
+  const [voice, setVoice] = useState(() => initialDraft?.voice || "af_heart");
+  const [stylePreset, setStylePreset] = useState<StylePresetId>(
+    () => initialDraft?.stylePreset || "anime_vibrant"
+  );
+  const [adapters, setAdapters] = useState<ModularAdaptersState>(() =>
+    initialDraft
+      ? {
+          ...DEFAULT_MODULAR_ADAPTERS,
+          ipMode: initialDraft.ipConnectors?.[0]?.mode || "none",
+          ipRefImage: initialDraft.ipConnectors?.[0]?.refImagePath || "",
+          ipWeight: initialDraft.ipConnectors?.[0]?.weight ?? DEFAULT_MODULAR_ADAPTERS.ipWeight,
+          cnMode: initialDraft.controlNets?.[0]?.mode || "none",
+          cnImage: initialDraft.controlNets?.[0]?.controlImagePath || "",
+          cnStrength: initialDraft.controlNets?.[0]?.strength ?? DEFAULT_MODULAR_ADAPTERS.cnStrength,
+          characters: initialDraft.characters ? [...initialDraft.characters] : [],
+          relight: initialDraft.relight || "none",
+          relightRefImage: initialDraft.relightRefImagePath || "",
+          enableHandDetailer: Boolean(initialDraft.enableHandDetailer),
+          dualGpuSplit: Boolean(
+            initialDraft.dualGpuSplit || DIT_SPLIT_PIPELINES.has(initialDraft.pipeline)
+          ),
+          enable360Preview: Boolean(
+            initialDraft.enable360Preview || initialDraft.pipeline === "panorama_360"
+          ),
+        }
+      : DEFAULT_MODULAR_ADAPTERS
+  );
   const [streamingMissing, setStreamingMissing] = useState(false);
 
   const [compiled, setCompiled] = useState<CompiledWorkflowResult | null>(null);
@@ -215,7 +277,7 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
   const { data: activeJobStatus } = useQuery<{
     jobId: string;
     status: "QUEUED" | "PROCESSING" | "COMPLETED" | "FAILED";
-    outputs: Array<{ filename: string; previewUrl?: string; gdrivePath?: string }>;
+    outputs: Array<{ filename: string; previewUrl?: string; gdrivePath?: string; gdriveFileId?: string }>;
     errorMessage?: string | null;
   }>({
     queryKey: ["creator-job", activeJobId],
@@ -231,8 +293,66 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
     },
   });
 
-  // Fetch cached models on currently selected ONLINE VM so picker shows ON GPU badge
+  const { data: raceJobStatus } = useQuery<{
+    jobId: string;
+    status: "QUEUED" | "PROCESSING" | "COMPLETED" | "FAILED";
+    outputs: Array<{ filename: string; previewUrl?: string; gdrivePath?: string; gdriveFileId?: string }>;
+    errorMessage?: string | null;
+  }>({
+    queryKey: ["creator-race-job", raceJobId],
+    enabled: Boolean(raceJobId),
+    queryFn: async () => {
+      const res = await fetch(`/api/workflow/${encodeURIComponent(raceJobId!)}/status`);
+      if (!res.ok) throw new Error("Failed to poll race job status");
+      return res.json();
+    },
+    refetchInterval: (q) => {
+      const st = q.state.data?.status;
+      return st === "COMPLETED" || st === "FAILED" ? false : 2500;
+    },
+  });
+
+  // Append finished renders into shared session filmstrip cleanly
+  useEffect(() => {
+    const completedBatches = [
+      { id: activeJobId, data: activeJobStatus, tgt: target },
+      { id: raceJobId, data: raceJobStatus, tgt: "gpu1" },
+    ].filter((j) => j.id && j.data?.status === "COMPLETED" && j.data.outputs?.length);
+    if (completedBatches.length === 0) return;
+
+    const current = useClusterStore.getState().studio.recentOutputs || [];
+    const seenKeys = new Set(current.map((o) => `${o.jobId}:${o.filename}`));
+    const additions = completedBatches.flatMap((j) =>
+      (j.data?.outputs || [])
+        .filter((o) => !seenKeys.has(`${j.id}:${o.filename}`))
+        .map((o) => ({
+          filename: o.filename,
+          gdriveFileId: o.gdriveFileId || "",
+          gdrivePath: o.gdrivePath || "",
+          previewUrl: o.previewUrl || "",
+          target: j.tgt,
+          jobId: j.id || undefined,
+        }))
+    );
+    if (additions.length > 0) {
+      updateStudio({ recentOutputs: [...additions, ...current].slice(0, 18) });
+    }
+  }, [activeJobId, activeJobStatus, raceJobId, raceJobStatus, target, updateStudio]);
+
+  // Fetch cached models on currently selected ONLINE VM (including headless heartbeat telemetry)
   const activeVm = vms.find((v) => v.target === target);
+  const peerDualT4Vm = useMemo(() => {
+    if (!activeVm) return null;
+    return (
+      vms.find(
+        (v) =>
+          v.target !== activeVm.target &&
+          v.provider === activeVm.provider &&
+          v.sessionGroup === activeVm.sessionGroup &&
+          v.status === "ONLINE"
+      ) || null
+    );
+  }, [vms, activeVm]);
   const selectedVmOnline = activeVm?.status === "ONLINE" || activeVm?.status === "BUSY";
   const selectedVmStarting = activeVm?.status === "STARTING";
   const neededProfile: WorkerProfileId =
@@ -247,8 +367,8 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
       })),
     [compiled]
   );
-  const primaryConfiguredTargets = useMemo(
-    () => new Set(configuredAccounts.map((a) => a.primaryTarget)),
+  const configuredTargetsSet = useMemo(
+    () => new Set(configuredAccounts.flatMap((a) => a.targets)),
     [configuredAccounts]
   );
   const accountByTarget = useMemo(
@@ -266,6 +386,13 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
             accountAlias: "acc1",
             stepProgress: 0,
           },
+          {
+            target: "gpu1",
+            status: "OFFLINE",
+            workerProfile: "IMAGE_CORE",
+            accountAlias: "acc1",
+            stepProgress: 0,
+          },
         ] as PublicVmInstance[]);
     return baseList.filter(
       (v) =>
@@ -275,9 +402,9 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
         v.status === "BUSY" ||
         v.status === "STARTING" ||
         v.target === target ||
-        primaryConfiguredTargets.has(v.target)
+        configuredTargetsSet.has(v.target)
     );
-  }, [vms, showAllGpuSlots, configuredAccounts.length, target, primaryConfiguredTargets]);
+  }, [vms, showAllGpuSlots, configuredAccounts.length, target, configuredTargetsSet]);
   const selectedAccountForTarget =
     accountByTarget.get(target) || bestOfflineAccount || null;
 
@@ -383,8 +510,10 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
     setAdapters((prev) => ({
       ...prev,
       ipMode: spec.ipConnectors?.[0]?.mode || "none",
+      ipRefImage: spec.ipConnectors?.[0]?.refImagePath || prev.ipRefImage,
       ipWeight: spec.ipConnectors?.[0]?.weight ?? prev.ipWeight,
       cnMode: spec.controlNets?.[0]?.mode || "none",
+      cnImage: spec.controlNets?.[0]?.controlImagePath || prev.cnImage,
       cnStrength: spec.controlNets?.[0]?.strength ?? prev.cnStrength,
       characters: spec.characters ? [...spec.characters] : [],
       relight: spec.relight || "none",
@@ -394,6 +523,12 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
       enable360Preview: Boolean(spec.enable360Preview || spec.pipeline === "panorama_360"),
     }));
   }
+
+  useEffect(() => {
+    if (initialDraft) {
+      setArchitectDraftSpec(null);
+    }
+  }, [initialDraft, setArchitectDraftSpec]);
 
   function handlePipelineChange(nextPipeline: WorkflowPipelineKind) {
     const isDiT = DIT_SPLIT_PIPELINES.has(nextPipeline);
@@ -504,10 +639,47 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
   }
 
   async function runCreatorAction(
-    action: "compile" | "optimize_with_ai" | "save_template" | "compile_and_run"
+    action: "compile" | "optimize_with_ai" | "save_template" | "compile_and_run" | "seed_race"
   ) {
     setBusyAction(action);
     try {
+      if (action === "seed_race" && peerDualT4Vm) {
+        const baseSpec = buildSpec();
+        const seedA = baseSpec.seed ?? Math.floor(Math.random() * 1_000_000_000);
+        const seedB = seedA + 1;
+        const [resA, resB] = await Promise.all([
+          fetch("/api/workflow/compile", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "compile_and_run",
+              spec: { ...baseSpec, seed: seedA, dualGpuSplit: false },
+              target,
+            }),
+          }).then(async (r) => ({ ok: r.ok, data: await r.json() })),
+          fetch("/api/workflow/compile", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "compile_and_run",
+              spec: { ...baseSpec, seed: seedB, dualGpuSplit: false },
+              target: peerDualT4Vm.target,
+            }),
+          }).then(async (r) => ({ ok: r.ok, data: await r.json() })),
+        ]);
+        if (resA.ok && resA.data.jobId) setActiveJobId(resA.data.jobId);
+        if (resB.ok && resB.data.jobId) setRaceJobId(resB.data.jobId);
+        if (resA.data.compiled) setCompiled(resA.data.compiled);
+        if (resA.ok || resB.ok) {
+          toast.success(
+            `2× Seed Race launched across ${target.toUpperCase()} (#${seedA}) & ${peerDualT4Vm.target.toUpperCase()} (#${seedB})!`
+          );
+        } else {
+          toast.error("Failed to dispatch Dual-T4 Seed Race");
+        }
+        return;
+      }
+
       const res = await fetch("/api/workflow/compile", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -538,6 +710,7 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
         toast.success("Saved custom workflow into Workflow Gallery!");
         refetchCatalog();
       } else if (action === "compile_and_run") {
+        setRaceJobId(null);
         if (data.jobId) setActiveJobId(data.jobId);
         toast.success(
           data.status === "TRANSFERRING_MODELS"
@@ -550,6 +723,18 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
     } finally {
       setBusyAction(null);
     }
+  }
+
+  function handleSendWorkflowToBatch() {
+    const spec = buildSpec();
+    setBatchDraft({
+      baseSpec: spec,
+      title: templateName.trim() || `${pipeline} · Batch`,
+      suggestedMode: adapters.ipMode !== "none" ? "character_ip_set" : "prompt_list",
+      createdAt: Date.now(),
+    });
+    toast.success("Loaded current modular workflow into Batch Studio!");
+    onOpenBatch?.();
   }
 
   async function handleScanDriveWithAi() {
@@ -939,6 +1124,33 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
               Ensure &amp; Run on {target.toUpperCase()}
             </Button>
 
+            {selectedVmOnline && peerDualT4Vm && !adapters.dualGpuSplit && (
+              <Button
+                type="button"
+                disabled={Boolean(busyAction)}
+                onClick={() => runCreatorAction("seed_race")}
+                title={`Run seed vs seed+1 simultaneously across ${target.toUpperCase()} + ${peerDualT4Vm.target.toUpperCase()}`}
+                className="border border-amber-500/40 bg-amber-500/15 text-xs font-semibold text-amber-200 hover:bg-amber-500/25"
+              >
+                {busyAction === "seed_race" ? (
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Shuffle className="mr-1.5 h-3.5 w-3.5" />
+                )}
+                2× Seed Race ({target.toUpperCase()}+{peerDualT4Vm.target.toUpperCase()})
+              </Button>
+            )}
+
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleSendWorkflowToBatch}
+              className="border-cyan-500/40 bg-cyan-500/10 text-xs font-medium text-cyan-200 hover:bg-cyan-500/20"
+            >
+              <Layers className="mr-1.5 h-3.5 w-3.5" />
+              Batch This Workflow →
+            </Button>
+
             {selectedVmStarting ? (
               <Button
                 type="button"
@@ -1031,52 +1243,119 @@ export function SmartWorkflowCreator({ vms }: { vms: PublicVmInstance[] }) {
               </div>
             )}
 
-            {activeJobStatus && (
-              <div
-                className={`space-y-2 rounded-lg border p-2.5 text-[11px] ${
-                  activeJobStatus.status === "COMPLETED"
-                    ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-200"
-                    : activeJobStatus.status === "FAILED"
-                    ? "border-rose-500/35 bg-rose-500/10 text-rose-200"
-                    : "border-indigo-500/35 bg-indigo-500/10 text-indigo-200"
-                }`}
-              >
-                <div className="flex items-center justify-between font-mono text-[10px] font-semibold">
-                  <span className="flex items-center gap-1.5">
-                    {(activeJobStatus.status === "QUEUED" || activeJobStatus.status === "PROCESSING") && (
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                    )}
-                    JOB {activeJobStatus.jobId.slice(-8)} · {activeJobStatus.status}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setActiveJobId(null)}
-                    className="text-zinc-400 hover:text-white"
-                  >
-                    Dismiss
-                  </button>
-                </div>
-                {activeJobStatus.status === "FAILED" && activeJobStatus.errorMessage && (
-                  <p className="text-rose-200">{activeJobStatus.errorMessage}</p>
-                )}
-                {activeJobStatus.status === "COMPLETED" && activeJobStatus.outputs?.length > 0 && (
-                  <div className="grid grid-cols-1 gap-2 pt-1">
-                    {activeJobStatus.outputs.map((out, idx) => (
-                      <div key={idx} className="space-y-1">
-                        {out.previewUrl ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img
-                            src={out.previewUrl}
-                            alt={out.filename}
-                            className="max-h-72 w-full rounded border border-zinc-800 object-contain bg-black/40"
-                          />
-                        ) : (
-                          <span className="font-mono text-[10px]">Generated: {out.filename}</span>
+            {(activeJobStatus || raceJobStatus) && (
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {[
+                  { label: target.toUpperCase(), id: activeJobId, data: activeJobStatus, dismiss: () => setActiveJobId(null) },
+                  ...(raceJobId && raceJobStatus
+                    ? [{ label: peerDualT4Vm?.target.toUpperCase() || "GPU1", id: raceJobId, data: raceJobStatus, dismiss: () => setRaceJobId(null) }]
+                    : []),
+                ]
+                  .filter((j) => j.data)
+                  .map((jobEntry) => {
+                    const st = jobEntry.data!;
+                    return (
+                      <div
+                        key={st.jobId}
+                        className={`space-y-2 rounded-lg border p-2.5 text-[11px] ${
+                          raceJobId ? "" : "sm:col-span-2"
+                        } ${
+                          st.status === "COMPLETED"
+                            ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-200"
+                            : st.status === "FAILED"
+                            ? "border-rose-500/35 bg-rose-500/10 text-rose-200"
+                            : "border-indigo-500/35 bg-indigo-500/10 text-indigo-200"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between font-mono text-[10px] font-semibold">
+                          <span className="flex items-center gap-1.5">
+                            {(st.status === "QUEUED" || st.status === "PROCESSING") && (
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            )}
+                            {jobEntry.label} · {st.jobId.slice(-6)} · {st.status}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={jobEntry.dismiss}
+                            className="text-zinc-400 hover:text-white"
+                          >
+                            Dismiss
+                          </button>
+                        </div>
+                        {st.status === "FAILED" && st.errorMessage && (
+                          <p className="text-rose-200">{st.errorMessage}</p>
+                        )}
+                        {st.status === "COMPLETED" && st.outputs?.length > 0 && (
+                          <div className="grid grid-cols-1 gap-2 pt-1">
+                            {st.outputs.map((out, idx) => (
+                              <div key={idx} className="space-y-1">
+                                {out.previewUrl ? (
+                                  <div className="relative group">
+                                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                                    <img
+                                      src={out.previewUrl}
+                                      alt={out.filename}
+                                      className="max-h-72 w-full rounded border border-zinc-800 object-contain bg-black/40"
+                                    />
+                                    <a
+                                      href={out.previewUrl}
+                                      download={out.filename}
+                                      className="absolute bottom-2 right-2 hidden items-center gap-1 rounded bg-black/75 px-2 py-1 text-[10px] text-white group-hover:inline-flex"
+                                    >
+                                      <Download className="h-3 w-3" /> Save
+                                    </a>
+                                  </div>
+                                ) : (
+                                  <span className="font-mono text-[10px]">Generated: {out.filename}</span>
+                                )}
+                              </div>
+                            ))}
+                          </div>
                         )}
                       </div>
-                    ))}
-                  </div>
-                )}
+                    );
+                  })}
+              </div>
+            )}
+
+            {recentOutputs && recentOutputs.length > 0 && (
+              <div className="space-y-1.5 rounded-lg border border-zinc-800 bg-zinc-950 p-2.5">
+                <div className="flex items-center justify-between text-[10px] font-medium uppercase tracking-wider text-zinc-400">
+                  <span>Session Filmstrip ({recentOutputs.length})</span>
+                  <button
+                    type="button"
+                    onClick={() => updateStudio({ recentOutputs: [] })}
+                    className="text-zinc-500 hover:text-zinc-200"
+                  >
+                    Clear
+                  </button>
+                </div>
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {recentOutputs.map((ro, idx) => (
+                    <a
+                      key={`${ro.jobId}-${ro.filename}-${idx}`}
+                      href={ro.previewUrl || "#"}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="group relative h-14 w-14 shrink-0 overflow-hidden rounded border border-zinc-800 bg-black/50"
+                      title={`${ro.target?.toUpperCase() || "GPU"} · ${ro.filename}`}
+                    >
+                      {ro.previewUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={ro.previewUrl} alt={ro.filename} className="h-full w-full object-cover" />
+                      ) : (
+                        <div className="flex h-full items-center justify-center font-mono text-[9px] text-zinc-500">
+                          {ro.filename.slice(0, 6)}
+                        </div>
+                      )}
+                      {ro.target && (
+                        <span className="absolute bottom-0 left-0 right-0 bg-black/75 px-1 text-center font-mono text-[8px] text-emerald-300">
+                          {ro.target.toUpperCase()}
+                        </span>
+                      )}
+                    </a>
+                  ))}
+                </div>
               </div>
             )}
 

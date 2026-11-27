@@ -6,10 +6,125 @@ export interface PrewarmModelRef {
   filename: string;
 }
 
+export type DualT4TopologyMode =
+  | "dual_parallel"
+  | "dual_pipeline"
+  | "dual_split"
+  | "copilot_split"
+  | "single";
+
+export type LlmTopologyMode =
+  | "llm_layer_split"
+  | "llm_dual_replica"
+  | "llm_ab_arena"
+  | "llm_swarm_multi";
+
+export interface LlmEndpointTelemetry {
+  port: number;
+  gpu: string;
+  model: string;
+  service: string;
+  ready?: boolean;
+}
+
 export interface BootMetadata {
+  modelFetch?: boolean;
   stepDurations?: Record<string, number>;
   currentStepElapsed?: number;
   totalBootElapsed?: number;
+  topologyMode?: DualT4TopologyMode | string;
+  requestedTopologyMode?: DualT4TopologyMode | string | null;
+  llmTopologyMode?: LlmTopologyMode | string;
+  requestedLlmTopology?: LlmTopologyMode | string | null;
+  llmEndpoints?: LlmEndpointTelemetry[];
+  hotModels?: Record<string, string[]>;
+  disk?: { totalGb: number; usedGb: number; freeGb: number } | null;
+  cachedModels?: Record<string, string[]>;
+  storageFiles?: Array<{ category: string; name: string; sizeBytes: number }>;
+}
+
+export function parseBootMetadata(jsonStr: string | null | undefined): BootMetadata | null {
+  if (!jsonStr) return null;
+  try {
+    const parsed = JSON.parse(jsonStr);
+    return parsed && typeof parsed === "object" ? (parsed as BootMetadata) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function mergeBootMetadata(
+  existingJson: string | null | undefined,
+  rawTelem: Record<string, unknown>
+): BootMetadata | null {
+  const prev = parseBootMetadata(existingJson) || {};
+  const reportedTopo =
+    typeof rawTelem.topologyMode === "string" ? rawTelem.topologyMode : undefined;
+  const reqTopo =
+    prev.requestedTopologyMode && reportedTopo && prev.requestedTopologyMode === reportedTopo
+      ? null
+      : prev.requestedTopologyMode ?? undefined;
+  const reportedLlmTopo =
+    typeof rawTelem.llmTopologyMode === "string" ? rawTelem.llmTopologyMode : undefined;
+  const reqLlmTopo =
+    prev.requestedLlmTopology &&
+    reportedLlmTopo &&
+    prev.requestedLlmTopology === reportedLlmTopo
+      ? null
+      : prev.requestedLlmTopology ?? undefined;
+
+  const hasAny =
+    Boolean(rawTelem.stepDurations || rawTelem.currentStepElapsed || rawTelem.totalBootElapsed) ||
+    Boolean(
+      reportedTopo ||
+        reportedLlmTopo ||
+        rawTelem.llmEndpoints ||
+        rawTelem.cachedModels ||
+        rawTelem.storageFiles ||
+        rawTelem.disk ||
+        rawTelem.hotModels
+    ) ||
+    Boolean(Object.keys(prev).length > 0);
+
+  if (!hasAny) return null;
+
+  return {
+    ...prev,
+    modelFetch:
+      rawTelem.modelFetch !== undefined ? rawTelem.modelFetch === true : prev.modelFetch,
+    stepDurations:
+      (rawTelem.stepDurations as Record<string, number> | undefined) ?? prev.stepDurations,
+    currentStepElapsed:
+      typeof rawTelem.currentStepElapsed === "number"
+        ? rawTelem.currentStepElapsed
+        : prev.currentStepElapsed,
+    totalBootElapsed:
+      typeof rawTelem.totalBootElapsed === "number"
+        ? rawTelem.totalBootElapsed
+        : prev.totalBootElapsed,
+    topologyMode: reportedTopo ?? prev.topologyMode,
+    requestedTopologyMode: reqTopo,
+    llmTopologyMode: reportedLlmTopo ?? prev.llmTopologyMode,
+    requestedLlmTopology: reqLlmTopo,
+    llmEndpoints: Array.isArray(rawTelem.llmEndpoints)
+      ? (rawTelem.llmEndpoints as LlmEndpointTelemetry[])
+      : prev.llmEndpoints,
+    hotModels:
+      rawTelem.hotModels && typeof rawTelem.hotModels === "object"
+        ? (rawTelem.hotModels as Record<string, string[]>)
+        : prev.hotModels,
+    disk:
+      rawTelem.disk && typeof rawTelem.disk === "object"
+        ? (rawTelem.disk as BootMetadata["disk"])
+        : prev.disk,
+    cachedModels:
+      rawTelem.cachedModels && typeof rawTelem.cachedModels === "object"
+        ? (rawTelem.cachedModels as Record<string, string[]>)
+        : prev.cachedModels,
+    storageFiles: Array.isArray(rawTelem.storageFiles)
+      ? (rawTelem.storageFiles as BootMetadata["storageFiles"])
+      : prev.storageFiles,
+  };
 }
 
 export interface PublicVmInstance {

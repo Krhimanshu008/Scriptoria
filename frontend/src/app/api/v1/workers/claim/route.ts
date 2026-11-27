@@ -23,6 +23,17 @@ export async function POST(req: NextRequest) {
     const capabilities: string[] = Array.isArray(rawCapabilities)
       ? rawCapabilities.map((c) => String(c))
       : [];
+    const stagePreference = String(body.stagePreference || "any");
+    const hotCheckpoints = new Set(
+      (Array.isArray(body.hotCheckpoints) ? (body.hotCheckpoints as unknown[]) : []).map((s: unknown) =>
+        String(s).toLowerCase()
+      )
+    );
+    const cachedFilenames = new Set(
+      (Array.isArray(body.cachedFilenames) ? (body.cachedFilenames as unknown[]) : []).map((s: unknown) =>
+        String(s).toLowerCase()
+      )
+    );
 
     const now = new Date();
     const leaseCutoff = new Date(now.getTime() - 5 * 60 * 1000); // 5-minute lease
@@ -40,7 +51,7 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // 2. Find next pending task matching capabilities
+    // 2. Find next pending tasks matching capabilities (ignoring PAUSED batches)
     const whereClause: {
       batch: { userId: string; status: { in: string[] } };
       status: string;
@@ -62,13 +73,14 @@ export async function POST(req: NextRequest) {
     const candidates = await prisma.batchTask.findMany({
       where: whereClause,
       orderBy: [{ sequenceIndex: "asc" }, { createdAt: "asc" }],
-      take: 25,
+      take: 50,
       include: {
         batch: {
           select: {
             id: true,
             title: true,
             sourceApp: true,
+            executionMode: true,
           },
         },
       },
@@ -101,6 +113,10 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    const completedDepOutputs = new Map<
+      string,
+      Array<{ filename?: string; previewUrl?: string; gdriveFileId?: string; localPath?: string }>
+    >();
     const completedDepSet = new Set<string>();
     if (allDepIds.size > 0) {
       const depRows = await prisma.batchTask.findMany({
@@ -108,21 +124,58 @@ export async function POST(req: NextRequest) {
           id: { in: Array.from(allDepIds) },
           status: "COMPLETED",
         },
-        select: { id: true },
+        select: { id: true, outputFilesJson: true },
       });
-      for (const r of depRows) completedDepSet.add(r.id);
+      for (const r of depRows) {
+        completedDepSet.add(r.id);
+        if (r.outputFilesJson) {
+          try {
+            const parsedOut = JSON.parse(r.outputFilesJson);
+            if (Array.isArray(parsedOut)) completedDepOutputs.set(r.id, parsedOut);
+          } catch {}
+        }
+      }
     }
+
+    // Score dependency-ready candidates using hot checkpoint locality, local /tmp cache hits, and Dual-T4 stage affinity
+    const readyScored = candidates
+      .filter((c) => {
+        const target = studioTargetForTask(c);
+        if (target && target !== workerId) return false;
+        const deps = candidateDeps.get(c.id) || [];
+        return deps.every((depId) => completedDepSet.has(depId));
+      })
+      .map((c) => {
+        let score = -c.sequenceIndex * 0.01;
+        const ckptLower = (c.baseCheckpoint || "").toLowerCase();
+        if (ckptLower && hotCheckpoints.has(ckptLower)) {
+          score += 120;
+        }
+        if (c.requiredModelsJson) {
+          try {
+            const reqArr = JSON.parse(c.requiredModelsJson);
+            if (Array.isArray(reqArr)) {
+              for (const rm of reqArr) {
+                const fn = String(rm?.filename || "").split("/").pop()?.toLowerCase() || "";
+                if (fn && cachedFilenames.has(fn)) {
+                  score += 20;
+                }
+              }
+            }
+          } catch {}
+        }
+        if (stagePreference === "stage1_preferred") {
+          score += c.stageIndex === 1 ? 45 : -25;
+        } else if (stagePreference === "stage2_preferred") {
+          score += c.stageIndex === 2 ? 45 : -25;
+        }
+        return { c, score };
+      })
+      .sort((a, b) => b.score - a.score);
 
     // Atomic claim with compare-and-set (`status: "PENDING"`) to eliminate multi-GPU race conditions
     let nextTask: (typeof candidates)[number] | null = null;
-    for (const c of candidates) {
-      const target = studioTargetForTask(c);
-      if (target && target !== workerId) continue;
-      const deps = candidateDeps.get(c.id) || [];
-      if (deps.some((depId) => !completedDepSet.has(depId))) {
-        continue;
-      }
-
+    for (const { c } of readyScored) {
       const claimRes = await prisma.batchTask.updateMany({
         where: {
           id: c.id,
@@ -234,22 +287,95 @@ export async function POST(req: NextRequest) {
       modelPreparationError = error instanceof Error ? error.message : "Model resolution failed.";
     }
 
+    // Resolve parent dependency outputs (for Stage 1 -> Stage 2 handoff) and patch __STAGE1_OUTPUT_IMAGE__ placeholder
+    const nextDeps = candidateDeps.get(nextTask.id) || [];
+    const dependsOnOutputs = nextDeps.flatMap((depId) => completedDepOutputs.get(depId) || []);
+    const firstParentFilename = dependsOnOutputs.find((o) => typeof o?.filename === "string" && o.filename)?.filename;
+    if (firstParentFilename && compiledGraph && typeof compiledGraph === "object") {
+      for (const node of Object.values(compiledGraph as Record<string, Record<string, unknown>>)) {
+        const inputs = node?.inputs as Record<string, unknown> | undefined;
+        if (node?.class_type === "LoadImage" && inputs?.image === "__STAGE1_OUTPUT_IMAGE__") {
+          inputs.image = firstParentFilename;
+        }
+      }
+    }
+
+    // Lookahead Prefetch: identify up to 3 un-cached models from upcoming queued checkpoint bins
+    let nextPrefetchModels: unknown[] = [];
+    try {
+      const upcoming = candidates.filter(
+        (c) => c.id !== nextTask!.id && c.baseCheckpoint !== nextTask!.baseCheckpoint
+      );
+      const prefetchRefs = new Map<string, { category: string; filename: string; slug?: string }>();
+      for (const up of upcoming) {
+        if (!up.requiredModelsJson) continue;
+        try {
+          const parsed = JSON.parse(up.requiredModelsJson);
+          if (!Array.isArray(parsed)) continue;
+          for (const rm of parsed) {
+            const fn = String(rm?.filename || "").split("/").pop() || "";
+            const cat = String(rm?.category || "");
+            if (!fn || !cat || cachedFilenames.has(fn.toLowerCase())) continue;
+            prefetchRefs.set(`${cat}/${fn}`, {
+              category: cat,
+              filename: fn,
+              slug: typeof rm.slug === "string" ? rm.slug : undefined,
+            });
+            if (prefetchRefs.size >= 3) break;
+          }
+        } catch {}
+        if (prefetchRefs.size >= 3) break;
+      }
+
+      if (prefetchRefs.size > 0) {
+        const refList = Array.from(prefetchRefs.values());
+        const prefetchAssets = await prisma.modelAsset.findMany({
+          where: {
+            userId: auth.userId,
+            OR: [
+              { filename: { in: refList.map((r) => r.filename) } },
+              { slug: { in: refList.flatMap((r) => (r.slug ? [r.slug] : [])) } },
+            ],
+          },
+        });
+        nextPrefetchModels = await Promise.all(
+          refList
+            .map((r) => {
+              const asset =
+                prefetchAssets.find((a) => r.slug && a.slug === r.slug) ||
+                prefetchAssets.find((a) => a.filename === r.filename);
+              return asset
+                ? prepareWorkerModel(auth.userId, auth.worker?.provider || "external", asset, {
+                    hasDrive: body.driveReady === true,
+                  })
+                : null;
+            })
+            .filter((p): p is NonNullable<typeof p> => p !== null)
+        );
+      }
+    } catch {
+      nextPrefetchModels = [];
+    }
+
     return NextResponse.json({
       task: {
         id: nextTask.id,
         batchId: nextTask.batchId,
         batchTitle: nextTask.batch.title,
         sequenceIndex: nextTask.sequenceIndex,
+        stageIndex: nextTask.stageIndex,
         sceneKey: nextTask.sceneKey,
         trackType: nextTask.trackType,
         workerProfile: nextTask.workerProfile,
         workflowSlug: nextTask.workflowSlug,
         baseCheckpoint: nextTask.baseCheckpoint,
         requiredModels,
+        dependsOnOutputs,
         modelPreparationError,
         inputParams,
         compiledGraph,
       },
+      nextPrefetchModels,
       leaseSeconds: 300,
     });
   } catch (error) {

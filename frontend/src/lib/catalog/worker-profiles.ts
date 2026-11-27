@@ -107,6 +107,10 @@ export const WORKER_PROFILES: Record<WorkerProfileId, WorkerProfileSpec> = {
         repoUrl: "https://github.com/city96/ComfyUI-GGUF.git",
       },
       {
+        name: "ComfyUI-MultiGPU",
+        repoUrl: "https://github.com/pollockjj/ComfyUI-MultiGPU.git",
+      },
+      {
         name: "ComfyUI-KJNodes",
         repoUrl: "https://github.com/kijai/ComfyUI-KJNodes.git",
       },
@@ -144,6 +148,10 @@ export const WORKER_PROFILES: Record<WorkerProfileId, WorkerProfileSpec> = {
       {
         name: "ComfyUI-GGUF",
         repoUrl: "https://github.com/city96/ComfyUI-GGUF.git",
+      },
+      {
+        name: "ComfyUI-MultiGPU",
+        repoUrl: "https://github.com/pollockjj/ComfyUI-MultiGPU.git",
       },
       {
         name: "ComfyUI-KJNodes",

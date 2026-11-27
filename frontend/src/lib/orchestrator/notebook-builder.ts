@@ -27,6 +27,7 @@ export interface NotebookBuildConfig {
   prewarmModels?: PrewarmModelItem[];
   headlessMode?: boolean;
   quietStdout?: boolean;
+  llmTopologyMode?: string;
 }
 
 /**
@@ -366,6 +367,8 @@ ENABLE_OFFLINE_SCAN = ${cfg.enableOfflineDatasetScan ? "True" : "False"}
 PREWARM_MODELS = json.loads(${JSON.stringify(JSON.stringify(prewarmModels))})
 HEADLESS_MODE = ${cfg.headlessMode ? "True" : "False"}
 QUIET_STDOUT = ${cfg.quietStdout ? "True" : "False"}
+LLM_TOPO_MODE = ${JSON.stringify(cfg.llmTopologyMode || (cfg.workerProfile === "LLM_LIGHTWEIGHT_SWARM" ? "llm_swarm_multi" : "llm_layer_split"))}
+LLM_ACTIVE_ENDPOINTS = []
 
 LAST_ACTIVE = time.time()
 BOOT_LOGS = deque(maxlen=150)
@@ -396,6 +399,12 @@ COMFY_DIR = "/tmp/ComfyUI"
 FASTBOOT_SITE = "/tmp/sc_site_packages"
 PY_VER_TAG = f"{sys.version_info.major}{sys.version_info.minor}"
 FASTBOOT_REMOTE = f"{GDRIVE_BASE}/cache/fastboot_{PROVIDER}_{FASTBOOT_CACHE_KEY}_py{PY_VER_TAG}_v2.tar.gz"
+TOPOLOGY_MODE = "dual_split" if SINGLE_DUAL_GPU else ("dual_parallel" if PROVIDER == "kaggle" and len(TARGETS) > 1 else "single")
+TOPOLOGY_LOCK = threading.RLock()
+TOPOLOGY_SWITCHING = threading.Event()
+HOT_MODELS_BY_PORT = {}
+MODEL_SCAN_DIRTY = True
+MODEL_SCAN_CACHE = {"ts": 0.0, "data": None, "hash": "", "sentHash": ""}
 
 try:
     with open("/tmp/scriptoria_worker.env", "w", encoding="utf-8") as _ef:
@@ -440,6 +449,79 @@ def _terminate_worker_and_exit(reason="Session cancelled or superseded"):
             pass
     os._exit(0)
 
+def _scan_local_models_cached(force=False):
+    global MODEL_SCAN_DIRTY
+    now = time.time()
+    if not force and not MODEL_SCAN_DIRTY and MODEL_SCAN_CACHE["data"] is not None and (now - MODEL_SCAN_CACHE["ts"]) < 12.0:
+        return MODEL_SCAN_CACHE["data"], MODEL_SCAN_CACHE["hash"]
+    cat_map = {
+        "checkpoints": "checkpoints",
+        "loras": "loras",
+        "vae": "vaes",
+        "controlnet": "controlnets",
+        "ipadapter": "ipadapters",
+        "clip_vision": "clip_vision",
+        "upscale_models": "upscale_models",
+        "diffusion_models": "diffusion_models",
+        "unet": "unet",
+        "text_encoders": "text_encoders",
+        "ultralytics": "ultralytics",
+        "sams": "sams",
+        "lbm": "lbm",
+    }
+    models_by_key = {v: [] for v in set(cat_map.values())}
+    storage_files = []
+    hash_entries = []
+    base_models = "/tmp/models"
+    if os.path.isdir(base_models):
+        for root, _, fnames in os.walk(base_models):
+            rel_root = os.path.relpath(root, base_models)
+            if rel_root == ".":
+                continue
+            parts = rel_root.replace("\\\\", "/").split("/")
+            raw_cat = parts[0]
+            sub = "/".join(parts[1:])
+            ui_key = cat_map.get(raw_cat)
+            for fname in sorted(fnames):
+                if fname.endswith(".part"):
+                    continue
+                fpath = os.path.join(root, fname)
+                if os.path.isfile(fpath) or os.path.islink(fpath):
+                    try:
+                        sz = os.path.getsize(fpath)
+                    except Exception:
+                        sz = 0
+                    rel_name = f"{sub}/{fname}" if sub else fname
+                    if ui_key:
+                        models_by_key[ui_key].append(fname)
+                    if len(storage_files) < 160:
+                        storage_files.append({"category": raw_cat, "name": rel_name, "sizeBytes": sz})
+                    hash_entries.append(f"{raw_cat}/{rel_name}:{sz}")
+    disk_info = None
+    try:
+        du = shutil.disk_usage("/tmp")
+        disk_info = {
+            "totalGb": round(du.total / (1024 ** 3), 2),
+            "usedGb": round(du.used / (1024 ** 3), 2),
+            "freeGb": round(du.free / (1024 ** 3), 2),
+        }
+    except Exception:
+        pass
+    digest = hashlib.sha1("|".join(sorted(hash_entries)).encode("utf-8")).hexdigest()[:12]
+    data = {"models": models_by_key, "storageFiles": storage_files, "disk": disk_info}
+    MODEL_SCAN_CACHE["ts"] = now
+    MODEL_SCAN_CACHE["data"] = data
+    MODEL_SCAN_CACHE["hash"] = digest
+    MODEL_SCAN_DIRTY = False
+    return data, digest
+
+def _get_cached_filenames_flat():
+    scan, _ = _scan_local_models_cached()
+    out = []
+    for arr in (scan.get("models") or {}).values():
+        out.extend(arr)
+    return list(dict.fromkeys(out))
+
 def post_heartbeat(step, status="STARTING", telemetry=None):
     global CURRENT_STEP, EVER_CONNECTED, HEARTBEAT_FAIL_STREAK, STALE_410_STREAK, LAST_HB_SENT, STEP_START, STEP_DURATIONS, BOOT_ONLINE_AT
     now = time.time()
@@ -465,6 +547,21 @@ def post_heartbeat(step, status="STARTING", telemetry=None):
     telem["driveHealthy"] = bool(GDRIVE_HEALTHY)
     telem["headlessMode"] = bool(HEADLESS_MODE)
     telem["modelFetch"] = bool(HEADLESS_MODE)
+    telem["topologyMode"] = TOPOLOGY_MODE
+    telem["hotModels"] = {str(k): list(v) for k, v in HOT_MODELS_BY_PORT.items()}
+    if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B", "LLM_LIGHTWEIGHT_SWARM"):
+        telem["llmTopologyMode"] = LLM_TOPO_MODE
+        telem["llmEndpoints"] = list(LLM_ACTIVE_ENDPOINTS)
+    try:
+        scan_data, scan_hash = _scan_local_models_cached()
+        if scan_data.get("disk"):
+            telem["disk"] = scan_data["disk"]
+        if scan_hash != MODEL_SCAN_CACHE.get("sentHash") or step == 5:
+            telem["cachedModels"] = scan_data["models"]
+            telem["storageFiles"] = scan_data["storageFiles"]
+            MODEL_SCAN_CACHE["sentHash"] = scan_hash
+    except Exception:
+        pass
     payload = {
         "token": REG_JWT,
         "tunnelUrl": TUNNEL_URL or "",
@@ -490,6 +587,12 @@ def post_heartbeat(step, status="STARTING", telemetry=None):
                         _terminate_worker_and_exit(hb_json.get("reason") or "Server kill signal")
                     if hb_json.get("gdriveTokenPayload"):
                         apply_synced_gdrive_token(hb_json.get("gdriveTokenPayload"), hb_json.get("gdriveUpdatedAtMs"))
+                    req_topo = hb_json.get("switchTopology")
+                    if req_topo and req_topo != TOPOLOGY_MODE and callable(globals().get("switch_comfy_topology")):
+                        threading.Thread(target=globals()["switch_comfy_topology"], args=(req_topo, "server_command"), daemon=True).start()
+                    req_llm_topo = hb_json.get("switchLlmTopology")
+                    if req_llm_topo and req_llm_topo != LLM_TOPO_MODE and callable(globals().get("start_llm_workers")):
+                        threading.Thread(target=globals()["start_llm_workers"], kwargs={"topo_mode": req_llm_topo}, daemon=True).start()
             except Exception:
                 pass
         EVER_CONNECTED = True
@@ -509,6 +612,20 @@ def post_heartbeat(step, status="STARTING", telemetry=None):
         HEARTBEAT_FAIL_STREAK += 1
         if not QUIET_STDOUT:
             print(f"[HEARTBEAT] Warning: {e}", flush=True)
+
+def _worker_api_post(path, body_dict, timeout=20):
+    req = urllib.request.Request(
+        f"{APP_URL}{path}",
+        data=json.dumps(body_dict).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"VmToken {REG_JWT}",
+            "User-Agent": "Scriptoria-HeadlessWorker/1.0",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8") or "{}")
 
 def _crash_hook(exc_type, exc_val, exc_tb):
     import traceback
@@ -720,6 +837,7 @@ ${buildPythonMirrorDownloadHelper()}
 
 FETCH_SEMAPHORE = threading.Semaphore(2)
 FETCH_PATH_LOCKS = {}
+ACTIVE_FETCH_BY_PATH = {}
 VERIFIED_FILES = {}
 
 def _file_stamp(path):
@@ -786,6 +904,7 @@ def _run_fetch_job(job_id, mirrors, category, subdir, filename, target_path, exp
                     raise
 
             os.replace(tmp_dl, target_path)
+            globals()["MODEL_SCAN_DIRTY"] = True
             globals()["LAST_ACTIVE"] = time.time()
             final_size = os.path.getsize(target_path)
             with FETCH_LOCK:
@@ -827,6 +946,10 @@ def _run_fetch_job(job_id, mirrors, category, subdir, filename, target_path, exp
                 pass
             _upd(status="failed", error=str(fe), speedMbps=0)
             log_event(f"Direct fetch failed ({filename}): {fe}", category="ERROR", level="ERROR")
+        finally:
+            with FETCH_LOCK:
+                if ACTIVE_FETCH_BY_PATH.get(target_path) == job_id:
+                    ACTIVE_FETCH_BY_PATH.pop(target_path, None)
 
 # -------------------------------------------------------------
 # 2. Start Sidecar (:9999) Immediately + Prepare Rclone / Caddy Config
@@ -839,16 +962,23 @@ def start_model_fetch(body, job_id=None):
     mirrors = list(body.get("mirrors") or [])
     if not mirrors and body.get("url"):
         mirrors = [dict(body, sourceKind="direct")]
+    explicit_id = bool(job_id)
     job_id = job_id or str(uuid.uuid4())
     with FETCH_LOCK:
         if job_id in FETCH_JOBS:
             return job_id
+        active_id = ACTIVE_FETCH_BY_PATH.get(dest)
+        if not explicit_id and active_id and active_id in FETCH_JOBS:
+            st = FETCH_JOBS[active_id].get("status")
+            if st in ("queued", "downloading"):
+                return active_id
         key = (dest, body.get("sha256") or "", int(body.get("expectedSizeBytes") or 0))
         stamp = _file_stamp(dest)
         if stamp and VERIFIED_FILES.get(key) == stamp:
             FETCH_JOBS[job_id] = dict(jobId=job_id, filename=filename, category=category, status="completed",
                 bytesDone=stamp[1], totalBytes=stamp[1], percentage=100, speedMbps=0, source="cache")
             return job_id
+        ACTIVE_FETCH_BY_PATH[dest] = job_id
         FETCH_JOBS[job_id] = dict(jobId=job_id, filename=filename, category=category, status="queued",
             bytesDone=0, totalBytes=body.get("expectedSizeBytes") or 0, percentage=0, speedMbps=0, error=None)
     threading.Thread(target=_run_fetch_job, args=(job_id, mirrors, category, subdir, filename, dest,
@@ -873,7 +1003,14 @@ class SidecarHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"status": "ok", "targets": TARGETS, "ports": PORTS, "profiles": GPU_PROFILES}).encode())
+            self.wfile.write(json.dumps({
+                "status": "ok",
+                "targets": TARGETS,
+                "ports": PORTS,
+                "profiles": GPU_PROFILES,
+                "topologyMode": TOPOLOGY_MODE,
+                "hotModels": {str(k): list(v) for k, v in HOT_MODELS_BY_PORT.items()},
+            }).encode())
         elif self.path == "/logs":
             with LOG_LOCK:
                 snapshot = list(BOOT_LOGS)
@@ -949,6 +1086,7 @@ class SidecarHandler(BaseHTTPRequestHandler):
             if not cat or not rel_parts or not target_real.startswith(base_real + os.sep) or not os.path.exists(target_real):
                 self.send_response(404); self.end_headers(); return
             os.remove(target_real)
+            globals()["MODEL_SCAN_DIRTY"] = True
             log_event(f"Deleted cached model /tmp/models/{cat}/{'/'.join(rel_parts)}", category="SYSTEM")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -978,6 +1116,38 @@ class SidecarHandler(BaseHTTPRequestHandler):
                         pass
                 os._exit(0)
             threading.Thread(target=terminate_vm, daemon=False).start()
+            return
+
+        if self.path == "/comfy/switch-mode":
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length) or b"{}") if length > 0 else {}
+            new_mode = str(body.get("mode") or "dual_parallel").strip()
+            if new_mode not in ("dual_parallel", "dual_pipeline", "dual_split", "copilot_split", "single"):
+                self.send_response(400); self.end_headers(); return
+            if callable(globals().get("switch_comfy_topology")):
+                res = globals()["switch_comfy_topology"](new_mode, "sidecar_api")
+                self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
+                self.wfile.write(json.dumps(res).encode())
+                return
+            self.send_response(503); self.end_headers(); return
+
+        if self.path == "/copilot/eval":
+            length = int(self.headers.get("Content-Length", 0))
+            raw_body = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                creq = urllib.request.Request(
+                    "http://127.0.0.1:8190/v1/chat/completions",
+                    data=raw_body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(creq, timeout=90) as cresp:
+                    out_bytes = cresp.read()
+                self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
+                self.wfile.write(out_bytes)
+            except Exception as ce:
+                self.send_response(502); self.send_header("Content-Type", "application/json"); self.end_headers()
+                self.wfile.write(json.dumps({"error": str(ce)}).encode())
             return
 
         if self.path in ("/worker/restart", "/worker/stop", "/worker/start"):
@@ -1100,16 +1270,19 @@ with RCLONE_LOCK:
     _write_rclone_conf_unlocked(push_rc=False)
     gdrive_cfg = GDRIVE_CFG
 
-with open("/tmp/Caddyfile", "w", encoding="utf-8") as f:
-    f.write(f"""(sc_dispatch) {{
-    ${singleDualGpu ? `@is_8189_single header X-Target-Port 8189
-    handle @is_8189_single {{
-        reverse_proxy 127.0.0.1:8188 {{
+def _write_caddy_config(is_dual_split=False):
+    split_block = """@is_8189_single header X-Target-Port 8189
+    handle @is_8189_single {
+        reverse_proxy 127.0.0.1:8188 {
             header_up Host 127.0.0.1
             flush_interval -1
-        }}
-    }}
-    ` : ""}@has_header header X-Target-Port *
+        }
+    }
+    """ if is_dual_split else ""
+    port_8189_dst = "8188" if is_dual_split else "8189"
+    with open("/tmp/Caddyfile", "w", encoding="utf-8") as f:
+        f.write(f"""(sc_dispatch) {{
+    {split_block}@has_header header X-Target-Port *
     handle @has_header {{
         @badport not header_regexp X-Target-Port ^(8188|8189|8190|8191|8192|8193|8194|5572|9999)$
         handle @badport {{
@@ -1124,7 +1297,7 @@ with open("/tmp/Caddyfile", "w", encoding="utf-8") as f:
     }}
     @want8189 header_regexp Cookie (^|;\\\\s*)sc_vm_port=8189(;|$)
     handle @want8189 {{
-        reverse_proxy 127.0.0.1:${singleDualGpu ? "8188" : "8189"} {{
+        reverse_proxy 127.0.0.1:{port_8189_dst} {{
             header_up Host 127.0.0.1
             flush_interval -1
         }}
@@ -1169,6 +1342,8 @@ with open("/tmp/Caddyfile", "w", encoding="utf-8") as f:
     }}
 }}
 """)
+
+_write_caddy_config(SINGLE_DUAL_GPU)
 
 # -------------------------------------------------------------
 # 3. Parallel Stage: Rclone + Caddy + Cloudflared + uv Binary
@@ -1366,6 +1541,163 @@ if PREWARM_MODELS:
     for startup_model in PREWARM_MODELS:
         start_model_fetch(startup_model)
 
+def _resolve_llama_bin():
+    from pathlib import Path as _P
+    os.makedirs("/tmp/llama_bin", exist_ok=True)
+    if os.path.exists("/tmp/llama_bin/llama-server"):
+        return "/tmp/llama_bin/llama-server"
+    for cand in _P("/kaggle/input").rglob("llama-server") if os.path.exists("/kaggle/input") else []:
+        if cand.is_file():
+            dst = "/tmp/llama_bin/llama-server"
+            shutil.copy2(str(cand), dst)
+            os.chmod(dst, 0o755)
+            for so in cand.parent.glob("*.so*"):
+                shutil.copy2(str(so), f"/tmp/llama_bin/{so.name}")
+            return dst
+
+    if rclone_ok:
+        try:
+            st = rc_post("operations/stat", {"fs": f"gdrive:{GDRIVE_BASE}/fastboot", "remote": "llama_server_t4_v1.tar.gz"}, timeout=10)
+            if (st.get("item") or {}).get("Size", 0) > 100000:
+                log_event("Restoring cached llama-server binary from Google Drive...", category="SYSTEM", level="SUCCESS")
+                rc_copy_async({
+                    "srcFs": f"gdrive:{GDRIVE_BASE}/fastboot", "srcRemote": "llama_server_t4_v1.tar.gz",
+                    "dstFs": "/tmp", "dstRemote": "llama_bin.tar.gz",
+                }, max_wait=120, label="llama-server restore")
+                subprocess.run(["tar", "-xzf", "/tmp/llama_bin.tar.gz", "-C", "/tmp/llama_bin"], check=True)
+                bpath = "/tmp/llama_bin/llama-server"
+                if os.path.exists(bpath):
+                    os.chmod(bpath, 0o755)
+                    return bpath
+        except Exception as re_err:
+            log_event(f"Drive llama-server lookup: {re_err}", category="SYSTEM")
+
+    try:
+        log_event("Fetching official ggml-org/llama.cpp Ubuntu CUDA release...", category="SYSTEM")
+        rel_req = urllib.request.Request(
+            "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=8",
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "Scriptoria"},
+        )
+        with urllib.request.urlopen(rel_req, timeout=20) as rel_resp:
+            releases = json.loads(rel_resp.read().decode("utf-8"))
+        bin_url = None
+        cudart_url = None
+        for rel in releases:
+            assets = rel.get("assets", []) or []
+            b_hit = next((a["browser_download_url"] for a in assets if "bin-ubuntu-cuda-12" in a.get("name", "") and a.get("name", "").startswith("llama-") and a.get("name", "").endswith("-x64.tar.gz")), None)
+            c_hit = next((a["browser_download_url"] for a in assets if "bin-ubuntu-cuda-12" in a.get("name", "") and a.get("name", "").startswith("cudart-llama-") and a.get("name", "").endswith("-x64.tar.gz")), None)
+            if b_hit:
+                bin_url = b_hit
+                cudart_url = c_hit
+                break
+        if not bin_url:
+            raise RuntimeError("No Ubuntu CUDA-12 release tarball found in ggml-org/llama.cpp")
+
+        def _dl_fast_bin(url, out_path):
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            if shutil.which("aria2c"):
+                subprocess.run([
+                    "aria2c", "-x", "16", "-s", "16", "-k", "1M",
+                    "--file-allocation=none", "--allow-overwrite=true",
+                    "--auto-file-renaming=false",
+                    "-d", os.path.dirname(out_path), "-o", os.path.basename(out_path),
+                    url
+                ], check=True, stdout=subprocess.DEVNULL)
+            else:
+                subprocess.run(["curl", "-sSL", url, "-o", out_path], check=True)
+
+        _dl_fast_bin(bin_url, "/tmp/llama_cuda.tar.gz")
+        subprocess.run(["tar", "-xzf", "/tmp/llama_cuda.tar.gz", "-C", "/tmp/llama_bin"], check=True)
+        if cudart_url:
+            _dl_fast_bin(cudart_url, "/tmp/llama_cudart.tar.gz")
+            subprocess.run(["tar", "-xzf", "/tmp/llama_cudart.tar.gz", "-C", "/tmp/llama_bin"], check=True)
+        for root, _, files in os.walk("/tmp/llama_bin"):
+            for fname in files:
+                if fname == "llama-server" or ".so" in fname:
+                    src_p = os.path.join(root, fname)
+                    dst_p = os.path.join("/tmp/llama_bin", fname)
+                    if src_p != dst_p and not os.path.exists(dst_p):
+                        shutil.copy2(src_p, dst_p)
+        dst_srv = "/tmp/llama_bin/llama-server"
+        if os.path.exists(dst_srv):
+            os.chmod(dst_srv, 0o755)
+            chk_env = os.environ.copy()
+            chk_env["LD_LIBRARY_PATH"] = f"/tmp/llama_bin:{chk_env.get('LD_LIBRARY_PATH', '')}"
+            chk = subprocess.run([dst_srv, "--version"], env=chk_env, capture_output=True, text=True, timeout=15)
+            if chk.returncode == 0:
+                log_event(f"Prebuilt llama-server ready: {(chk.stdout or chk.stderr).strip()[:100]}", category="SYSTEM", level="SUCCESS")
+                if rclone_ok:
+                    def _pack_and_save_bin():
+                        try:
+                            subprocess.run(["tar", "-czf", "/tmp/llama_server_t4_v1.tar.gz", "-C", "/tmp/llama_bin", "."], check=True)
+                            rc_copy_async({"srcFs": "/tmp", "srcRemote": "llama_server_t4_v1.tar.gz", "dstFs": f"gdrive:{GDRIVE_BASE}/fastboot", "dstRemote": "llama_server_t4_v1.tar.gz"}, max_wait=120, label="Cache llama-server")
+                        except Exception:
+                            pass
+                    threading.Thread(target=_pack_and_save_bin, daemon=True).start()
+                return dst_srv
+            raise RuntimeError(f"llama-server --version failed ({chk.returncode}): {(chk.stderr or chk.stdout)[-240:]}")
+    except Exception as pe:
+        log_event(f"Prebuilt llama-server failed ({pe}); compiling sm_75 once...", category="SYSTEM", level="WARN")
+
+    def _run_logged(cmd_list, step_label):
+        res = subprocess.run(cmd_list, capture_output=True, text=True)
+        if res.returncode != 0:
+            tail = (res.stderr or res.stdout or "")[-400:]
+            log_event(f"{step_label} failed (rc={res.returncode}): {tail}", category="ERROR", level="ERROR")
+            raise RuntimeError(f"{step_label} failed (rc={res.returncode}): {tail}")
+
+    _run_logged(["bash", "-lc", "which cmake >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq cmake build-essential)"], "apt cmake")
+    if not os.path.exists("/tmp/llama_src"):
+        _run_logged(["git", "clone", "--depth", "1", "https://github.com/ggml-org/llama.cpp.git", "/tmp/llama_src"], "git clone llama.cpp")
+    _run_logged(["cmake", "-B", "/tmp/llama_src/build", "-S", "/tmp/llama_src", "-DGGML_CUDA=ON", "-DCMAKE_CUDA_ARCHITECTURES=75", "-DLLAMA_CURL=OFF"], "cmake configure")
+    _run_logged(["cmake", "--build", "/tmp/llama_src/build", "--config", "Release", "--target", "llama-server", "-j", "4"], "cmake build")
+    shutil.copy2("/tmp/llama_src/build/bin/llama-server", "/tmp/llama_bin/llama-server")
+    for f_so in os.listdir("/tmp/llama_src/build/bin"):
+        if ".so" in f_so:
+            shutil.copy2(os.path.join("/tmp/llama_src/build/bin", f_so), os.path.join("/tmp/llama_bin", f_so))
+    os.chmod("/tmp/llama_bin/llama-server", 0o755)
+    return "/tmp/llama_bin/llama-server"
+
+def _fast_download_hf(repo_id, filename, dst_dir="/tmp/models/llm/qwen3_vl_8b", label="Model"):
+    os.makedirs(dst_dir, exist_ok=True)
+    final_path = os.path.join(dst_dir, filename)
+    if os.path.exists(final_path) and os.path.getsize(final_path) > 1000000:
+        log_event(f"Local cache hit for {filename} ({round(os.path.getsize(final_path)/(1024**3), 2)}GB)", category="SYSTEM", level="SUCCESS")
+        return final_path
+    hf_url = f"https://huggingface.co/{repo_id}/resolve/main/{filename}"
+    part_path = final_path + ".part"
+    t0 = time.time()
+    last_log = time.time()
+    log_event(f"Fast-downloading {filename} from Hugging Face CDN (16 parallel streams)...", category="DOWNLOAD")
+    if shutil.which("aria2c"):
+        cmd = [
+            "aria2c", "-x", "16", "-s", "16", "-k", "4M",
+            "--file-allocation=none", "--allow-overwrite=true",
+            "--auto-file-renaming=false", "--summary-interval=1",
+            "-d", dst_dir, "-o", os.path.basename(part_path),
+            hf_url
+        ]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        while proc.poll() is None:
+            if os.path.exists(part_path):
+                sz = os.path.getsize(part_path)
+                now = time.time()
+                if now - last_log >= 5:
+                    spd = sz / max(0.1, now - t0)
+                    spd_mb = round(spd / (1024 * 1024), 1)
+                    log_event(f"[{label}] Transferred {round(sz/(1024**3), 2)}GB @ {spd_mb} MB/s", category="DOWNLOAD")
+                    last_log = now
+            time.sleep(1)
+        if proc.returncode == 0 and os.path.exists(part_path):
+            os.replace(part_path, final_path)
+            dur = round(time.time() - t0, 1)
+            spd_mb = round(os.path.getsize(final_path) / (max(0.1, dur) * 1024 * 1024), 1)
+            log_event(f"[{label}] {filename} ready in {dur}s ({spd_mb} MB/s)!", category="DOWNLOAD", level="SUCCESS")
+            return final_path
+    uv_thread.join(timeout=30)
+    from huggingface_hub import hf_hub_download
+    return hf_hub_download(repo_id=repo_id, filename=filename, local_dir=dst_dir)
+
 # -------------------------------------------------------------
 # 3B. Dedicated LLM Nodes (LLM_QWEN_VLM, LLM_QWEN_TEXT_TURBO, LLM_QWEN_MOE_35B & LLM_QWEN_FAST_8B on Dual-T4)
 # -------------------------------------------------------------
@@ -1396,159 +1728,6 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
     REMOTE_LLM_DIR = f"{GDRIVE_BASE}/models/llm/{MODEL_SUBDIR}"
     os.makedirs(LOCAL_LLM_DIR, exist_ok=True)
     os.makedirs("/tmp/llama_bin", exist_ok=True)
-
-    def _resolve_llama_bin():
-        for cand in Path("/kaggle/input").rglob("llama-server") if os.path.exists("/kaggle/input") else []:
-            if cand.is_file():
-                dst = "/tmp/llama_bin/llama-server"
-                shutil.copy2(str(cand), dst)
-                os.chmod(dst, 0o755)
-                for so in cand.parent.glob("*.so*"):
-                    shutil.copy2(str(so), f"/tmp/llama_bin/{so.name}")
-                return dst
-
-        if rclone_ok:
-            try:
-                st = rc_post("operations/stat", {"fs": f"gdrive:{GDRIVE_BASE}/fastboot", "remote": "llama_server_t4_v1.tar.gz"}, timeout=10)
-                if (st.get("item") or {}).get("Size", 0) > 100000:
-                    log_event("Restoring cached llama-server binary from Google Drive...", category="SYSTEM", level="SUCCESS")
-                    rc_copy_async({
-                        "srcFs": f"gdrive:{GDRIVE_BASE}/fastboot", "srcRemote": "llama_server_t4_v1.tar.gz",
-                        "dstFs": "/tmp", "dstRemote": "llama_bin.tar.gz",
-                    }, max_wait=120, label="llama-server restore")
-                    subprocess.run(["tar", "-xzf", "/tmp/llama_bin.tar.gz", "-C", "/tmp/llama_bin"], check=True)
-                    bpath = "/tmp/llama_bin/llama-server"
-                    if os.path.exists(bpath):
-                        os.chmod(bpath, 0o755)
-                        return bpath
-            except Exception as re_err:
-                log_event(f"Drive llama-server lookup: {re_err}", category="SYSTEM")
-
-        try:
-            log_event("Fetching official ggml-org/llama.cpp Ubuntu CUDA release...", category="SYSTEM")
-            rel_req = urllib.request.Request(
-                "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=8",
-                headers={"Accept": "application/vnd.github+json", "User-Agent": "Scriptoria"},
-            )
-            with urllib.request.urlopen(rel_req, timeout=20) as rel_resp:
-                releases = json.loads(rel_resp.read().decode("utf-8"))
-            bin_url = None
-            cudart_url = None
-            for rel in releases:
-                assets = rel.get("assets", []) or []
-                b_hit = next((a["browser_download_url"] for a in assets if "bin-ubuntu-cuda-12" in a.get("name", "") and a.get("name", "").startswith("llama-") and a.get("name", "").endswith("-x64.tar.gz")), None)
-                c_hit = next((a["browser_download_url"] for a in assets if "bin-ubuntu-cuda-12" in a.get("name", "") and a.get("name", "").startswith("cudart-llama-") and a.get("name", "").endswith("-x64.tar.gz")), None)
-                if b_hit:
-                    bin_url = b_hit
-                    cudart_url = c_hit
-                    break
-            if not bin_url:
-                raise RuntimeError("No Ubuntu CUDA-12 release tarball found in ggml-org/llama.cpp")
-
-            def _dl_fast_bin(url, out_path):
-                os.makedirs(os.path.dirname(out_path), exist_ok=True)
-                if shutil.which("aria2c"):
-                    subprocess.run([
-                        "aria2c", "-x", "16", "-s", "16", "-k", "1M",
-                        "--file-allocation=none", "--allow-overwrite=true",
-                        "--auto-file-renaming=false",
-                        "-d", os.path.dirname(out_path), "-o", os.path.basename(out_path),
-                        url
-                    ], check=True, stdout=subprocess.DEVNULL)
-                else:
-                    subprocess.run(["curl", "-sSL", url, "-o", out_path], check=True)
-
-            _dl_fast_bin(bin_url, "/tmp/llama_cuda.tar.gz")
-            subprocess.run(["tar", "-xzf", "/tmp/llama_cuda.tar.gz", "-C", "/tmp/llama_bin"], check=True)
-            if cudart_url:
-                _dl_fast_bin(cudart_url, "/tmp/llama_cudart.tar.gz")
-                subprocess.run(["tar", "-xzf", "/tmp/llama_cudart.tar.gz", "-C", "/tmp/llama_bin"], check=True)
-            for root, _, files in os.walk("/tmp/llama_bin"):
-                for fname in files:
-                    if fname == "llama-server" or ".so" in fname:
-                        src_p = os.path.join(root, fname)
-                        dst_p = os.path.join("/tmp/llama_bin", fname)
-                        if src_p != dst_p and not os.path.exists(dst_p):
-                            shutil.copy2(src_p, dst_p)
-            dst_srv = "/tmp/llama_bin/llama-server"
-            if os.path.exists(dst_srv):
-                os.chmod(dst_srv, 0o755)
-                chk_env = os.environ.copy()
-                chk_env["LD_LIBRARY_PATH"] = f"/tmp/llama_bin:{chk_env.get('LD_LIBRARY_PATH', '')}"
-                chk = subprocess.run([dst_srv, "--version"], env=chk_env, capture_output=True, text=True, timeout=15)
-                if chk.returncode == 0:
-                    log_event(f"Prebuilt llama-server ready: {(chk.stdout or chk.stderr).strip()[:100]}", category="SYSTEM", level="SUCCESS")
-                    if rclone_ok:
-                        def _pack_and_save_bin():
-                            try:
-                                subprocess.run(["tar", "-czf", "/tmp/llama_server_t4_v1.tar.gz", "-C", "/tmp/llama_bin", "."], check=True)
-                                rc_copy_async({"srcFs": "/tmp", "srcRemote": "llama_server_t4_v1.tar.gz", "dstFs": f"gdrive:{GDRIVE_BASE}/fastboot", "dstRemote": "llama_server_t4_v1.tar.gz"}, max_wait=120, label="Cache llama-server")
-                            except Exception:
-                                pass
-                        threading.Thread(target=_pack_and_save_bin, daemon=True).start()
-                    return dst_srv
-                raise RuntimeError(f"llama-server --version failed ({chk.returncode}): {(chk.stderr or chk.stdout)[-240:]}")
-        except Exception as pe:
-            log_event(f"Prebuilt llama-server failed ({pe}); compiling sm_75 once...", category="SYSTEM", level="WARN")
-
-        def _run_logged(cmd_list, step_label):
-            res = subprocess.run(cmd_list, capture_output=True, text=True)
-            if res.returncode != 0:
-                tail = (res.stderr or res.stdout or "")[-400:]
-                log_event(f"{step_label} failed (rc={res.returncode}): {tail}", category="ERROR", level="ERROR")
-                raise RuntimeError(f"{step_label} failed (rc={res.returncode}): {tail}")
-
-        _run_logged(["bash", "-lc", "which cmake >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq cmake build-essential)"], "apt cmake")
-        if not os.path.exists("/tmp/llama_src"):
-            _run_logged(["git", "clone", "--depth", "1", "https://github.com/ggml-org/llama.cpp.git", "/tmp/llama_src"], "git clone llama.cpp")
-        _run_logged(["cmake", "-B", "/tmp/llama_src/build", "-S", "/tmp/llama_src", "-DGGML_CUDA=ON", "-DCMAKE_CUDA_ARCHITECTURES=75", "-DLLAMA_CURL=OFF"], "cmake configure")
-        _run_logged(["cmake", "--build", "/tmp/llama_src/build", "--config", "Release", "--target", "llama-server", "-j", "4"], "cmake build")
-        shutil.copy2("/tmp/llama_src/build/bin/llama-server", "/tmp/llama_bin/llama-server")
-        for f_so in os.listdir("/tmp/llama_src/build/bin"):
-            if ".so" in f_so:
-                shutil.copy2(os.path.join("/tmp/llama_src/build/bin", f_so), os.path.join("/tmp/llama_bin", f_so))
-        os.chmod("/tmp/llama_bin/llama-server", 0o755)
-        return "/tmp/llama_bin/llama-server"
-
-    def _fast_download_hf(repo_id, filename, dst_dir=LOCAL_LLM_DIR, label="Model"):
-        os.makedirs(dst_dir, exist_ok=True)
-        final_path = os.path.join(dst_dir, filename)
-        if os.path.exists(final_path) and os.path.getsize(final_path) > 1000000:
-            log_event(f"Local cache hit for {filename} ({round(os.path.getsize(final_path)/(1024**3), 2)}GB)", category="SYSTEM", level="SUCCESS")
-            return final_path
-        hf_url = f"https://huggingface.co/{repo_id}/resolve/main/{filename}"
-        part_path = final_path + ".part"
-        t0 = time.time()
-        last_log = time.time()
-        log_event(f"Fast-downloading {filename} from Hugging Face CDN (16 parallel streams)...", category="DOWNLOAD")
-        if shutil.which("aria2c"):
-            cmd = [
-                "aria2c", "-x", "16", "-s", "16", "-k", "4M",
-                "--file-allocation=none", "--allow-overwrite=true",
-                "--auto-file-renaming=false", "--summary-interval=1",
-                "-d", dst_dir, "-o", os.path.basename(part_path),
-                hf_url
-            ]
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            while proc.poll() is None:
-                if os.path.exists(part_path):
-                    sz = os.path.getsize(part_path)
-                    now = time.time()
-                    if now - last_log >= 5:
-                        spd = sz / max(0.1, now - t0)
-                        spd_mb = round(spd / (1024 * 1024), 1)
-                        log_event(f"[{label}] Transferred {round(sz/(1024**3), 2)}GB @ {spd_mb} MB/s", category="DOWNLOAD")
-                        last_log = now
-                time.sleep(1)
-            if proc.returncode == 0 and os.path.exists(part_path):
-                os.replace(part_path, final_path)
-                dur = round(time.time() - t0, 1)
-                spd_mb = round(os.path.getsize(final_path) / (max(0.1, dur) * 1024 * 1024), 1)
-                log_event(f"[{label}] {filename} ready in {dur}s ({spd_mb} MB/s)!", category="DOWNLOAD", level="SUCCESS")
-                return final_path
-        uv_thread.join(timeout=30)
-        from huggingface_hub import hf_hub_download
-        return hf_hub_download(repo_id=repo_id, filename=filename, local_dir=dst_dir)
 
     def _resolve_qwen_ggufs():
         from pathlib import Path as _P
@@ -1747,27 +1926,43 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
         with WORKER_LOCK:
             _stop_llm_workers_unlocked()
 
-    def start_llm_workers(target_profile=None):
-        global PROFILE_ID, is_moe_35b, is_fast_8b, is_vlm_27b, model_gguf, mmproj_gguf, mode_label
+    def start_llm_workers(target_profile=None, topo_mode=None):
+        global PROFILE_ID, LLM_TOPO_MODE, LLM_ACTIVE_ENDPOINTS, is_moe_35b, is_fast_8b, is_vlm_27b, model_gguf, mmproj_gguf, mode_label
         with WORKER_LOCK:
             _stop_llm_workers_unlocked()
             if target_profile:
                 PROFILE_ID = target_profile
                 WORKER_STATE["profile"] = target_profile
-                is_moe_35b = (PROFILE_ID == "LLM_QWEN_MOE_35B")
-                is_fast_8b = (PROFILE_ID == "LLM_QWEN_FAST_8B")
-                is_vlm_27b = (PROFILE_ID == "LLM_QWEN_VLM")
+            if topo_mode:
+                LLM_TOPO_MODE = topo_mode
+            is_moe_35b = (PROFILE_ID == "LLM_QWEN_MOE_35B")
+            is_fast_8b = (PROFILE_ID == "LLM_QWEN_FAST_8B")
+            is_vlm_27b = (PROFILE_ID == "LLM_QWEN_VLM")
 
             WORKER_STATE["status"] = "STARTING"
             model_gguf, mmproj_gguf, is_swarm = _resolve_qwen_ggufs()
+            q4_dir = f"{LOCAL_LLM_DIR}/qwen4b"
+            m4_path = f"{q4_dir}/Qwen3.5-4B-Q4_K_M.gguf"
+            model_gb = round(os.path.getsize(model_gguf) / (1024**3), 2) if (model_gguf and os.path.exists(model_gguf)) else 0.0
+            active_topo = "llm_swarm_multi" if (PROFILE_ID == "LLM_LIGHTWEIGHT_SWARM" or LLM_TOPO_MODE == "llm_swarm_multi") else LLM_TOPO_MODE
+            if active_topo in ("llm_dual_replica", "llm_ab_arena") and model_gb > 13.0:
+                log_event(f"Model ({os.path.basename(model_gguf)}, {model_gb}GB) exceeds 16GB single-T4 limit; using Dual-T4 layer split instead of {active_topo}.", category="SYSTEM", level="WARN")
+                active_topo = "llm_layer_split"
+                LLM_TOPO_MODE = active_topo
 
-            if PROFILE_ID == "LLM_LIGHTWEIGHT_SWARM":
-                q4_dir = f"{LOCAL_LLM_DIR}/qwen4b"
+            LLM_ACTIVE_ENDPOINTS = []
+
+            if active_topo == "llm_swarm_multi":
+                if not os.path.exists(m4_path):
+                    os.makedirs(q4_dir, exist_ok=True)
+                    _fast_download_hf("unsloth/Qwen3.5-4B-GGUF", "Qwen3.5-4B-Q4_K_M.gguf", q4_dir, label="Qwen 4B Extractor")
                 cpm_dir = f"{LOCAL_LLM_DIR}/cpm1b"
-                m4_path = f"{q4_dir}/Qwen3.5-4B-Q4_K_M.gguf"
                 cpm_path = f"{cpm_dir}/MiniCPM-V-4_7-1B-Q4_K_M.gguf"
+                if not os.path.exists(cpm_path):
+                    os.makedirs(cpm_dir, exist_ok=True)
+                    _fast_download_hf("openbmb/MiniCPM-V-4_7-1B-gguf", "MiniCPM-V-4_7-1B-Q4_K_M.gguf", cpm_dir, label="MiniCPM-V 1B")
 
-                # 1. Qwen3.5-9B on CUDA 0 (:8190)
+                # 1. Primary Qwen on CUDA 0 (:8190)
                 cmd_9b = [
                     llama_bin, "-m", model_gguf, "--host", "127.0.0.1", "--port", "8190",
                     "-ngl", "99", "-c", "16384",
@@ -1780,9 +1975,10 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                 env_9b = ll_env.copy()
                 env_9b["CUDA_VISIBLE_DEVICES"] = "0"
                 WORKER_PROCS["9b"] = subprocess.Popen(cmd_9b, env=env_9b, stdout=open("/tmp/llama_server.log", "w"), stderr=subprocess.STDOUT)
-                log_event("Launched Qwen3.5-9B QC VLM -> CUDA:0 (:8190)", category="SYSTEM", level="SUCCESS")
+                LLM_ACTIVE_ENDPOINTS.append({"port": 8190, "gpu": "GPU0", "model": os.path.basename(model_gguf), "service": "default", "ready": True})
+                log_event(f"Launched {os.path.basename(model_gguf)} QC VLM -> CUDA:0 (:8190)", category="SYSTEM", level="SUCCESS")
 
-                # 2. Qwen3.5-4B on CUDA 1 (:8191) - Fast Text Extractor
+                # 2. Qwen3.5-4B on CUDA 1 (:8191)
                 cmd_4b = [
                     llama_bin, "-m", m4_path, "--host", "127.0.0.1", "--port", "8191",
                     "-ngl", "99", "-c", "8192",
@@ -1793,6 +1989,7 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                 env_4b = ll_env.copy()
                 env_4b["CUDA_VISIBLE_DEVICES"] = "1"
                 WORKER_PROCS["4b"] = subprocess.Popen(cmd_4b, env=env_4b, stdout=open("/tmp/llama_4b.log", "w"), stderr=subprocess.STDOUT)
+                LLM_ACTIVE_ENDPOINTS.append({"port": 8191, "gpu": "GPU1", "model": "Qwen3.5-4B-Q4_K_M.gguf", "service": "extract", "ready": True})
                 log_event("Launched Qwen3.5-4B Fast Extractor -> CUDA:1 (:8191)", category="SYSTEM", level="SUCCESS")
 
                 # 3. MiniCPM-V 4.7-1B on CUDA 1 (:8192)
@@ -1805,7 +2002,53 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                 env_cpm = ll_env.copy()
                 env_cpm["CUDA_VISIBLE_DEVICES"] = "1"
                 WORKER_PROCS["cpm"] = subprocess.Popen(cmd_cpm, env=env_cpm, stdout=open("/tmp/llama_cpm.log", "w"), stderr=subprocess.STDOUT)
-                log_event("Launched MiniCPM-V 4.7-1B Tagger -> CUDA:1 (:8192)", category="SYSTEM", level="SUCCESS")
+                LLM_ACTIVE_ENDPOINTS.append({"port": 8192, "gpu": "GPU1", "model": "MiniCPM-V-4_7-1B-Q4_K_M.gguf", "service": "tag", "ready": True})
+                mode_label = "Multi-Model Swarm (GPU0:8190 + GPU1:8191/8192)"
+                log_event("Launched MiniCPM-V 4.7-1B Vision/OCR -> CUDA:1 (:8192)", category="SYSTEM", level="SUCCESS")
+            elif active_topo == "llm_dual_replica":
+                # Run 2 independent replicas across GPU0 (:8190) and GPU1 (:8191) for 2x parallel eval/chat throughput
+                for r_idx, r_port in [(0, 8190), (1, 8191)]:
+                    cmd_rep = [
+                        llama_bin, "-m", model_gguf, "--host", "127.0.0.1", "--port", str(r_port),
+                        "-ngl", "99", "-c", "16384",
+                        "--flash-attn", "on",
+                        "--batch-size", "512", "--ubatch-size", "256",
+                        "--parallel", "1", "--jinja",
+                    ]
+                    if mmproj_gguf and PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B"):
+                        cmd_rep.extend(["--mmproj", mmproj_gguf])
+                    env_rep = ll_env.copy()
+                    env_rep["CUDA_VISIBLE_DEVICES"] = str(r_idx)
+                    log_p = "/tmp/llama_server.log" if r_idx == 0 else "/tmp/llama_replica1.log"
+                    WORKER_PROCS[f"rep{r_idx}"] = subprocess.Popen(cmd_rep, env=env_rep, stdout=open(log_p, "w"), stderr=subprocess.STDOUT)
+                    LLM_ACTIVE_ENDPOINTS.append({"port": r_port, "gpu": f"GPU{r_idx}", "model": os.path.basename(model_gguf), "service": f"replica{r_idx}", "ready": True})
+                mode_label = f"2x Dual-T4 Replica ({os.path.basename(model_gguf)})"
+                log_event(f"Launched 2x Dual-T4 Replicas -> GPU0:8190 + GPU1:8191 ({os.path.basename(model_gguf)})", category="SYSTEM", level="SUCCESS")
+            elif active_topo == "llm_ab_arena":
+                if not os.path.exists(m4_path):
+                    os.makedirs(q4_dir, exist_ok=True)
+                    _fast_download_hf("unsloth/Qwen3.5-4B-GGUF", "Qwen3.5-4B-Q4_K_M.gguf", q4_dir, label="Qwen 4B Model B")
+                cmd_a = [
+                    llama_bin, "-m", model_gguf, "--host", "127.0.0.1", "--port", "8190",
+                    "-ngl", "99", "-c", "16384", "--flash-attn", "on", "--parallel", "1", "--jinja",
+                ]
+                if mmproj_gguf:
+                    cmd_a.extend(["--mmproj", mmproj_gguf])
+                env_a = ll_env.copy()
+                env_a["CUDA_VISIBLE_DEVICES"] = "0"
+                WORKER_PROCS["model_a"] = subprocess.Popen(cmd_a, env=env_a, stdout=open("/tmp/llama_server.log", "w"), stderr=subprocess.STDOUT)
+                LLM_ACTIVE_ENDPOINTS.append({"port": 8190, "gpu": "GPU0", "model": os.path.basename(model_gguf), "service": "model_a", "ready": True})
+
+                cmd_b = [
+                    llama_bin, "-m", m4_path, "--host", "127.0.0.1", "--port", "8191",
+                    "-ngl", "99", "-c", "16384", "--flash-attn", "on", "--parallel", "1", "--jinja",
+                ]
+                env_b = ll_env.copy()
+                env_b["CUDA_VISIBLE_DEVICES"] = "1"
+                WORKER_PROCS["model_b"] = subprocess.Popen(cmd_b, env=env_b, stdout=open("/tmp/llama_model_b.log", "w"), stderr=subprocess.STDOUT)
+                LLM_ACTIVE_ENDPOINTS.append({"port": 8191, "gpu": "GPU1", "model": "Qwen3.5-4B-Q4_K_M.gguf", "service": "model_b", "ready": True})
+                mode_label = f"A/B Arena (GPU0: {os.path.basename(model_gguf)} vs GPU1: Qwen3.5-4B)"
+                log_event(f"Launched A/B Arena -> GPU0:8190 ({os.path.basename(model_gguf)}) vs GPU1:8191 (Qwen3.5-4B)", category="SYSTEM", level="SUCCESS")
             else:
                 has_dflash = bool(dflash_gguf and os.path.exists(dflash_gguf))
                 t_split = "52,48" if is_moe_35b else ("55,45" if is_vlm_27b else "50,50")
@@ -1842,6 +2085,7 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                     ])
                 ll_log = open("/tmp/llama_server.log", "w")
                 WORKER_PROCS["main"] = subprocess.Popen(ll_cmd, env=ll_env, stdout=ll_log, stderr=ll_log)
+                LLM_ACTIVE_ENDPOINTS.append({"port": 8190, "gpu": "GPU0+GPU1", "model": os.path.basename(model_gguf), "service": "default", "ready": True})
                 mode_label = (
                     "Qwen 8B Fast Vision (~45-60 tok/s)" if is_fast_8b
                     else ("Qwen 35B-A3B Vision MoE (~35-55 tok/s)" if is_moe_35b
@@ -1928,6 +2172,20 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                 self.end_headers()
                 self.wfile.write(body)
                 return
+            if self.path == "/v1/llm/switch-topology":
+                length = int(self.headers.get("Content-Length", "0") or 0)
+                raw_sw = self.rfile.read(length) if length > 0 else b"{}"
+                sw_data = json.loads(raw_sw.decode("utf-8", "ignore") or "{}")
+                req_mode = str(sw_data.get("mode") or "llm_layer_split")
+                threading.Thread(target=start_llm_workers, kwargs={"topo_mode": req_mode}, daemon=True).start()
+                body = json.dumps({"ok": True, "mode": req_mode}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
             length = int(self.headers.get("Content-Length", "0") or 0)
             req_body = self.rfile.read(length) if length > 0 else None
             fwd_hdrs = {k: v for k, v in self.headers.items() if k.lower() not in {"host", "content-length"}}
@@ -1937,10 +2195,16 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
             target_port = 8190
             target_path = self.path
             hdr_svc = (self.headers.get("X-Target-Service") or "").lower().strip()
-            if hdr_svc == "extract" or self.path.startswith("/v1/extract"):
+            if hdr_svc in ("extract", "replica1", "model_b") or self.path.startswith("/v1/extract") or self.path.startswith("/v1/model_b"):
                 target_port = 8191
                 if self.path.startswith("/v1/extract"):
                     target_path = "/v1" + self.path[len("/v1/extract"):]
+                elif self.path.startswith("/v1/model_b"):
+                    target_path = "/v1" + self.path[len("/v1/model_b"):]
+            elif hdr_svc in ("replica0", "model_a") or self.path.startswith("/v1/model_a"):
+                target_port = 8190
+                if self.path.startswith("/v1/model_a"):
+                    target_path = "/v1" + self.path[len("/v1/model_a"):]
             elif hdr_svc == "tag" or self.path.startswith("/v1/tag"):
                 target_port = 8192
                 if self.path.startswith("/v1/tag"):
@@ -2006,12 +2270,67 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
     _bridge_srv = _THS(("127.0.0.1", 8188), _LlmBridgeHandler)
     threading.Thread(target=_bridge_srv.serve_forever, daemon=True).start()
 
+    def _resolve_svc_port(svc):
+        s = (svc or "default").lower().strip()
+        if s in ("extract", "replica1", "model_b") and any(e.get("port") == 8191 for e in LLM_ACTIVE_ENDPOINTS):
+            return 8191
+        if s == "tag" and any(e.get("port") == 8192 for e in LLM_ACTIVE_ENDPOINTS):
+            return 8192
+        if s == "rag" and any(e.get("port") == 8193 for e in LLM_ACTIVE_ENDPOINTS):
+            return 8193
+        return 8190
+
+    def _llm_outbound_relay_loop(lane_id):
+        while True:
+            try:
+                poll_res = _worker_api_post("/api/v1/workers/llm-poll", {"workerId": TARGETS[0]}, timeout=20)
+                req_obj = poll_res.get("request")
+                if not req_obj:
+                    time.sleep(0.6)
+                    continue
+                globals()["LAST_ACTIVE"] = time.time()
+                rid = req_obj["id"]
+                svc_port = _resolve_svc_port(req_obj.get("targetService"))
+                t0_req = time.time()
+                try:
+                    c_req = urllib.request.Request(
+                        f"http://127.0.0.1:{svc_port}/v1/chat/completions",
+                        data=json.dumps(req_obj["requestPayload"]).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(c_req, timeout=180) as cr:
+                        c_res = json.loads(cr.read().decode("utf-8") or "{}")
+                    _worker_api_post("/api/v1/workers/llm-complete", {
+                        "requestId": rid,
+                        "workerId": TARGETS[0],
+                        "response": c_res,
+                        "latencyMs": int((time.time() - t0_req) * 1000),
+                    }, timeout=20)
+                except Exception as llm_err:
+                    _worker_api_post("/api/v1/workers/llm-complete", {
+                        "requestId": rid,
+                        "workerId": TARGETS[0],
+                        "errorMessage": str(llm_err)[:400],
+                        "latencyMs": int((time.time() - t0_req) * 1000),
+                    }, timeout=15)
+            except urllib.error.HTTPError as he:
+                if he.code in (401, 410):
+                    return
+                time.sleep(3)
+            except Exception:
+                time.sleep(2)
+
+    if HEADLESS_MODE:
+        for _lane in range(2 if len(TARGETS) >= 2 else 1):
+            threading.Thread(target=_llm_outbound_relay_loop, args=(_lane,), daemon=True).start()
+
     _llm_last_step = -1
     _llm_t0 = time.time()
     while True:
         llm_ok = False
         try:
-            if PROFILE_ID == "LLM_LIGHTWEIGHT_SWARM":
+            if LLM_TOPO_MODE == "llm_swarm_multi" or PROFILE_ID == "LLM_LIGHTWEIGHT_SWARM":
                 with urllib.request.urlopen("http://127.0.0.1:8190/health", timeout=2) as hr0:
                     with urllib.request.urlopen("http://127.0.0.1:8191/health", timeout=2) as hr1:
                         llm_ok = (hr0.status == 200 and hr1.status == 200)
@@ -2021,6 +2340,7 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
         except Exception:
             llm_ok = False
 
+        llm_tunnel_ok = True if HEADLESS_MODE else (bool(TUNNEL_URL) and is_caddy_ready())
         devs = _query_nvidia_smi()
         telem = {}
         for idx_t, t_name in enumerate(TARGETS):
@@ -2028,14 +2348,14 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
             vt = round(d.get("vram_total", 16 * (1024**3)) / (1024**3), 2)
             vf = round(d.get("vram_free", 0) / (1024**3), 2)
             telem[t_name] = {
-                "ready": bool(llm_ok and TUNNEL_URL and is_caddy_ready()),
-                "gpuName": d.get("name", "NVIDIA T4 (Qwen 27B)"),
+                "ready": bool(llm_ok and llm_tunnel_ok),
+                "gpuName": d.get("name", "NVIDIA T4 (LLM)"),
                 "vramTotalGb": vt,
                 "vramUsedGb": round(max(0.0, vt - vf), 2),
             }
 
-        all_ready = bool(TUNNEL_URL) and is_caddy_ready() and llm_ok
-        next_step = 5 if all_ready else (4 if (TUNNEL_URL and is_caddy_ready()) else 3)
+        all_ready = llm_tunnel_ok and llm_ok
+        next_step = 5 if all_ready else (4 if llm_tunnel_ok else 3)
         next_status = "ONLINE" if all_ready else "STARTING"
 
         dead_proc = None
@@ -2051,8 +2371,8 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
             post_heartbeat(4, "ERROR", telem)
 
         if all_ready and CURRENT_STEP < 5:
-            lbl = "Qwen Swarm (4B Extractor + 9B QC + MiniCPM-V 1B)" if PROFILE_ID == "LLM_LIGHTWEIGHT_SWARM" else f"{mode_label}"
-            log_event(f"{lbl} ONLINE in {round(time.time() - t_boot_start, 1)}s -> {TUNNEL_URL}", category="SYSTEM", level="SUCCESS")
+            lbl = f"{mode_label} ({'Safe Headless Relay' if HEADLESS_MODE else TUNNEL_URL})"
+            log_event(f"{lbl} ONLINE in {round(time.time() - t_boot_start, 1)}s!", category="SYSTEM", level="SUCCESS")
 
         if RCLONE_READY:
             refresh_gdrive_oauth_in_vm(force=False)
@@ -2313,16 +2633,24 @@ def _query_comfy_nvidia_smi():
 post_heartbeat(3, "STARTING")
 
 # -------------------------------------------------------------
-# 5. Boot ComfyUI Subprocess(es) with Strict CUDA Isolation
+# 5. Dynamic 4-Mode Dual-T4 ComfyUI Supervisor & Strict CUDA Isolation
 # -------------------------------------------------------------
 gpu_count = len(_query_comfy_nvidia_smi()) or 1
-
-if SINGLE_DUAL_GPU:
-    active_ports = PORTS[:1]
-else:
-    active_ports = PORTS[:max(1, gpu_count)] if PROVIDER == "kaggle" else PORTS[:1]
 COMFY_PROCS = {}
+COPILOT_LLM_PROC = None
 COMFY_LOG_OFFSETS = {}
+active_ports = [8188] if (SINGLE_DUAL_GPU or PROVIDER != "kaggle" or gpu_count < 2) else [8188, 8189]
+
+_comfy_models_dir = os.path.join(COMFY_DIR, "models")
+if os.path.isdir(_comfy_models_dir):
+    for _mcat in ("ultralytics", "sams", "lbm"):
+        _dst_m = os.path.join(_comfy_models_dir, _mcat)
+        _src_m = f"/tmp/models/{_mcat}"
+        try:
+            if not os.path.exists(_dst_m) and not os.path.islink(_dst_m):
+                os.symlink(_src_m, _dst_m)
+        except Exception:
+            pass
 
 def _tail_comfy_logs(max_lines=8):
     for p in active_ports:
@@ -2343,53 +2671,176 @@ def _tail_comfy_logs(max_lines=8):
         except Exception:
             pass
 
-_comfy_models_dir = os.path.join(COMFY_DIR, "models")
-if os.path.isdir(_comfy_models_dir):
-    for _mcat in ("ultralytics", "sams", "lbm"):
-        _dst_m = os.path.join(_comfy_models_dir, _mcat)
-        _src_m = f"/tmp/models/{_mcat}"
+def _capabilities_for_profile(prof):
+    caps = [prof]
+    if prof in ("IMAGE_CORE", "IMAGE_GGUF_EDIT"):
+        caps.append("BASE_COMFY")
+    elif prof == "IMAGE_DIT_DUAL_T4":
+        caps.extend(["IMAGE_GGUF_EDIT", "IMAGE_CORE", "BASE_COMFY"])
+    return list(dict.fromkeys(caps))
+
+def _ensure_nodes_for_mode(mode):
+    if mode not in ("dual_split", "dual_pipeline"):
+        return
+    extra_nodes = [
+        ("ComfyUI-GGUF", "https://github.com/city96/ComfyUI-GGUF.git"),
+        ("ComfyUI-MultiGPU", "https://github.com/pollockjj/ComfyUI-MultiGPU.git"),
+        ("ComfyUI-KJNodes", "https://github.com/kijai/ComfyUI-KJNodes.git"),
+        ("ComfyUI-LBM", "https://github.com/1038lab/ComfyUI-LBM.git"),
+    ]
+    nodes_dir = os.path.join(COMFY_DIR, "custom_nodes")
+    os.makedirs(nodes_dir, exist_ok=True)
+    missing = [(n, u) for n, u in extra_nodes if not os.path.exists(os.path.join(nodes_dir, n))]
+    if not missing:
+        return
+    log_event(f"Syncing {len(missing)} node pack(s) for {mode}...", category="COMFYUI")
+    reqs = []
+    for n, u in missing:
+        dst = os.path.join(nodes_dir, n)
         try:
-            if not os.path.exists(_dst_m) and not os.path.islink(_dst_m):
-                os.symlink(_src_m, _dst_m)
+            subprocess.run(["git", "clone", "--depth", "1", "--single-branch", u, dst], check=True, timeout=60)
+            req_f = os.path.join(dst, "requirements.txt")
+            if os.path.exists(req_f):
+                reqs.append(req_f)
+        except Exception as ne:
+            log_event(f"Node delta notice ({n}): {ne}", category="COMFYUI", level="WARN")
+    for rf in reqs:
+        try:
+            if os.path.exists("/tmp/uv"):
+                subprocess.run(["/tmp/uv", "pip", "install", "--system", "-q", "-r", rf], check=False, timeout=90)
+            else:
+                subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", rf], check=False, timeout=120)
         except Exception:
             pass
 
-for idx, port in enumerate(active_ports):
-    if idx > 0:
-        # Stagger GPU1 briefly (6s max) so GPU0 warms OS page cache before spawning concurrently
-        stagger_wait = 6 if CUSTOM_NODES else 2
-        t_stg = time.time()
-        while (time.time() - t_stg) < stagger_wait:
+def _stop_all_compute_procs():
+    global COPILOT_LLM_PROC
+    for port, proc in list(COMFY_PROCS.items()):
+        try:
+            proc.terminate()
+            proc.wait(timeout=4)
+        except Exception:
             try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{active_ports[0]}/system_stats", timeout=1.0) as r:
-                    if r.status == 200:
-                        break
+                proc.kill()
             except Exception:
                 pass
-            time.sleep(1.0)
-    # Mutual eviction: ensure no orphan llama-servers occupy GPU memory
+    COMFY_PROCS.clear()
+    if COPILOT_LLM_PROC is not None:
+        try:
+            COPILOT_LLM_PROC.terminate()
+            COPILOT_LLM_PROC.wait(timeout=3)
+        except Exception:
+            try:
+                COPILOT_LLM_PROC.kill()
+            except Exception:
+                pass
+        COPILOT_LLM_PROC = None
+    subprocess.run(["pkill", "-9", "-f", "ComfyUI/main.py"], check=False)
     subprocess.run(["pkill", "-9", "-f", "llama-server"], check=False)
-    env = os.environ.copy()
-    cuda_vis = ",".join(str(i) for i in range(max(1, gpu_count))) if SINGLE_DUAL_GPU else str(idx)
-    env["CUDA_VISIBLE_DEVICES"] = cuda_vis
-    env["PYTHONUNBUFFERED"] = "1"
-    env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
-    if os.path.isdir(FASTBOOT_SITE):
-        prev_pp = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = f"{FASTBOOT_SITE}:{prev_pp}" if prev_pp else FASTBOOT_SITE
-    c_log = open(f"/tmp/comfy_{port}.log", "w")
-    proc = subprocess.Popen([
-        sys.executable, os.path.join(COMFY_DIR, "main.py"),
-        "--listen", "127.0.0.1",
-        "--port", str(port),
-        "--extra-model-paths-config", "/tmp/extra_model_paths.yaml",
-        "--output-directory", "/tmp/outputs",
-        "--enable-cors-header",
-        "--preview-method", "auto"
-    ], cwd=COMFY_DIR, env=env, stdout=c_log, stderr=c_log)
-    COMFY_PROCS[port] = proc
-    mode_suffix = " (Dual-T4 Split DiT+TE)" if SINGLE_DUAL_GPU else ""
-    log_event(f"Launched ComfyUI on CUDA:{cuda_vis} -> 127.0.0.1:{port}{mode_suffix}", category="COMFYUI")
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+    except Exception:
+        pass
+    time.sleep(0.5)
+
+def _launch_copilot_llm_on_gpu1():
+    global COPILOT_LLM_PROC
+    try:
+        llama_bin = _resolve_llama_bin()
+        llm_dir = "/tmp/models/llm/qwen3_vl_8b"
+        os.makedirs(llm_dir, exist_ok=True)
+        model_path = _fast_download_hf("unsloth/Qwen3-VL-8B-Instruct-GGUF", "Qwen3-VL-8B-Instruct-Q4_K_M.gguf", llm_dir, label="Co-Pilot 8B")
+        mm_path = None
+        try:
+            mm_path = _fast_download_hf("unsloth/Qwen3-VL-8B-Instruct-GGUF", "mmproj-F16.gguf", llm_dir, label="Co-Pilot mmproj")
+        except Exception:
+            pass
+        ll_env = os.environ.copy()
+        ll_env["CUDA_VISIBLE_DEVICES"] = "1"
+        ll_env["LD_LIBRARY_PATH"] = f"/tmp/llama_bin:{ll_env.get('LD_LIBRARY_PATH', '')}"
+        cmd = [
+            llama_bin, "-m", model_path, "--host", "127.0.0.1", "--port", "8190",
+            "-ngl", "99", "-c", "8192", "--flash-attn", "on", "--parallel", "1",
+        ]
+        if mm_path and os.path.exists(mm_path):
+            cmd.extend(["--mmproj", mm_path])
+        COPILOT_LLM_PROC = subprocess.Popen(cmd, env=ll_env, stdout=open("/tmp/copilot_llm.log", "w"), stderr=subprocess.STDOUT)
+        log_event("Co-Pilot Qwen3-VL-8B started on GPU1 -> 127.0.0.1:8190", category="SYSTEM", level="SUCCESS")
+    except Exception as ce:
+        log_event(f"Co-Pilot GPU1 start warning: {ce}", category="SYSTEM", level="WARN")
+
+def _start_topology_procs(mode):
+    global active_ports, SINGLE_DUAL_GPU, TOPOLOGY_MODE
+    TOPOLOGY_MODE = mode
+    SINGLE_DUAL_GPU = (mode == "dual_split")
+    if mode in ("dual_split", "copilot_split") or PROVIDER != "kaggle" or gpu_count < 2:
+        active_ports = [8188]
+    else:
+        active_ports = [8188, 8189]
+    COMFY_LOG_OFFSETS.clear()
+    for idx, port in enumerate(active_ports):
+        if idx > 0:
+            stagger_wait = 5 if CUSTOM_NODES else 2
+            t_stg = time.time()
+            while (time.time() - t_stg) < stagger_wait:
+                try:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{active_ports[0]}/system_stats", timeout=1.0) as r:
+                        if r.status == 200:
+                            break
+                except Exception:
+                    pass
+                time.sleep(1.0)
+        env = os.environ.copy()
+        cuda_vis = ",".join(str(i) for i in range(max(1, gpu_count))) if mode == "dual_split" else str(idx)
+        env["CUDA_VISIBLE_DEVICES"] = cuda_vis
+        env["PYTHONUNBUFFERED"] = "1"
+        env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+        if os.path.isdir(FASTBOOT_SITE):
+            prev_pp = env.get("PYTHONPATH", "")
+            env["PYTHONPATH"] = f"{FASTBOOT_SITE}:{prev_pp}" if prev_pp else FASTBOOT_SITE
+        c_log = open(f"/tmp/comfy_{port}.log", "w")
+        proc = subprocess.Popen([
+            sys.executable, os.path.join(COMFY_DIR, "main.py"),
+            "--listen", "127.0.0.1",
+            "--port", str(port),
+            "--extra-model-paths-config", "/tmp/extra_model_paths.yaml",
+            "--output-directory", "/tmp/outputs",
+            "--enable-cors-header",
+            "--preview-method", "auto"
+        ], cwd=COMFY_DIR, env=env, stdout=c_log, stderr=c_log)
+        COMFY_PROCS[port] = proc
+        log_event(f"Launched ComfyUI ({mode}) on CUDA:{cuda_vis} -> 127.0.0.1:{port}", category="COMFYUI")
+    if mode == "copilot_split" and gpu_count >= 2:
+        threading.Thread(target=_launch_copilot_llm_on_gpu1, daemon=True).start()
+    _write_caddy_config(mode == "dual_split")
+    if not HEADLESS_MODE and os.path.exists("/tmp/caddy"):
+        try:
+            subprocess.run(["/tmp/caddy", "reload", "--config", "/tmp/Caddyfile"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
+def switch_comfy_topology(new_mode, reason="requested"):
+    if new_mode == TOPOLOGY_MODE:
+        return {"ok": True, "mode": TOPOLOGY_MODE, "unchanged": True}
+    with TOPOLOGY_LOCK:
+        if new_mode == TOPOLOGY_MODE:
+            return {"ok": True, "mode": TOPOLOGY_MODE, "unchanged": True}
+        TOPOLOGY_SWITCHING.set()
+        try:
+            t_sw = time.time()
+            log_event(f"Switching Dual-T4 topology {TOPOLOGY_MODE} -> {new_mode} ({reason})...", category="COMFYUI", level="WARN")
+            _stop_all_compute_procs()
+            _ensure_nodes_for_mode(new_mode)
+            _start_topology_procs(new_mode)
+            return {"ok": True, "mode": TOPOLOGY_MODE, "elapsedSec": round(time.time() - t_sw, 1)}
+        finally:
+            TOPOLOGY_SWITCHING.clear()
+
+_stop_all_compute_procs()
+_start_topology_procs(TOPOLOGY_MODE)
 
 if not aria2_started:
     aria2_started = True
@@ -2463,7 +2914,7 @@ def _upload_fastboot_snapshot():
 def probe_comfy_stats():
     global LAST_ACTIVE
     stats = {}
-    if SINGLE_DUAL_GPU and active_ports:
+    if TOPOLOGY_MODE == "dual_split" and active_ports:
         port = active_ports[0]
         comfy_ok = False
         devs = []
@@ -2493,7 +2944,7 @@ def probe_comfy_stats():
             d = smi_devs[min(idx_t, len(smi_devs) - 1)] if smi_devs else (devs[min(idx_t, len(devs) - 1)] if devs else {})
             vt = round(d.get("vram_total", 16 * (1024**3)) / (1024**3), 2)
             vf = round(d.get("vram_free", 0) / (1024**3), 2)
-            role_tag = "DiT CUDA:0" if idx_t == 0 else "TE CUDA:1"
+            role_tag = "DiT gpu:0" if idx_t == 0 else "TE gpu:1"
             stats[t_name] = {
                 "ready": True,
                 "gpuName": f"{d.get('name', 'NVIDIA T4')} ({role_tag})",
@@ -2501,9 +2952,40 @@ def probe_comfy_stats():
                 "vramUsedGb": round(max(0.0, vt - vf), 2),
                 "queueRunning": q_running,
                 "queuePending": q_pending,
+                "topologyMode": TOPOLOGY_MODE,
             }
         return stats
-    for t_name, port in zip(TARGETS, active_ports):
+    if TOPOLOGY_MODE == "copilot_split" and active_ports:
+        smi_devs = _query_comfy_nvidia_smi()
+        comfy_ok = False
+        q_running = 0
+        q_pending = 0
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{active_ports[0]}/system_stats", timeout=2) as resp:
+                comfy_ok = bool(json.loads(resp.read().decode("utf-8")).get("devices"))
+        except Exception:
+            pass
+        llm_ok = False
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:8190/health", timeout=1.5) as hr:
+                llm_ok = hr.status == 200
+        except Exception:
+            pass
+        for idx_t, t_name in enumerate(TARGETS):
+            d = smi_devs[min(idx_t, len(smi_devs) - 1)] if smi_devs else {}
+            vt = round(d.get("vram_total", 16 * (1024**3)) / (1024**3), 2)
+            vf = round(d.get("vram_free", 0) / (1024**3), 2)
+            stats[t_name] = {
+                "ready": bool(comfy_ok) if idx_t == 0 else bool(llm_ok),
+                "gpuName": f"{d.get('name', 'NVIDIA T4')} ({'ComfyUI' if idx_t == 0 else 'Qwen3-VL-8B QA'})",
+                "vramTotalGb": vt,
+                "vramUsedGb": round(max(0.0, vt - vf), 2),
+                "queueRunning": q_running if idx_t == 0 else 0,
+                "queuePending": q_pending if idx_t == 0 else 0,
+                "topologyMode": TOPOLOGY_MODE,
+            }
+        return stats
+    for idx_t, (t_name, port) in enumerate(zip(TARGETS, active_ports)):
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/system_stats", timeout=2) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
@@ -2522,31 +3004,20 @@ def probe_comfy_stats():
                                 LAST_ACTIVE = time.time()
                     except Exception:
                         pass
+                    role_lbl = "Stage1 Base" if TOPOLOGY_MODE == "dual_pipeline" and idx_t == 0 else ("Stage2 Detail/Up" if TOPOLOGY_MODE == "dual_pipeline" and idx_t == 1 else "")
+                    base_gpu = devs[0].get("name", "NVIDIA T4")
                     stats[t_name] = {
                         "ready": True,
-                        "gpuName": devs[0].get("name", "NVIDIA T4"),
+                        "gpuName": f"{base_gpu} ({role_lbl})" if role_lbl else base_gpu,
                         "vramTotalGb": vram_total,
                         "vramUsedGb": round(max(0.0, vram_total - vram_free), 2),
                         "queueRunning": q_running,
                         "queuePending": q_pending,
+                        "topologyMode": TOPOLOGY_MODE,
                     }
         except Exception:
             stats[t_name] = {"ready": False}
     return stats
-
-def _worker_api_post(path, body_dict, timeout=20):
-    req = urllib.request.Request(
-        f"{APP_URL}{path}",
-        data=json.dumps(body_dict).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"VmToken {REG_JWT}",
-            "User-Agent": "Scriptoria-HeadlessWorker/1.0",
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8") or "{}")
 
 def poll_model_downloads():
     tracked = set()
@@ -2646,23 +3117,44 @@ def renew_task_lease(worker_target, task_id, done):
         except Exception:
             pass
 
-def _headless_worker_loop(worker_target, port):
+def _headless_worker_loop(slot_idx, worker_target):
     import base64
-    log_event(f"Headless polling worker ready for {worker_target} (127.0.0.1:{port})", category="COMFYUI")
-    while True:
-        try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/system_stats", timeout=2) as r:
-                if r.status == 200:
-                    break
-        except Exception:
-            pass
-        time.sleep(2)
+    log_event(f"Headless polling worker ready for {worker_target} (slot={slot_idx})", category="COMFYUI")
 
     while True:
-        task = None
+        if TOPOLOGY_SWITCHING.is_set():
+            time.sleep(1.5)
+            continue
+        if TOPOLOGY_MODE in ("dual_split", "copilot_split") and slot_idx > 0:
+            time.sleep(2.5)
+            continue
+        port = 8188 if (slot_idx == 0 or TOPOLOGY_MODE in ("dual_split", "copilot_split", "single")) else 8189
         try:
-            res = _worker_api_post("/api/v1/workers/claim", {"workerId": worker_target, "capabilities": [PROFILE_ID], "driveReady": bool(GDRIVE_HEALTHY)}, timeout=45)
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/system_stats", timeout=2) as r:
+                if r.status != 200:
+                    time.sleep(2)
+                    continue
+        except Exception:
+            time.sleep(2)
+            continue
+
+        slot_prof = "IMAGE_DIT_DUAL_T4" if TOPOLOGY_MODE == "dual_split" else (GPU_PROFILES[slot_idx] if slot_idx < len(GPU_PROFILES) else PROFILE_ID)
+        caps = _capabilities_for_profile(slot_prof)
+        stage_pref = "stage1_preferred" if (TOPOLOGY_MODE == "dual_pipeline" and slot_idx == 0) else ("stage2_preferred" if (TOPOLOGY_MODE == "dual_pipeline" and slot_idx == 1) else "any")
+        task = None
+        next_prefetch = []
+        try:
+            res = _worker_api_post("/api/v1/workers/claim", {
+                "workerId": worker_target,
+                "capabilities": caps,
+                "topologyMode": TOPOLOGY_MODE,
+                "stagePreference": stage_pref,
+                "hotCheckpoints": list(HOT_MODELS_BY_PORT.get(port, [])),
+                "cachedFilenames": _get_cached_filenames_flat(),
+                "driveReady": bool(GDRIVE_HEALTHY),
+            }, timeout=45)
             task = res.get("task")
+            next_prefetch = res.get("nextPrefetchModels") or []
         except urllib.error.HTTPError as claim_http_err:
             if claim_http_err.code in (401, 410):
                 _terminate_worker_and_exit(f"Worker claim session ended ({claim_http_err.code})")
@@ -2672,11 +3164,20 @@ def _headless_worker_loop(worker_target, port):
             time.sleep(5)
             continue
 
+        if next_prefetch and isinstance(next_prefetch, list):
+            for _pm in next_prefetch[:3]:
+                if isinstance(_pm, dict) and _pm.get("filename"):
+                    try:
+                        start_model_fetch(_pm)
+                    except Exception:
+                        pass
+
         if not task:
-            time.sleep(4)
+            time.sleep(3)
             continue
 
         task_id = task["id"]
+        t_task_start = time.time()
         done = threading.Event()
         threading.Thread(target=renew_task_lease, args=(worker_target, task_id, done), daemon=True).start()
         globals()["LAST_ACTIVE"] = time.time()
@@ -2717,9 +3218,30 @@ def _headless_worker_loop(worker_target, port):
                         log_event(f"[{worker_target}] Downloading {filename}: {job.get('percentage', 0)}% ({job.get('speedMbps', 0)} MB/s)", category="RCLONE")
                     time.sleep(1)
 
-            # Stage any inline base64 data:image LoadImage inputs into COMFY_DIR/input
+            # Stage parent task dependency outputs (e.g. Dual-T4 Pipeline Stage 1 -> Stage 2) and inline base64 LoadImage inputs into COMFY_DIR/input
             in_dir = os.path.join(COMFY_DIR, "input")
             os.makedirs(in_dir, exist_ok=True)
+            for dep_out in (task.get("dependsOnOutputs") or []):
+                if not isinstance(dep_out, dict):
+                    continue
+                dep_fn = dep_out.get("filename")
+                if not dep_fn:
+                    continue
+                dst_in = os.path.join(in_dir, dep_fn)
+                if not os.path.exists(dst_in):
+                    local_out = os.path.join("/tmp/outputs", dep_fn)
+                    if os.path.exists(local_out):
+                        shutil.copy2(local_out, dst_in)
+                    elif dep_out.get("gdrivePath") and GDRIVE_HEALTHY:
+                        try:
+                            rc_copy_async({
+                                "srcFs": "gdrive:",
+                                "srcRemote": dep_out["gdrivePath"],
+                                "dstFs": in_dir,
+                                "dstRemote": dep_fn,
+                            }, max_wait=120, label=f"Stage input {dep_fn}")
+                        except Exception:
+                            pass
             for nid, node in graph.items():
                 if isinstance(node, dict) and node.get("class_type") == "LoadImage":
                     img_val = str((node.get("inputs") or {}).get("image") or "")
@@ -2748,6 +3270,7 @@ def _headless_worker_loop(worker_target, port):
                     pass
                 raise RuntimeError(f"ComfyUI /prompt HTTP {prompt_http_err.code}: {err_body[:600] or prompt_http_err}")
             prompt_id = q_res["prompt_id"]
+            HOT_MODELS_BY_PORT[port] = [os.path.basename(k[2]) for k in staged if k[0] in ("checkpoints", "diffusion_models", "unet")][:3]
 
             outputs_uploaded = []
             t_wait = time.time()
@@ -2812,7 +3335,7 @@ def _headless_worker_loop(worker_target, port):
                                 "storageUri": (f"gdrive://{remote_out}/{fn}" if file_id else (local_bk.get("storageUri", "") if local_bk else "")),
                                 "previewUrl": (f"/api/outputs/{file_id}" if file_id else (local_bk.get("previewUrl", "") if local_bk else b64_preview)),
                             })
-                    log_event(f"[{worker_target}] Workflow executed with staged models: {', '.join(k[2] for k in sorted(staged))}", category="COMFYUI", level="SUCCESS")
+                    log_event(f"[{worker_target}] Workflow executed ({TOPOLOGY_MODE}) with staged models: {', '.join(k[2] for k in sorted(staged))}", category="COMFYUI", level="SUCCESS")
                     break
             else:
                 raise RuntimeError("Timed out waiting for ComfyUI workflow completion.")
@@ -2821,6 +3344,7 @@ def _headless_worker_loop(worker_target, port):
                 "taskId": task_id,
                 "workerId": worker_target,
                 "outputFiles": outputs_uploaded,
+                "metrics": {"durationMs": int((time.time() - t_task_start) * 1000)},
             }, timeout=20)
             log_event(f"[{worker_target}] Completed headless task {task_id} ({len(outputs_uploaded)} file(s))", category="COMFYUI", level="SUCCESS")
         except Exception as w_err:
@@ -2838,8 +3362,9 @@ def _headless_worker_loop(worker_target, port):
 
 if HEADLESS_MODE:
     threading.Thread(target=poll_model_downloads, daemon=True).start()
-    for _w_target, _w_port in zip(TARGETS[:len(active_ports)], active_ports):
-        threading.Thread(target=_headless_worker_loop, args=(_w_target, _w_port), daemon=True).start()
+    _worker_count = len(TARGETS) if PROVIDER == "kaggle" else 1
+    for _w_idx, _w_target in enumerate(TARGETS[:_worker_count]):
+        threading.Thread(target=_headless_worker_loop, args=(_w_idx, _w_target), daemon=True).start()
 
 t_loop_start = time.time()
 last_step_sent = -1
@@ -2848,16 +3373,17 @@ upload_started = False
 
 while True:
     telem = probe_comfy_stats()
-    ready_count = sum(1 for v in telem.values() if v.get("ready"))
+    ready_count = sum(1 for v in telem.values() if isinstance(v, dict) and v.get("ready"))
     any_ready = ready_count > 0
     caddy_ok = True if HEADLESS_MODE else is_caddy_ready()
-    all_ready = (True if HEADLESS_MODE else (bool(TUNNEL_URL) and caddy_ok)) and len(telem) > 0 and all(v.get("ready") for v in telem.values())
-    next_step = 5 if all_ready else (4 if (HEADLESS_MODE or (TUNNEL_URL and caddy_ok)) else 3)
+    is_switching = TOPOLOGY_SWITCHING.is_set()
+    all_ready = (not is_switching) and (True if HEADLESS_MODE else (bool(TUNNEL_URL) and caddy_ok)) and len(telem) > 0 and all(isinstance(v, dict) and v.get("ready") for v in telem.values())
+    next_step = 5 if all_ready else (4 if (not is_switching and (HEADLESS_MODE or (TUNNEL_URL and caddy_ok))) else 3)
     next_status = "ONLINE" if all_ready else "STARTING"
 
-    if not all_ready:
+    if not all_ready and not is_switching:
         _tail_comfy_logs(6)
-        dead_ports = [p for p, pr in COMFY_PROCS.items() if pr.poll() is not None]
+        dead_ports = [p for p, pr in list(COMFY_PROCS.items()) if pr.poll() is not None]
         if len(dead_ports) == len(COMFY_PROCS) and len(COMFY_PROCS) > 0:
             _tail_comfy_logs(15)
             log_event(f"All ComfyUI processes exited unexpectedly (ports={dead_ports}).", category="ERROR", level="ERROR")

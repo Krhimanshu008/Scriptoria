@@ -59,12 +59,20 @@ export async function POST(req: NextRequest) {
     }
 
     // 1. Update task to COMPLETED
+    const metricObj =
+      metrics && typeof metrics === "object" ? (metrics as Record<string, unknown>) : null;
+    const durationMs =
+      metricObj && typeof metricObj.durationMs === "number" && Number.isFinite(metricObj.durationMs)
+        ? Math.max(0, Math.round(metricObj.durationMs))
+        : null;
+
     const updatedTask = await prisma.batchTask.update({
       where: { id: taskId, assignedTarget: workerId, status: "PROCESSING" },
       data: {
         status: "COMPLETED",
         assignedTarget: workerId,
         outputFilesJson: JSON.stringify(normalizedOutputs),
+        durationMs,
         errorMessage: null,
         updatedAt: new Date(),
       },

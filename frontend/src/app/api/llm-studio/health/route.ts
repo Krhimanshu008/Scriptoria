@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { getAuthUser } from "@/lib/auth/session";
 import { resolveCandidateLlmConfigs } from "@/lib/agent/llm-client";
 import { isLlmWorkerProfile, getWorkerProfile } from "@/lib/catalog/worker-profiles";
+import { parseBootMetadata, type LlmEndpointTelemetry } from "@/lib/orchestrator/vm-helpers";
 
 export async function GET() {
   try {
@@ -16,78 +17,78 @@ export async function GET() {
       orderBy: { target: "asc" },
     });
 
-    const llmVms = allVms.filter((v) => isLlmWorkerProfile(v.workerProfile));
-    const onlineLlmVms = allVms.filter(
-      (v) => v.status === "ONLINE" && v.publicUrl && isLlmWorkerProfile(v.workerProfile)
-    );
-    const startingLlm = llmVms.find((v) => v.status === "STARTING");
-    const acc2WrongProfile = allVms.find(
+    const llmVms = allVms.filter(
       (v) =>
-        v.accountAlias === "acc2" &&
-        v.provider === "kaggle" &&
-        !isLlmWorkerProfile(v.workerProfile) &&
-        (v.status === "ONLINE" || v.status === "STARTING")
+        isLlmWorkerProfile(v.workerProfile) ||
+        parseBootMetadata(v.bootMetadataJson)?.topologyMode === "copilot_split"
     );
+    const onlineLlmVms = llmVms.filter((v) => v.status === "ONLINE");
+    const startingLlm = llmVms.find((v) => v.status === "STARTING");
 
-    // Probe all online LLM VMs in parallel so user can select between different models
+    // Inspect online LLM VMs (supports both tunneled URLs and Safe Headless Kaggle mode)
     const probedVms = await Promise.all(
       onlineLlmVms.map(async (vm) => {
-        const base = vm.publicUrl!.replace(/\/$/, "");
-        const headers: Record<string, string> = {};
-        if (vm.vmSecret) {
-          headers["Authorization"] = `Bearer ${vm.vmSecret}`;
-          headers["X-VM-Secret"] = vm.vmSecret;
-        }
+        const meta = parseBootMetadata(vm.bootMetadataJson);
+        const profileSpec = getWorkerProfile(vm.workerProfile);
+        const headless = !vm.publicUrl;
 
         let reachable = false;
         let loadedModel: string | null = null;
         let probeLatencyMs: number | null = null;
         let probeError: string | null = null;
 
-        const t0 = Date.now();
-        try {
-          const [modelsRes, ckptRes] = await Promise.all([
-            fetch(`${base}/v1/models`, { headers, signal: AbortSignal.timeout(4000) }),
-            fetch(`${base}/object_info/CheckpointLoaderSimple`, {
-              headers,
-              signal: AbortSignal.timeout(4000),
-            }).catch(() => null),
-          ]);
-          probeLatencyMs = Date.now() - t0;
-
-          if (modelsRes.ok) {
-            reachable = true;
-            const mJson = (await modelsRes.json()) as { data?: Array<{ id?: string }> };
-            loadedModel = mJson.data?.[0]?.id || null;
-          } else {
-            probeError = `HTTP ${modelsRes.status}`;
+        if (headless) {
+          const hbAgeMs = vm.lastHeartbeat ? Date.now() - vm.lastHeartbeat.getTime() : 999_999;
+          reachable = hbAgeMs < 90_000;
+          probeLatencyMs = reachable ? 15 : null;
+          loadedModel = meta?.llmEndpoints?.[0]?.model || profileSpec?.label || vm.workerProfile;
+          if (!reachable) probeError = "Heartbeat stale";
+        } else {
+          const base = vm.publicUrl!.replace(/\/$/, "");
+          const headers: Record<string, string> = {};
+          if (vm.vmSecret) {
+            headers["Authorization"] = `Bearer ${vm.vmSecret}`;
+            headers["X-VM-Secret"] = vm.vmSecret;
           }
 
-          if (ckptRes?.ok) {
-            const cJson = (await ckptRes.json()) as {
-              CheckpointLoaderSimple?: {
-                input?: { required?: { ckpt_name?: string[][] } };
+          const t0 = Date.now();
+          try {
+            const [modelsRes, ckptRes] = await Promise.all([
+              fetch(`${base}/v1/models`, { headers, signal: AbortSignal.timeout(4000) }),
+              fetch(`${base}/object_info/CheckpointLoaderSimple`, {
+                headers,
+                signal: AbortSignal.timeout(4000),
+              }).catch(() => null),
+            ]);
+            probeLatencyMs = Date.now() - t0;
+
+            if (modelsRes.ok) {
+              reachable = true;
+              const mJson = (await modelsRes.json()) as { data?: Array<{ id?: string }> };
+              loadedModel = mJson.data?.[0]?.id || null;
+            } else {
+              probeError = `HTTP ${modelsRes.status}`;
+            }
+
+            if (ckptRes?.ok) {
+              const cJson = (await ckptRes.json()) as {
+                CheckpointLoaderSimple?: {
+                  input?: { required?: { ckpt_name?: string[][] } };
+                };
               };
-            };
-            const ckpt = cJson.CheckpointLoaderSimple?.input?.required?.ckpt_name?.[0]?.[0];
-            if (ckpt) loadedModel = ckpt;
+              const ckpt = cJson.CheckpointLoaderSimple?.input?.required?.ckpt_name?.[0]?.[0];
+              if (ckpt) loadedModel = ckpt;
+            }
+          } catch (err) {
+            probeLatencyMs = Date.now() - t0;
+            probeError = err instanceof Error ? err.message : "Unreachable";
           }
-        } catch (err) {
-          probeLatencyMs = Date.now() - t0;
-          probeError = err instanceof Error ? err.message : "Unreachable";
         }
 
-        const profileSpec = getWorkerProfile(vm.workerProfile);
         const displayName =
           loadedModel ||
           profileSpec?.label ||
-          (vm.workerProfile === "LLM_QWEN_TEXT_TURBO"
-            ? "Qwen 27B Ultra Text"
-            : vm.workerProfile === "LLM_LIGHTWEIGHT_SWARM"
-            ? "Qwen 2.5 Swarm (4B+9B)"
-            : vm.workerProfile === "LLM_QWEN_VLM"
-            ? "Qwen 2.5-VL Vision"
-            : vm.workerProfile);
+          vm.workerProfile;
 
         return {
           target: vm.target,
@@ -95,11 +96,15 @@ export async function GET() {
           workerProfile: vm.workerProfile,
           profileLabel: profileSpec?.label || vm.workerProfile,
           loadedModel: displayName,
-          publicUrl: vm.publicUrl,
+          publicUrl: vm.publicUrl || null,
+          headless,
+          llmTopologyMode: meta?.llmTopologyMode || null,
+          requestedLlmTopology: meta?.requestedLlmTopology || null,
+          llmEndpoints: (meta?.llmEndpoints || []) as LlmEndpointTelemetry[],
           gpuName: vm.target.startsWith("tpu")
             ? "TPU v5e-8 (8 chips · 128GB HBM)"
             : vm.gpuName || "Tesla T4 x2",
-          vramTotalGb: vm.target.startsWith("tpu") ? 128 : vm.vramTotalGb || 30,
+          vramTotalGb: vm.target.startsWith("tpu") ? 128 : vm.vramTotalGb || 16,
           vramUsedGb: vm.vramUsedGb || 0,
           reachable,
           probeLatencyMs,
@@ -114,25 +119,25 @@ export async function GET() {
     return NextResponse.json({
       vmStatus: primaryVm ? "ONLINE" : startingLlm?.status || llmVms[0]?.status || "OFFLINE",
       target: primaryVm?.target || startingLlm?.target || llmVms[0]?.target || null,
-      accountAlias: primaryVm?.accountAlias || llmVms[0]?.accountAlias || "acc2",
+      accountAlias: primaryVm?.accountAlias || llmVms[0]?.accountAlias || "acc1",
       endpointPreview: primaryVm?.publicUrl
         ? `${primaryVm.publicUrl.replace(/\/$/, "")}/v1`
+        : primaryVm?.headless
+        ? "Safe Headless Outbound Relay"
         : null,
       reachable: Boolean(primaryVm?.reachable),
       loadedModel: primaryVm?.loadedModel || null,
       probeLatencyMs: primaryVm?.probeLatencyMs || null,
       probeError: primaryVm?.probeError || null,
       gpuName: primaryVm?.gpuName || llmVms[0]?.gpuName || null,
-      vramTotalGb: primaryVm?.vramTotalGb || llmVms[0]?.vramTotalGb || 30,
-      vramUsedGb: primaryVm?.vramUsedGb || llmVms[0]?.vramUsedGb || 0,
-      acc2RunningWrongProfile: acc2WrongProfile
-        ? {
-            target: acc2WrongProfile.target,
-            workerProfile: acc2WrongProfile.workerProfile,
-            status: acc2WrongProfile.status,
-          }
-        : null,
+      vramTotalGb: primaryVm?.vramTotalGb || llmVms[0]?.vramTotalGb || 16,
+      vramUsedGb: primaryVm?.vramUsedGb || 0,
       vaultFallbackCount: vaultFallbacks.length,
+      vaultProviders: vaultFallbacks.map((c) => ({
+        provider: c.provider,
+        model: c.model,
+        label: `${c.provider.toUpperCase()} (${c.model})`,
+      })),
       onlineVms: probedVms,
     });
   } catch (error) {

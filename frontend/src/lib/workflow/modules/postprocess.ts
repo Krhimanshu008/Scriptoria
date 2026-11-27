@@ -42,6 +42,15 @@ export function applyPostProcessingPipeline(
     }
   }
 
+  if (
+    base.dualT4Split &&
+    (input.enableFaceDetailer || input.enableHandDetailer || Boolean(input.upscalerModel))
+  ) {
+    ctx.addGuardrail(
+      "Dual-T4 Split active: TE stays on gpu:1 while UNet/VAE/Detailer execute cleanly on gpu:0."
+    );
+  }
+
   if (input.enableFaceDetailer && base.clip) {
     if (ctx.recommendedProfile === "BASE_COMFY") {
       ctx.recommendedProfile = "IMAGE_CORE";

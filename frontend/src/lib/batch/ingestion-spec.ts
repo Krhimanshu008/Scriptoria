@@ -1,5 +1,14 @@
 import { prisma } from "@/lib/db/prisma";
 import { callLlmJson } from "@/lib/agent/llm-client";
+import type { WorkflowPipelineKind } from "@/lib/workflow/compiler";
+import type {
+  ArchitectureFamily,
+  ControlNetModuleInput,
+  IpConnectorModuleInput,
+  MultiCharRegionInput,
+  RelightMode,
+  StylePresetId,
+} from "@/lib/workflow/modules/types";
 
 export type BatchTrackKind =
   | "VISUAL"
@@ -9,21 +18,46 @@ export type BatchTrackKind =
   | "VIDEO_I2V"
   | "LIPSYNC";
 
+export type BatchExecutionMode = "dual_parallel" | "dual_pipeline" | "dual_split" | "single";
+
+export interface CanonicalVisualTrackSpec {
+  prompt: string;
+  negativePrompt?: string;
+  baseModel?: string;
+  pipeline?: WorkflowPipelineKind;
+  architecture?: ArchitectureFamily;
+  stylePreset?: StylePresetId;
+  vaeModel?: string;
+  textEncoder1?: string;
+  textEncoder2?: string;
+  loras?: Array<{ filename: string; strength?: number }>;
+  ipConnectors?: IpConnectorModuleInput[];
+  controlNets?: ControlNetModuleInput[];
+  characters?: MultiCharRegionInput[];
+  relight?: RelightMode;
+  relightRefImagePath?: string;
+  inpaintMaskImagePath?: string;
+  upscalerModel?: string;
+  enableFaceDetailer?: boolean;
+  enableHandDetailer?: boolean;
+  enable360Preview?: boolean;
+  dualGpuSplit?: boolean;
+  width?: number;
+  height?: number;
+  steps?: number;
+  cfg?: number;
+  samplerName?: string;
+  scheduler?: string;
+  batchSize?: number;
+  seed?: number;
+  refImagePath?: string;
+}
+
 export interface CanonicalSceneSpec {
   sceneKey: string;
   title?: string;
   tracks: {
-    visual?: {
-      prompt: string;
-      negativePrompt?: string;
-      baseModel?: string;
-      pipeline?: "sdxl_txt2img" | "sdxl_detailer_upscale" | "flux_gguf" | "qwen_edit";
-      loras?: Array<{ filename: string; strength?: number }>;
-      width?: number;
-      height?: number;
-      steps?: number;
-      cfg?: number;
-    };
+    visual?: CanonicalVisualTrackSpec;
     audio_tts?: {
       text: string;
       voice?: string;
@@ -56,6 +90,8 @@ export interface ScriptoriaSceneSpecV1 {
   sourceApp: string;
   projectId?: string;
   title: string;
+  executionMode?: BatchExecutionMode;
+  baseSpec?: Record<string, unknown>;
   idempotencyKey?: string;
   webhookCallbackUrl?: string;
   preferFreeColabFirst?: boolean;
@@ -135,6 +171,14 @@ export async function normalizeExternalPayload(
         sourceApp,
         projectId: payload.projectId ? String(payload.projectId) : undefined,
         title,
+        executionMode:
+          typeof payload.executionMode === "string"
+            ? (payload.executionMode as BatchExecutionMode)
+            : undefined,
+        baseSpec:
+          payload.baseSpec && typeof payload.baseSpec === "object"
+            ? (payload.baseSpec as Record<string, unknown>)
+            : undefined,
         idempotencyKey,
         webhookCallbackUrl,
         preferFreeColabFirst: payload.preferFreeColabFirst !== false,

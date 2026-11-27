@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { getAuthUser } from "@/lib/auth/session";
 import { ComfyClient } from "@/lib/orchestrator/comfy-client";
 import { isLlmWorkerProfile } from "@/lib/catalog/worker-profiles";
+import { parseBootMetadata } from "@/lib/orchestrator/vm-helpers";
 
 export async function GET(
   req: NextRequest,
@@ -24,19 +25,31 @@ export async function GET(
     }
 
     if (!vm.publicUrl) {
+      const bootMeta = parseBootMetadata(vm.bootMetadataJson);
+      const cached = bootMeta?.cachedModels || {};
+      const allModels = {
+        checkpoints: cached.checkpoints || [],
+        loras: cached.loras || [],
+        vaes: cached.vaes || [],
+        controlnets: cached.controlnets || [],
+        ipadapters: cached.ipadapters || [],
+        clip_visions: cached.clip_vision || [],
+        upscale_models: cached.upscale_models || [],
+        diffusion_models: cached.diffusion_models || [],
+        unet: cached.unet || [],
+        text_encoders: cached.text_encoders || [],
+        ultralytics: cached.ultralytics || [],
+        sams: cached.sams || [],
+        lbm: cached.lbm || [],
+      };
+      const totalCached = Object.values(allModels).reduce((acc, list) => acc + list.length, 0);
       return NextResponse.json({
         headless: true,
         target,
-        totalNodesAvailable: 0,
-        models: {
-          checkpoints: [],
-          loras: [],
-          vaes: [],
-          controlnets: [],
-          ipadapters: [],
-          clip_visions: [],
-          upscale_models: [],
-        },
+        totalNodesAvailable: totalCached,
+        topologyMode: bootMeta?.topologyMode ?? null,
+        hotModels: bootMeta?.hotModels ?? null,
+        models: allModels,
       });
     }
 

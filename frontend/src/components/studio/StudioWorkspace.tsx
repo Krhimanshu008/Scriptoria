@@ -331,6 +331,10 @@ export function StudioWorkspace({ onOpenArchitect }: { onOpenArchitect?: () => v
         updateStudio({
           pollingJobId: successful[0].body.jobId,
           pollingTarget: successful[0].target,
+          pollingJobs: successful.map((s) => ({
+            jobId: s.body.jobId as string,
+            target: s.target,
+          })),
         });
         toast.success(
           successful.length > 1

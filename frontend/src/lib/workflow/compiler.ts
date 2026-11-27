@@ -4,6 +4,7 @@ import { getOrCreateWorkspaceSettings } from "@/lib/settings/workspace-settings"
 import type { WorkerProfileId } from "@/lib/catalog/worker-profiles";
 import {
   assembleModularWorkflow,
+  assemblePostProcessStage2,
   type ArchitectureFamily,
   type ControlNetModuleInput,
   type IpConnectorModuleInput,
@@ -461,5 +462,119 @@ export async function compileResourceAwareWorkflow(
     t4GuardrailsApplied: guardrails,
     warnings,
     graph,
+  };
+}
+
+export interface TwoStagePipelineResult {
+  isTwoStage: boolean;
+  stage1: CompiledWorkflowResult;
+  stage2?: CompiledWorkflowResult;
+  stage2Checkpoint?: string;
+}
+
+/**
+ * Splits heavy modular IMAGE workflows into Producer (Stage 1: Base + ControlNet + IP on GPU0)
+ * and Post-Processor (Stage 2: Detailer + LBM Relight + 4x Upscale on GPU1) for Dual-T4 pipelining.
+ */
+export async function splitWorkflowIntoTwoStages(
+  userId: string,
+  spec: WorkflowBuildSpec,
+  stage1ImagePlaceholder = "__STAGE1_OUTPUT_IMAGE__"
+): Promise<TwoStagePipelineResult> {
+  const modularArch = resolveModularArchitecture(spec);
+  const enableFace = spec.enableFaceDetailer ?? spec.pipeline === "sdxl_detailer_upscale";
+  const hasStage2 = Boolean(
+    modularArch &&
+      (enableFace ||
+        spec.enableHandDetailer ||
+        spec.upscalerModel ||
+        (spec.relight && spec.relight !== "none"))
+  );
+
+  if (!hasStage2 || !modularArch) {
+    const single = await compileResourceAwareWorkflow(userId, spec);
+    return { isTwoStage: false, stage1: single };
+  }
+
+  const stage1Spec: WorkflowBuildSpec = {
+    ...spec,
+    pipeline: spec.pipeline === "sdxl_detailer_upscale" ? "sdxl_txt2img" : spec.pipeline,
+    enableFaceDetailer: false,
+    enableHandDetailer: false,
+    upscalerModel: undefined,
+    relight: "none",
+    dualGpuSplit: false,
+  };
+  const stage1 = await compileResourceAwareWorkflow(userId, stage1Spec);
+
+  const [settings, userAssets] = await Promise.all([
+    getOrCreateWorkspaceSettings(userId),
+    prisma.modelAsset.findMany({ where: { userId } }),
+  ]);
+  const slugMap = new Map(userAssets.map((a) => [a.filename.toLowerCase(), a.slug]));
+  const byFilename = new Map(userAssets.map((a) => [a.filename.toLowerCase(), a]));
+
+  const assembledStage2 = assemblePostProcessStage2(
+    {
+      architecture: modularArch,
+      stylePreset: spec.stylePreset,
+      baseModel: spec.baseModel,
+      vaeModel: spec.vaeModel,
+      textEncoder1: spec.textEncoder1,
+      textEncoder2: spec.textEncoder2,
+      loras: spec.loras,
+      relight: spec.relight,
+      relightRefImagePath: spec.relightRefImagePath,
+      enableFaceDetailer: enableFace,
+      enableHandDetailer: spec.enableHandDetailer,
+      upscalerModel: spec.upscalerModel,
+      enable360Preview: spec.enable360Preview,
+      dualGpuSplit: false,
+      autoVaeFixSdxl: settings.autoVaeFixSdxl,
+      prompt: spec.prompt,
+      negativePrompt: spec.negativePrompt,
+      steps: spec.steps,
+      cfg: spec.cfg,
+      samplerName: spec.samplerName,
+      scheduler: spec.scheduler,
+      seed: spec.seed,
+    },
+    stage1ImagePlaceholder,
+    slugMap
+  );
+
+  const requiredModels: RequiredModelRef[] = assembledStage2.requiredModels.map((m) => ({
+    category: m.category,
+    filename: m.filename,
+    slug: m.slug ?? byFilename.get(m.filename.toLowerCase())?.slug,
+  }));
+
+  const vramEstimateGb = Number(assembledStage2.vramEstimateGb.toFixed(1));
+  const vramStatus: CompiledWorkflowResult["vramStatus"] =
+    vramEstimateGb > 15.4 ? "OVER_T4_LIMIT" : vramEstimateGb > 13.5 ? "TIGHT" : "SAFE";
+
+  const stage2: CompiledWorkflowResult = {
+    pipeline: spec.pipeline,
+    modality: "IMAGE",
+    recommendedProfile: assembledStage2.recommendedProfile,
+    requiredNodes: assembledStage2.requiredNodes,
+    requiredModels,
+    vramEstimateGb,
+    vramStatus,
+    t4GuardrailsApplied: assembledStage2.t4GuardrailsApplied,
+    warnings: assembledStage2.warnings,
+    graph: assembledStage2.graph,
+  };
+
+  const stage2Checkpoint =
+    enableFace || spec.enableHandDetailer
+      ? spec.baseModel || ""
+      : spec.upscalerModel || (spec.relight === "lbm_relight" ? "LBM_relighting.safetensors" : "");
+
+  return {
+    isTwoStage: true,
+    stage1,
+    stage2,
+    stage2Checkpoint,
   };
 }

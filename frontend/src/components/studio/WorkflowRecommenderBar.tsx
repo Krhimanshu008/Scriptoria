@@ -9,6 +9,8 @@ import {
   CheckCircle2,
   ArrowRight,
   Zap,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import type {
   RecommendationTaskType,
@@ -72,6 +74,7 @@ export function WorkflowRecommenderBar({
   const [stylePreset, setStylePreset] = useState<StylePresetId>("anime_dramatic_vpred");
   const [speedPriority, setSpeedPriority] = useState<SpeedPriority>("balanced");
   const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const [recommendations, setRecommendations] = useState<WorkflowStackRecommendation[]>([]);
 
   async function handleRecommend() {
@@ -80,6 +83,7 @@ export function WorkflowRecommenderBar({
       return;
     }
     setLoading(true);
+    setExpanded(true);
     try {
       const res = await fetch("/api/workflow/recommend", {
         method: "POST",
@@ -107,22 +111,60 @@ export function WorkflowRecommenderBar({
   }
 
   return (
-    <div className="space-y-3 rounded-lg border border-indigo-500/25 bg-gradient-to-br from-[#12121a] to-[#0f1014] p-4">
+    <div className="space-y-3 rounded-lg border border-indigo-500/25 bg-gradient-to-br from-[#12121a] to-[#0f1014] px-3.5 py-2.5">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <Sparkles className="h-4 w-4 text-indigo-400" />
-          <div>
-            <h3 className="text-xs font-semibold text-white">
-              Multi-Axis Style Advisor &amp; AI Workflow Architect
-            </h3>
-            <p className="text-[11px] text-zinc-400">
-              Ranks Kaggle Dual-T4 engines across style fit, IP consistency, spatial layout, &amp; Drive/GPU cache state.
-            </p>
-          </div>
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="flex items-center gap-2 text-left"
+        >
+          {expanded ? (
+            <ChevronDown className="h-3.5 w-3.5 text-zinc-400" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5 text-zinc-400" />
+          )}
+          <Sparkles className="h-3.5 w-3.5 text-indigo-400" />
+          <span className="text-xs font-semibold text-white">
+            AI Workflow Architect &amp; Style Advisor
+          </span>
+          {!expanded && (
+            <span className="hidden text-[11px] text-zinc-500 sm:inline">
+              — Rank Top-3 Kaggle Dual-T4 stacks or auto-design graph
+            </span>
+          )}
+        </button>
+
+        <div className="flex flex-wrap items-center gap-1.5">
+          {!expanded && onArchitectDesign && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={Boolean(architectBusy)}
+              onClick={() => onArchitectDesign(goal, { task, stylePreset, speedPriority })}
+              className="h-7 border-violet-500/40 bg-violet-500/15 px-2.5 text-[11px] font-medium text-violet-200 hover:bg-violet-500/25"
+            >
+              {architectBusy ? (
+                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+              ) : (
+                <Wand2 className="mr-1 h-3 w-3" />
+              )}
+              Quick AI Design
+            </Button>
+          )}
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800"
+          >
+            {expanded ? "Hide" : "Expand Advisor"}
+          </button>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-2.5 md:grid-cols-12">
+      {expanded && (
+        <>
+          <div className="grid grid-cols-1 gap-2.5 md:grid-cols-12">
         <div className="space-y-1 md:col-span-5">
           <Label className="text-[11px] text-zinc-300">Describe Style / Story Goal</Label>
           <Input
@@ -282,6 +324,8 @@ export function WorkflowRecommenderBar({
             </div>
           ))}
         </div>
+      )}
+        </>
       )}
     </div>
   );

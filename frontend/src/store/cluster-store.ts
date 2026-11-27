@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
 import { resolvePreferredVmTarget } from "@/lib/vm-select";
 import { WORKFLOW_PRESETS, type WorkflowPreset } from "@/lib/orchestrator/workflow-presets";
+import type { WorkflowBuildSpec } from "@/lib/workflow/compiler";
 
 export interface ActiveStreamState {
   target: string;
@@ -26,6 +27,8 @@ export interface GeneratedOutput {
   gdriveFileId: string;
   gdrivePath: string;
   previewUrl: string;
+  target?: string;
+  jobId?: string;
 }
 
 export interface StudioFormState {
@@ -49,7 +52,9 @@ export interface StudioFormState {
   submitting: boolean;
   pollingJobId: string | null;
   pollingTarget: string | null;
+  pollingJobs: Array<{ jobId: string; target: string }>;
   outputs: GeneratedOutput[];
+  recentOutputs: GeneratedOutput[];
   durationMs: number | null;
   queueElapsedMs: number | null;
   queuePending: number;
@@ -79,6 +84,22 @@ interface ClusterUiState {
 
   studio: StudioFormState;
   updateStudio: (patch: Partial<StudioFormState>) => void;
+  architectDraftSpec: WorkflowBuildSpec | null;
+  setArchitectDraftSpec: (spec: WorkflowBuildSpec | null) => void;
+  batchDraft: {
+    baseSpec: WorkflowBuildSpec;
+    title?: string;
+    suggestedMode?: "prompt_list" | "matrix" | "character_ip_set" | "folder_i2i";
+    createdAt: number;
+  } | null;
+  setBatchDraft: (
+    draft: {
+      baseSpec: WorkflowBuildSpec;
+      title?: string;
+      suggestedMode?: "prompt_list" | "matrix" | "character_ip_set" | "folder_i2i";
+      createdAt: number;
+    } | null
+  ) => void;
   applyStudioPreset: (preset: WorkflowPreset, availableCheckpoints: string[]) => void;
   remixFromHistory: (item: {
     target: string;
@@ -181,7 +202,9 @@ export const useClusterStore = create<ClusterUiState>((set, get) => ({
     submitting: false,
     pollingJobId: null,
     pollingTarget: null,
+    pollingJobs: [],
     outputs: [],
+    recentOutputs: [],
     durationMs: null,
     queueElapsedMs: null,
     queuePending: 0,
@@ -191,6 +214,11 @@ export const useClusterStore = create<ClusterUiState>((set, get) => ({
     set((state) => ({
       studio: { ...state.studio, ...patch },
     })),
+
+  architectDraftSpec: null,
+  setArchitectDraftSpec: (architectDraftSpec) => set({ architectDraftSpec }),
+  batchDraft: null,
+  setBatchDraft: (batchDraft) => set({ batchDraft }),
 
   applyStudioPreset: (preset, availableCheckpoints) =>
     set((state) => ({

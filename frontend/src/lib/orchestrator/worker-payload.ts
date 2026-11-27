@@ -9,7 +9,7 @@ import { getOrCreateWorkspaceSettings } from "@/lib/settings/workspace-settings"
 import { buildUnifiedNotebookPythonCode } from "@/lib/orchestrator/notebook-builder";
 import { buildTpuNotebookPythonCode } from "@/lib/orchestrator/tpu-notebook-builder";
 import { resolveReachableWebhookBaseUrl } from "@/lib/orchestrator/webhook-tunnel";
-import { sortVmsByCanonicalTarget } from "@/lib/orchestrator/vm-helpers";
+import { parseBootMetadata, sortVmsByCanonicalTarget } from "@/lib/orchestrator/vm-helpers";
 
 export class WorkerPayloadError extends Error {
   status: number;
@@ -136,6 +136,10 @@ export async function assembleWorkerRuntimePayload(
   const isTpu = profileSpec.accelerator === "tpu";
   const isKaggle = vm.provider === "kaggle";
 
+  const bootMeta = parseBootMetadata(vm.bootMetadataJson);
+  const initialLlmTopology =
+    bootMeta?.requestedLlmTopology || bootMeta?.llmTopologyMode || undefined;
+
   const pythonCode = isTpu
     ? buildTpuNotebookPythonCode({
         appWebhookUrl: webhook.url,
@@ -161,8 +165,9 @@ export async function assembleWorkerRuntimePayload(
         idleTimeoutSeconds: effectiveIdleMinutes * 60,
         prewarmModels,
         enableOfflineDatasetScan: vm.accountAlias === "acc1" || datasetSet.size > 0,
-        headlessMode: isKaggle && !isLlmProfile && workerMode === "headless_safe",
+        headlessMode: isKaggle && workerMode === "headless_safe",
         quietStdout: isKaggle,
+        llmTopologyMode: initialLlmTopology,
       });
 
   return {

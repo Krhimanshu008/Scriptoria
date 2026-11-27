@@ -259,3 +259,83 @@ export function assembleModularWorkflow(
     effectiveScheduler,
   };
 }
+
+/**
+ * Builds Stage 2 of a Dual-T4 Pipelined execution: takes the Stage 1 generated image via
+ * LoadImage placeholder and runs Detailers, Relighting, and/or Upscaling independently on GPU1.
+ */
+export function assemblePostProcessStage2(
+  input: ModularWorkflowInput,
+  stage1ImagePlaceholder: string,
+  slugByFilename?: Map<string, string>
+): AssembledModularWorkflow {
+  const ctx = new GraphBuilderContext(slugByFilename);
+  const srcImg = ctx.addNode("LoadImage", { image: stage1ImagePlaceholder });
+  const needsDiffusionDetailer = Boolean(input.enableFaceDetailer || input.enableHandDetailer);
+
+  const tuned = tunePromptForArchitecture(
+    input.prompt || "detailed story portrait",
+    input.negativePrompt || "",
+    input.architecture,
+    input.stylePreset
+  );
+
+  let baseRefs: import("./types").LoadedBaseRefs;
+  let positive: NodeRef = ctx.ref(srcImg, 0);
+  let negative: NodeRef = ctx.ref(srcImg, 0);
+
+  if (needsDiffusionDetailer) {
+    baseRefs = buildBaseModelLoader(ctx, { ...input, dualGpuSplit: false });
+    const posEnc = ctx.addNode("CLIPTextEncode", { text: tuned.positive, clip: baseRefs.clip! });
+    const negEnc = ctx.addNode("CLIPTextEncode", { text: tuned.negative, clip: baseRefs.clip! });
+    positive = ctx.ref(posEnc, 0);
+    negative = ctx.ref(negEnc, 0);
+  } else {
+    ctx.recommendedProfile = "IMAGE_CORE";
+    ctx.vramEstimateGb = input.relight === "lbm_relight" ? 4.8 : 2.2;
+    baseRefs = {
+      architecture: input.architecture,
+      model: ctx.ref(srcImg, 0),
+      vae: ctx.ref(srcImg, 0),
+      dualT4Split: false,
+      defaultSteps: 14,
+      defaultCfg: 6.0,
+      defaultSampler: input.samplerName || "euler_ancestral",
+      defaultScheduler: input.scheduler || "normal",
+      filenamePrefix: `${input.architecture}_Stage2`,
+      isAnime2D: true,
+      isDiT: false,
+    };
+  }
+
+  const finalImg = applyPostProcessingPipeline(
+    ctx,
+    baseRefs,
+    ctx.ref(srcImg, 0),
+    positive,
+    negative,
+    { ...input, dualGpuSplit: false }
+  );
+
+  ctx.addNode("SaveImage", {
+    filename_prefix: `${input.architecture}_Stage2`,
+    images: finalImg,
+  });
+  ctx.addGuardrail("Dual-T4 Pipeline Stage 2: Runs Detailer/Relight/Upscaler independently on GPU1.");
+
+  return {
+    graph: ctx.nodes,
+    requiredModels: ctx.requiredModels,
+    requiredNodes: Array.from(ctx.requiredNodes),
+    recommendedProfile: ctx.recommendedProfile,
+    vramEstimateGb: ctx.vramEstimateGb,
+    t4GuardrailsApplied: ctx.guardrails,
+    warnings: ctx.warnings,
+    tunedPrompt: tuned.positive,
+    tunedNegativePrompt: tuned.negative,
+    effectiveSteps: input.steps ?? baseRefs.defaultSteps,
+    effectiveCfg: input.cfg ?? baseRefs.defaultCfg,
+    effectiveSampler: input.samplerName || baseRefs.defaultSampler,
+    effectiveScheduler: input.scheduler || baseRefs.defaultScheduler,
+  };
+}

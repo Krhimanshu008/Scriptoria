@@ -4,6 +4,7 @@ import { ensureDbSchemaReady } from "@/lib/db/ensure-schema";
 import { verifyVmRegistrationToken } from "@/lib/auth/session";
 import { appendSystemLog } from "@/lib/logs/logger";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
+import { mergeBootMetadata } from "@/lib/orchestrator/vm-helpers";
 
 interface HeartbeatTelemetryEntry {
   ready?: boolean;
@@ -38,16 +39,6 @@ export async function POST(req: NextRequest) {
     const telemetry = rawTelem as Record<string, HeartbeatTelemetryEntry>;
     const logs = (Array.isArray(body.logs) ? body.logs : []) as HeartbeatLogEntry[];
 
-    const bootMeta =
-      rawTelem.stepDurations || rawTelem.currentStepElapsed || rawTelem.totalBootElapsed
-        ? {
-            modelFetch: rawTelem.modelFetch === true,
-            stepDurations: rawTelem.stepDurations,
-            currentStepElapsed: rawTelem.currentStepElapsed,
-            totalBootElapsed: rawTelem.totalBootElapsed,
-          }
-        : null;
-
     const vms = await prisma.vmInstance.findMany({
       where: {
         userId: payload.userId,
@@ -58,6 +49,8 @@ export async function POST(req: NextRequest) {
 
     const now = new Date();
     const updatedTargets: string[] = [];
+    let pendingSwitchTopology: string | undefined;
+    let pendingSwitchLlmTopology: string | undefined;
     for (const vm of vms) {
       // Allow runner auto-adoption: If the runner token is cryptographically valid for this user/target
       // and the runner is active (STARTING or ONLINE), adopt this runner session.
@@ -71,7 +64,19 @@ export async function POST(req: NextRequest) {
       }
 
       const adoptedSecret = payload.vmSecret || vm.vmSecret;
-
+      const mergedBootMeta = mergeBootMetadata(vm.bootMetadataJson, rawTelem);
+      if (
+        mergedBootMeta?.requestedTopologyMode &&
+        mergedBootMeta.requestedTopologyMode !== rawTelem.topologyMode
+      ) {
+        pendingSwitchTopology = mergedBootMeta.requestedTopologyMode;
+      }
+      if (
+        mergedBootMeta?.requestedLlmTopology &&
+        mergedBootMeta.requestedLlmTopology !== rawTelem.llmTopologyMode
+      ) {
+        pendingSwitchLlmTopology = mergedBootMeta.requestedLlmTopology;
+      }
 
       const tStats = telemetry[vm.target];
       const isHeadlessReady = Boolean(rawTelem.headlessMode === true && tStats?.ready);
@@ -106,7 +111,7 @@ export async function POST(req: NextRequest) {
           vramTotalGb: tStats?.vramTotalGb ?? vm.vramTotalGb,
           vramUsedGb: nextStatus === "OFFLINE" ? 0 : tStats?.vramUsedGb ?? vm.vramUsedGb,
           lastError: null,
-          bootMetadataJson: bootMeta ? JSON.stringify(bootMeta) : vm.bootMetadataJson,
+          bootMetadataJson: mergedBootMeta ? JSON.stringify(mergedBootMeta) : vm.bootMetadataJson,
         },
       });
       if (written.count) updatedTargets.push(vm.target);
@@ -161,6 +166,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       ok: true,
       updatedTargets,
+      ...(pendingSwitchTopology ? { switchTopology: pendingSwitchTopology } : {}),
+      ...(pendingSwitchLlmTopology ? { switchLlmTopology: pendingSwitchLlmTopology } : {}),
       ...(gdriveTokenPayload ? { gdriveTokenPayload, gdriveUpdatedAtMs } : {}),
     });
   } catch (error) {

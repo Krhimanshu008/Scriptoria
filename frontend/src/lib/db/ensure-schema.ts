@@ -173,7 +173,9 @@ const SCHEMA_DDL_STATEMENTS: string[] = [
   `CREATE TABLE IF NOT EXISTS "WorkspaceSettings" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "userId" TEXT NOT NULL,
-    "defaultDashboard" TEXT NOT NULL DEFAULT 'vms',
+    "defaultDashboard" TEXT NOT NULL DEFAULT 'studio',
+    "studioStandaloneMode" BOOLEAN NOT NULL DEFAULT true,
+    "showLegacyPipelineRoutes" BOOLEAN NOT NULL DEFAULT false,
     "gdriveBaseFolder" TEXT NOT NULL DEFAULT 'NovelVisualizer/ComfyUI_Storage',
     "autoBackupToDrive" BOOLEAN NOT NULL DEFAULT true,
     "diskCleanupThresholdGb" REAL NOT NULL DEFAULT 6.0,
@@ -225,6 +227,8 @@ const SCHEMA_DDL_STATEMENTS: string[] = [
     "userId" TEXT NOT NULL,
     "title" TEXT NOT NULL,
     "sourceApp" TEXT NOT NULL DEFAULT 'studio',
+    "executionMode" TEXT NOT NULL DEFAULT 'dual_parallel',
+    "baseSpecJson" TEXT,
     "idempotencyKey" TEXT,
     "webhookUrl" TEXT,
     "rawPayloadJson" TEXT,
@@ -241,6 +245,7 @@ const SCHEMA_DDL_STATEMENTS: string[] = [
     "id" TEXT NOT NULL PRIMARY KEY,
     "batchId" TEXT NOT NULL,
     "sequenceIndex" INTEGER NOT NULL DEFAULT 0,
+    "stageIndex" INTEGER NOT NULL DEFAULT 1,
     "sceneKey" TEXT NOT NULL,
     "trackType" TEXT NOT NULL DEFAULT 'VISUAL',
     "dependsOnTaskIdsJson" TEXT,
@@ -256,6 +261,7 @@ const SCHEMA_DDL_STATEMENTS: string[] = [
     "outputFilesJson" TEXT,
     "errorMessage" TEXT,
     "attempts" INTEGER NOT NULL DEFAULT 0,
+    "durationMs" INTEGER,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "BatchTask_batchId_fkey" FOREIGN KEY ("batchId") REFERENCES "BatchJob" ("id") ON DELETE CASCADE ON UPDATE CASCADE
@@ -324,6 +330,21 @@ const SCHEMA_DDL_STATEMENTS: string[] = [
   `CREATE INDEX IF NOT EXISTS "AgentMessage_sessionId_createdAt_idx" ON "AgentMessage"("sessionId", "createdAt")`,
   `CREATE INDEX IF NOT EXISTS "LlmChatSession_userId_updatedAt_idx" ON "LlmChatSession"("userId", "updatedAt")`,
   `CREATE INDEX IF NOT EXISTS "LlmChatMessage_sessionId_createdAt_idx" ON "LlmChatMessage"("sessionId", "createdAt")`,
+  `CREATE TABLE IF NOT EXISTS "LlmRelayRequest" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "userId" TEXT NOT NULL,
+    "targetVm" TEXT,
+    "targetService" TEXT NOT NULL DEFAULT 'default',
+    "requestPayloadJson" TEXT NOT NULL,
+    "status" TEXT NOT NULL DEFAULT 'PENDING',
+    "assignedTarget" TEXT,
+    "responseJson" TEXT,
+    "errorMessage" TEXT,
+    "latencyMs" INTEGER,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS "LlmRelayRequest_userId_status_createdAt_idx" ON "LlmRelayRequest"("userId", "status", "createdAt")`,
   `CREATE UNIQUE INDEX IF NOT EXISTS "ApiToken_tokenHash_key" ON "ApiToken"("tokenHash")`,
   `CREATE INDEX IF NOT EXISTS "ApiToken_userId_idx" ON "ApiToken"("userId")`,
   `CREATE UNIQUE INDEX IF NOT EXISTS "BatchJob_userId_idempotencyKey_key" ON "BatchJob"("userId", "idempotencyKey")`,
@@ -336,21 +357,31 @@ const SCHEMA_DDL_STATEMENTS: string[] = [
 ];
 
 async function runSchemaSync(): Promise<void> {
-  const [modelCols, vmCols, existingTables] = await Promise.all([
+  const [modelCols, vmCols, wsCols, batchJobCols, batchTaskCols, existingTables] = await Promise.all([
     prisma.$queryRawUnsafe<Array<{ name: string }>>(`PRAGMA table_info("ModelAsset")`),
     prisma.$queryRawUnsafe<Array<{ name: string }>>(`PRAGMA table_info("VmInstance")`),
+    prisma.$queryRawUnsafe<Array<{ name: string }>>(`PRAGMA table_info("WorkspaceSettings")`),
+    prisma.$queryRawUnsafe<Array<{ name: string }>>(`PRAGMA table_info("BatchJob")`),
+    prisma.$queryRawUnsafe<Array<{ name: string }>>(`PRAGMA table_info("BatchTask")`),
     prisma.$queryRawUnsafe<Array<{ name: string }>>(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name IN ('User','Credential','VmInstance','Job','SystemLog','ModelAsset','ModelFetch','WorkflowTemplate','WorkspaceSettings','AgentSession','AgentMessage','ApiToken','BatchJob','BatchTask','Project','CharacterProfile','Scene','LlmChatSession','LlmChatMessage')`
+      `SELECT name FROM sqlite_master WHERE type='table' AND name IN ('User','Credential','VmInstance','Job','SystemLog','ModelAsset','ModelFetch','WorkflowTemplate','WorkspaceSettings','AgentSession','AgentMessage','ApiToken','BatchJob','BatchTask','Project','CharacterProfile','Scene','LlmChatSession','LlmChatMessage','LlmRelayRequest')`
     ),
   ]);
 
   const tableSet = new Set(existingTables.map((t) => t.name));
   const vmColSet = new Set(vmCols.map((c) => c.name));
+  const wsColSet = new Set(wsCols.map((c) => c.name));
+  const bjColSet = new Set(batchJobCols.map((c) => c.name));
+  const btColSet = new Set(batchTaskCols.map((c) => c.name));
   const hasWorkerProfile = vmColSet.has("workerProfile");
   const hasIdleTimeout = vmColSet.has("idleTimeoutMinutes");
   const hasPrewarmModels = vmColSet.has("prewarmModelsJson");
   const hasKaggleDatasets = vmColSet.has("kaggleDatasetsJson");
   const hasBootMetadata = vmColSet.has("bootMetadataJson");
+  const hasBatchJobCols = bjColSet.has("executionMode") && bjColSet.has("baseSpecJson");
+  const hasBatchTaskCols = btColSet.has("stageIndex") && btColSet.has("durationMs");
+  const hasWsStandalone =
+    wsColSet.has("studioStandaloneMode") && wsColSet.has("showLegacyPipelineRoutes");
   const allTablesExist =
     tableSet.has("User") &&
     tableSet.has("Credential") &&
@@ -369,9 +400,20 @@ async function runSchemaSync(): Promise<void> {
     tableSet.has("CharacterProfile") &&
     tableSet.has("Scene") &&
     tableSet.has("LlmChatSession") &&
-    tableSet.has("LlmChatMessage");
+    tableSet.has("LlmChatMessage") &&
+    tableSet.has("LlmRelayRequest");
 
-  if (allTablesExist && hasWorkerProfile && hasIdleTimeout && hasPrewarmModels && hasKaggleDatasets && hasBootMetadata) {
+  if (
+    allTablesExist &&
+    hasWorkerProfile &&
+    hasIdleTimeout &&
+    hasPrewarmModels &&
+    hasKaggleDatasets &&
+    hasBootMetadata &&
+    hasBatchJobCols &&
+    hasBatchTaskCols &&
+    hasWsStandalone
+  ) {
     try {
       await prisma.$queryRawUnsafe(`PRAGMA journal_mode = WAL;`);
       await prisma.$queryRawUnsafe(`PRAGMA synchronous = NORMAL;`);
@@ -395,32 +437,9 @@ async function runSchemaSync(): Promise<void> {
     }
   }
 
-  if (tableSet.has("VmInstance")) {
-    const missingVmCols: Array<{ present: boolean; sql: string }> = [
-      {
-        present: hasWorkerProfile,
-        sql: `ALTER TABLE "VmInstance" ADD COLUMN "workerProfile" TEXT NOT NULL DEFAULT 'BASE_COMFY'`,
-      },
-      {
-        present: hasIdleTimeout,
-        sql: `ALTER TABLE "VmInstance" ADD COLUMN "idleTimeoutMinutes" INTEGER`,
-      },
-      {
-        present: hasPrewarmModels,
-        sql: `ALTER TABLE "VmInstance" ADD COLUMN "prewarmModelsJson" TEXT`,
-      },
-      {
-        present: hasKaggleDatasets,
-        sql: `ALTER TABLE "VmInstance" ADD COLUMN "kaggleDatasetsJson" TEXT`,
-      },
-      {
-        present: hasBootMetadata,
-        sql: `ALTER TABLE "VmInstance" ADD COLUMN "bootMetadataJson" TEXT`,
-      },
-    ];
-
-    for (const col of missingVmCols) {
-      if (col.present) continue;
+  const applyMissingColumns = async (checks: Array<{ tableExists: boolean; present: boolean; sql: string }>) => {
+    for (const col of checks) {
+      if (!col.tableExists || col.present) continue;
       try {
         await prisma.$executeRawUnsafe(col.sql);
       } catch (err) {
@@ -430,7 +449,65 @@ async function runSchemaSync(): Promise<void> {
         }
       }
     }
-  }
+  };
+
+  await applyMissingColumns([
+    {
+      tableExists: tableSet.has("VmInstance"),
+      present: hasWorkerProfile,
+      sql: `ALTER TABLE "VmInstance" ADD COLUMN "workerProfile" TEXT NOT NULL DEFAULT 'BASE_COMFY'`,
+    },
+    {
+      tableExists: tableSet.has("VmInstance"),
+      present: hasIdleTimeout,
+      sql: `ALTER TABLE "VmInstance" ADD COLUMN "idleTimeoutMinutes" INTEGER`,
+    },
+    {
+      tableExists: tableSet.has("VmInstance"),
+      present: hasPrewarmModels,
+      sql: `ALTER TABLE "VmInstance" ADD COLUMN "prewarmModelsJson" TEXT`,
+    },
+    {
+      tableExists: tableSet.has("VmInstance"),
+      present: hasKaggleDatasets,
+      sql: `ALTER TABLE "VmInstance" ADD COLUMN "kaggleDatasetsJson" TEXT`,
+    },
+    {
+      tableExists: tableSet.has("VmInstance"),
+      present: hasBootMetadata,
+      sql: `ALTER TABLE "VmInstance" ADD COLUMN "bootMetadataJson" TEXT`,
+    },
+    {
+      tableExists: tableSet.has("WorkspaceSettings"),
+      present: wsColSet.has("studioStandaloneMode"),
+      sql: `ALTER TABLE "WorkspaceSettings" ADD COLUMN "studioStandaloneMode" BOOLEAN NOT NULL DEFAULT true`,
+    },
+    {
+      tableExists: tableSet.has("WorkspaceSettings"),
+      present: wsColSet.has("showLegacyPipelineRoutes"),
+      sql: `ALTER TABLE "WorkspaceSettings" ADD COLUMN "showLegacyPipelineRoutes" BOOLEAN NOT NULL DEFAULT false`,
+    },
+    {
+      tableExists: tableSet.has("BatchJob"),
+      present: bjColSet.has("executionMode"),
+      sql: `ALTER TABLE "BatchJob" ADD COLUMN "executionMode" TEXT NOT NULL DEFAULT 'dual_parallel'`,
+    },
+    {
+      tableExists: tableSet.has("BatchJob"),
+      present: bjColSet.has("baseSpecJson"),
+      sql: `ALTER TABLE "BatchJob" ADD COLUMN "baseSpecJson" TEXT`,
+    },
+    {
+      tableExists: tableSet.has("BatchTask"),
+      present: btColSet.has("stageIndex"),
+      sql: `ALTER TABLE "BatchTask" ADD COLUMN "stageIndex" INTEGER NOT NULL DEFAULT 1`,
+    },
+    {
+      tableExists: tableSet.has("BatchTask"),
+      present: btColSet.has("durationMs"),
+      sql: `ALTER TABLE "BatchTask" ADD COLUMN "durationMs" INTEGER`,
+    },
+  ]);
 
   globalForSchema.__scriptoriaSchemaReady = true;
 }

@@ -58,6 +58,14 @@ export async function PATCH(req: NextRequest) {
       updateData.autoBackupToDrive = body.autoBackupToDrive;
     }
 
+    if (typeof body.studioStandaloneMode === "boolean") {
+      updateData.studioStandaloneMode = body.studioStandaloneMode;
+    }
+
+    if (typeof body.showLegacyPipelineRoutes === "boolean") {
+      updateData.showLegacyPipelineRoutes = body.showLegacyPipelineRoutes;
+    }
+
     if (body.diskCleanupThresholdGb !== undefined) {
       const threshold = Number(body.diskCleanupThresholdGb);
       if (!Number.isFinite(threshold) || threshold < 1 || threshold > 40) {

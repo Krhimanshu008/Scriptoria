@@ -1,1303 +1,418 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useMemo, useState } from "react";
 import Link from "next/link";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
-  AlertTriangle,
   Bot,
-  ChevronDown,
-  ChevronRight,
   Cpu,
-  History,
-  ImagePlus,
-  Loader2,
-  MessageSquare,
-  Plus,
+  Rocket,
+  Terminal,
   RefreshCw,
-  Send,
+  Loader2,
+  GitCompare,
+  ListChecks,
+  Workflow,
   Sparkles,
-  Trash2,
-  Wrench,
-  X,
-  Zap,
+  Layers,
+  Copy,
+  Check,
+  ExternalLink,
 } from "lucide-react";
 import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { KaggleVmLauncherDialog } from "@/components/studio/StudioVmLauncher";
+import type { LlmTopologyMode, PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
+import type { WorkerProfileId } from "@/lib/catalog/worker-profiles";
+import {
+  LLM_LAUNCH_PROFILES,
+  LLM_TOPOLOGY_OPTIONS,
+  type LlmHealthResponse,
+  buildTargetOptions,
+} from "@/components/llm-studio/types";
+import { PlaygroundPanel } from "@/components/llm-studio/PlaygroundPanel";
+import { ArenaPanel } from "@/components/llm-studio/ArenaPanel";
+import { BatchEvalPanel } from "@/components/llm-studio/BatchEvalPanel";
+import { WorkflowsChainPanel } from "@/components/llm-studio/WorkflowsChainPanel";
 
-interface SessionItem {
-  id: string;
-  title: string;
-  mode: string;
-  systemPrompt?: string | null;
-  jsonSchema?: string | null;
-  temperature: number;
-  maxTokens: number;
-  reasoningEffort: string;
-  createdAt: string;
-  updatedAt: string;
-  _count?: { messages: number };
-}
+type LlmStudioTabKey = "playground" | "arena" | "batch" | "workflows";
 
-export interface OnlineVmOption {
-  target: string;
-  accountAlias: string;
-  workerProfile: string;
-  profileLabel: string;
-  loadedModel: string;
-  publicUrl: string | null;
-  gpuName: string | null;
-  vramTotalGb: number;
-  vramUsedGb: number;
-  reachable: boolean;
-  probeLatencyMs: number | null;
-  probeError: string | null;
-}
-
-interface LlmStudioHealth {
-  vmStatus: string;
+interface EndpointInfoResponse {
+  online: boolean;
+  headless?: boolean;
+  status: string;
   target: string | null;
-  accountAlias: string;
-  endpointPreview: string | null;
-  reachable: boolean;
-  loadedModel: string | null;
-  probeLatencyMs: number | null;
-  probeError: string | null;
-  gpuName: string | null;
-  vramTotalGb: number;
-  vramUsedGb: number;
-  acc2RunningWrongProfile: {
-    target: string;
-    workerProfile: string;
-    status: string;
-  } | null;
-  vaultFallbackCount: number;
-  onlineVms?: OnlineVmOption[];
+  workerProfile?: string | null;
+  llmTopologyMode?: string;
+  baseUrl: string | null;
+  relayEndpoint: string;
+  services?: Record<string, string> | null;
+  apiKey: string | null;
 }
 
-interface TurnMessage {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  thinking?: string | null;
-  imageDataUrls?: string[];
-  meta?: {
-    source: string;
-    model: string;
-    latencyMs: number;
-    tokPerSec: number | null;
-    completionTokens?: number | null;
-  };
-}
-
-type StudioMode = "chat" | "json" | "vision_qa" | "swarm_arena";
-type ThinkingLevel = "none" | "low" | "medium" | "high";
-
-const DEFAULT_JSON_SCHEMA = JSON.stringify(
-  {
-    type: "object",
-    properties: {
-      is_visually_consistent: { type: "boolean" },
-      detected_discrepancies: { type: "array", items: { type: "string" } },
-      requires_sam2_inpaint: { type: "boolean" },
-      sam2_target_prompt: { type: "string" },
-    },
-    required: ["is_visually_consistent", "detected_discrepancies", "requires_sam2_inpaint"],
-  },
-  null,
-  2
-);
-
-async function downscaleImageToDataUrl(file: File, targetSize = 1024): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error("Failed to read image"));
-    reader.onload = () => {
-      const img = new Image();
-      img.onerror = () => reject(new Error("Invalid image file"));
-      img.onload = () => {
-        // Pad & resize to fixed 1024x1024 square to avoid XLA ViT graph recompilation on TPU
-        const canvas = document.createElement("canvas");
-        canvas.width = targetSize;
-        canvas.height = targetSize;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) {
-          resolve(String(reader.result));
-          return;
-        }
-
-        ctx.fillStyle = "#FFFFFF";
-        ctx.fillRect(0, 0, targetSize, targetSize);
-
-        const scale = Math.min(targetSize / img.width, targetSize / img.height);
-        const w = Math.round(img.width * scale);
-        const h = Math.round(img.height * scale);
-        const x = Math.round((targetSize - w) / 2);
-        const y = Math.round((targetSize - h) / 2);
-
-        ctx.drawImage(img, x, y, w, h);
-        resolve(canvas.toDataURL("image/jpeg", 0.92));
-      };
-      img.src = String(reader.result);
-    };
-    reader.readAsDataURL(file);
-  });
-}
-
-export function LlmStudioTab() {
-  const [mode, setMode] = useState<StudioMode>("chat");
-  const [reasoningEffort, setReasoningEffort] = useState<ThinkingLevel>("none");
-  const [temperature, setTemperature] = useState(0.25);
-  const [maxTokens, setMaxTokens] = useState(2048);
-  const [fallbackToVault, setFallbackToVault] = useState(true);
-  const [systemPrompt, setSystemPrompt] = useState(
-    "You are the Book Visualiser & Scriptoria Neuro-Symbolic Co-Director."
-  );
-  const [jsonSchema, setJsonSchema] = useState(DEFAULT_JSON_SCHEMA);
-  const [selectedService, setSelectedService] = useState<"default" | "extract" | "tag" | "qc" | "rag">("default");
-  const [selectedTargetVm, setSelectedTargetVm] = useState<string>(() => {
-    if (typeof window !== "undefined") {
-      try {
-        return localStorage.getItem("scriptoria_llm_selected_vm") || "auto";
-      } catch {}
-    }
-    return "auto";
-  });
-  const [promptInput, setPromptInput] = useState("");
-  const [attachedImages, setAttachedImages] = useState<string[]>([]);
-  const [turns, setTurns] = useState<TurnMessage[]>(() => {
-    if (typeof window !== "undefined") {
-      try {
-        const saved = localStorage.getItem("scriptoria_llm_active_session");
-        if (!saved) {
-          const cached = localStorage.getItem("scriptoria_llm_cached_turns");
-          if (cached) {
-            const parsed = JSON.parse(cached);
-            if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-          }
-        }
-      } catch {}
-    }
-    return [];
-  });
-  const [sending, setSending] = useState(false);
-  const [expandedThinkingIds, setExpandedThinkingIds] = useState<Record<string, boolean>>({});
+export function LlmStudioTab({
+  vms = [],
+  onVmsUpdated,
+}: {
+  vms?: PublicVmInstance[];
+  onVmsUpdated?: () => void;
+}) {
+  const [activeSubTab, setActiveSubTab] = useState<LlmStudioTabKey>("playground");
+  const [launchProfile, setLaunchProfile] = useState<WorkerProfileId>("LLM_QWEN_FAST_8B");
+  const [launcherOpen, setLauncherOpen] = useState(false);
+  const [apiDialogOpen, setApiDialogOpen] = useState(false);
+  const [switchingTopo, setSwitchingTopo] = useState<string | null>(null);
+  const [copiedCurl, setCopiedCurl] = useState(false);
 
   const {
     data: health,
     isFetching: refreshingHealth,
     refetch: refetchHealth,
-  } = useQuery<LlmStudioHealth>({
+  } = useQuery<LlmHealthResponse>({
     queryKey: ["llm-studio-health"],
     queryFn: async () => {
       const res = await fetch("/api/llm-studio/health");
       if (!res.ok) throw new Error("Failed to check LLM Studio health");
       return res.json();
     },
-    refetchInterval: 10000,
+    refetchInterval: 8000,
+    staleTime: 4000,
   });
 
-  async function handleImagePick(files: FileList | null) {
-    if (!files || files.length === 0) return;
-    const picked = Array.from(files).slice(0, 3 - attachedImages.length);
-    try {
-      const urls = await Promise.all(picked.map((f) => downscaleImageToDataUrl(f, 896)));
-      setAttachedImages((prev) => [...prev, ...urls].slice(0, 3));
-      if (mode === "chat") setMode("vision_qa");
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to load image");
-    }
-  }
-
-  function applyPreset(kind: "json_test" | "vision_qa" | "beat_shots" | "swarm_test" | "fast_extract" | "cpm_tag") {
-    if (kind === "swarm_test") {
-      setMode("swarm_arena");
-      setReasoningEffort("none");
-      setSystemPrompt("Novel Scene Multi-Model Swarm Arena");
-      setPromptInput(
-        "Chapter 1: The blizzard howled across the jagged obsidian ridges. Sunny pulled his tattered dark grey cloak tighter around his trembling shoulders. His silver hair was caked with frost, and the jagged scar carving across his left cheek burned bitterly. Beside him, Nephis held her pristine silver rapier."
-      );
-    } else if (kind === "fast_extract") {
-      setMode("json");
-      setSelectedService("extract");
-      setReasoningEffort("none");
-      setSystemPrompt("You are the Fast Knowledge Extractor. Extract novel characters, state tags, and weapons into JSON.");
-      setJsonSchema(
-        JSON.stringify(
-          {
-            type: "object",
-            properties: {
-              characters: {
-                type: "array",
-                items: {
-                  type: "object",
-                  properties: {
-                    name: { type: "string" },
-                    scar: { type: "string" },
-                    clothing: { type: "string" },
-                    weapon: { type: "string" },
-                  },
-                  required: ["name", "scar", "clothing", "weapon"],
-                },
-              },
-            },
-            required: ["characters"],
-          },
-          null,
-          2
-        )
-      );
-      setPromptInput(
-        "Extract entities: Sunny pulled his tattered dark grey cloak tighter around his trembling shoulders. His silver hair was caked with frost, and the jagged scar carving across his left cheek burned bitterly in the sub-zero chill. Beside him, Nephis held her pristine silver rapier."
-      );
-    } else if (kind === "cpm_tag") {
-      setMode("vision_qa");
-      setSelectedService("tag");
-      setReasoningEffort("none");
-      setSystemPrompt("You are the Ultra Visual Tagger. Tag location, lighting, camera angle, and character outfit.");
-      setPromptInput("Identify the setting, weather, character appearance tags, and camera framing from this shot.");
-    } else if (kind === "json_test") {
-      setMode("json");
-      setReasoningEffort("none");
-      setSystemPrompt("Return strict JSON validating character state continuity.");
-      setJsonSchema(
-        JSON.stringify(
-          {
-            type: "object",
-            properties: {
-              character: { type: "string" },
-              eye_color: { type: "string" },
-              weapon: { type: "string" },
-              canon_ok: { type: "boolean" },
-            },
-            required: ["character", "eye_color", "weapon", "canon_ok"],
-          },
-          null,
-          2
-        )
-      );
-      setPromptInput(
-        'Canonical DB state: Sunny has dark onyx eyes, coarse burlap tunic, iron wrist shackles, unarmed. Verify beat: "Sunny stumbled in the snow, gripping his rusted iron chain."'
-      );
-    } else if (kind === "vision_qa") {
-      setMode("vision_qa");
-      setReasoningEffort("none");
-      setSystemPrompt(
-        "You are the Studio Visual Continuity Critic. Compare the uploaded rendered shot against any attached Foundry reference plate and flag eye color, clothing, or weapon mismatches."
-      );
-      setJsonSchema(DEFAULT_JSON_SCHEMA);
-      setPromptInput(
-        "Audit the attached image(s). Expected character: frail 16yo boy, messy black hair, dark onyx eyes, coarse hemp slave tunic, iron wrist shackles, frozen mountain pass at night."
-      );
-    } else {
-      setMode("json");
-      setReasoningEffort("none");
-      setSystemPrompt(
-        "You are a Master Film & Anime DoP. Decompose the beat into 3 consecutive shots with camera_framing, focal_length_mm, lighting_style, and action_beat."
-      );
-      setJsonSchema(
-        JSON.stringify(
-          {
-            type: "object",
-            properties: {
-              shots: {
-                type: "array",
-                items: {
-                  type: "object",
-                  properties: {
-                    shot_number: { type: "integer" },
-                    camera_framing: { type: "string" },
-                    focal_length_mm: { type: "integer" },
-                    action_beat: { type: "string" },
-                  },
-                },
-              },
-            },
-          },
-          null,
-          2
-        )
-      );
-      setPromptInput(
-        "Beat prose: Moonlight silvered the jagged mountain road. Sunny knelt in the snowdrift as the veteran guard raised his braided leather whip."
-      );
-    }
-  }
-
-  const queryClient = useQueryClient();
-  const [leftTab, setLeftTab] = useState<"controls" | "history">("controls");
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(() => {
-    if (typeof window !== "undefined") {
-      return localStorage.getItem("scriptoria_llm_active_session");
-    }
-    return null;
-  });
-
-  const { data: sessionData, refetch: refetchSessions } = useQuery<{ sessions: SessionItem[] }>({
-    queryKey: ["llm-sessions"],
+  const { data: endpointInfo, refetch: refetchEndpoint } = useQuery<EndpointInfoResponse>({
+    queryKey: ["llm-studio-endpoint"],
     queryFn: async () => {
-      const res = await fetch("/api/llm-studio/sessions");
-      if (!res.ok) throw new Error("Failed to load sessions");
+      const res = await fetch("/api/v1/llm-endpoint");
+      if (!res.ok) throw new Error("Failed to load API endpoint info");
       return res.json();
     },
-  });
-  const sessions = sessionData?.sessions ?? [];
-
-  const { data: activeSessionData } = useQuery({
-    queryKey: ["llm-session", activeSessionId],
-    enabled: Boolean(activeSessionId),
-    queryFn: async () => {
-      const res = await fetch(`/api/llm-studio/sessions/${encodeURIComponent(activeSessionId!)}`);
-      if (!res.ok) throw new Error("Failed to load session details");
-      return res.json();
-    },
+    enabled: apiDialogOpen,
   });
 
-  // Sync activeSessionData to turns & state
-  useEffect(() => {
-    if (activeSessionData?.session) {
-      const sess = activeSessionData.session;
-      queueMicrotask(() => {
-        if (sess.mode) setMode(sess.mode as StudioMode);
-        if (sess.systemPrompt) setSystemPrompt(sess.systemPrompt);
-        if (sess.jsonSchema) setJsonSchema(sess.jsonSchema);
-        if (typeof sess.temperature === "number") setTemperature(sess.temperature);
-        if (typeof sess.maxTokens === "number") setMaxTokens(sess.maxTokens);
-        if (sess.reasoningEffort) setReasoningEffort(sess.reasoningEffort as ThinkingLevel);
+  const targetOptions = useMemo(() => buildTargetOptions(health), [health]);
 
-        const msgs: TurnMessage[] = (sess.messages || []).map(
-          (m: {
-            id: string;
-            role: string;
-            content: string;
-            thinking?: string | null;
-            imagesJson?: string | null;
-            metaJson?: string | null;
-          }) => ({
-            id: m.id,
-            role: m.role as "user" | "assistant",
-            content: m.content,
-            thinking: m.thinking,
-            imageDataUrls: m.imagesJson ? JSON.parse(m.imagesJson) : undefined,
-            meta: m.metaJson ? JSON.parse(m.metaJson) : undefined,
-          })
-        );
-        setTurns(msgs);
-      });
-    }
-  }, [activeSessionData]);
+  // Pick primary online GPU LLM VM for Dual-T4 topology switching (exclude TPU from Dual-T4 GPU splits)
+  const onlineGpuLlmVm = useMemo(() => {
+    const online = health?.onlineVms || [];
+    return (
+      online.find((v) => !v.target.startsWith("tpu") && v.reachable) ||
+      online.find((v) => !v.target.startsWith("tpu")) ||
+      null
+    );
+  }, [health?.onlineVms]);
 
-  // Persist current session ID & turns to localStorage
-  useEffect(() => {
-    if (activeSessionId) {
-      localStorage.setItem("scriptoria_llm_active_session", activeSessionId);
-    } else {
-      localStorage.removeItem("scriptoria_llm_active_session");
-    }
-  }, [activeSessionId]);
+  const activeTopology = (onlineGpuLlmVm?.llmTopologyMode ||
+    (onlineGpuLlmVm?.workerProfile === "LLM_LIGHTWEIGHT_SWARM"
+      ? "llm_swarm_multi"
+      : "llm_layer_split")) as LlmTopologyMode;
 
-  useEffect(() => {
-    if (turns.length > 0) {
-      try {
-        localStorage.setItem("scriptoria_llm_cached_turns", JSON.stringify(turns));
-      } catch {}
-    }
-  }, [turns]);
+  const requestedTopology = onlineGpuLlmVm?.requestedLlmTopology || null;
+  const isDualReplicaActive = (health?.onlineVms || []).some(
+    (v) => v.llmTopologyMode === "llm_dual_replica"
+  );
 
-  async function handleCreateNewSession() {
-    setActiveSessionId(null);
-    setTurns([]);
-    setPromptInput("");
-    setAttachedImages([]);
-    localStorage.removeItem("scriptoria_llm_active_session");
-    localStorage.removeItem("scriptoria_llm_cached_turns");
-    toast.success("Started new clean session");
-  }
-
-  async function handleDeleteSession(id: string, e: React.MouseEvent) {
-    e.stopPropagation();
+  async function handleSwitchTopology(mode: LlmTopologyMode) {
+    if (!onlineGpuLlmVm || switchingTopo) return;
+    setSwitchingTopo(mode);
     try {
-      const res = await fetch(`/api/llm-studio/sessions/${encodeURIComponent(id)}`, {
-        method: "DELETE",
-      });
-      if (res.ok) {
-        if (activeSessionId === id) {
-          handleCreateNewSession();
-        }
-        refetchSessions();
-        toast.success("Deleted session");
-      }
-    } catch {
-      toast.error("Failed to delete session");
-    }
-  }
-
-  async function handleSend() {
-    const trimmed = promptInput.trim();
-    if (!trimmed && attachedImages.length === 0) return;
-    if (sending) return;
-
-    const userTurn: TurnMessage = {
-      id: `u-${Date.now()}`,
-      role: "user",
-      content: trimmed || "Inspect attached image(s).",
-      imageDataUrls: attachedImages.length > 0 ? [...attachedImages] : undefined,
-    };
-
-    const nextTurns = [...turns, userTurn];
-    setTurns(nextTurns);
-    setPromptInput("");
-    setAttachedImages([]);
-    setSending(true);
-
-    let curSessionId = activeSessionId;
-    if (!curSessionId) {
-      try {
-        const title = trimmed ? trimmed.slice(0, 42) : "Vision QA";
-        const cRes = await fetch("/api/llm-studio/sessions", {
+      const res = await fetch(
+        `/api/vm/${encodeURIComponent(onlineGpuLlmVm.target)}/llm-topology`,
+        {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            title,
-            mode,
-            systemPrompt,
-            jsonSchema,
-            temperature,
-            maxTokens,
-            reasoningEffort,
-          }),
-        });
-        const cData = await cRes.json();
-        if (cRes.ok && cData.session?.id) {
-          curSessionId = cData.session.id;
-          setActiveSessionId(curSessionId);
-          refetchSessions();
+          body: JSON.stringify({ mode }),
         }
-      } catch {
-        // continue even if session creation fails
-      }
-    }
-
-    if (mode === "swarm_arena") {
-      try {
-        const payloadBase = {
-          messages: nextTurns.map((t) => ({
-            role: t.role,
-            content: t.content,
-            imageDataUrls: t.imageDataUrls,
-          })),
-          fallbackToVault,
-        };
-
-        const [p4b, pcpm, p9b] = await Promise.allSettled([
-          fetch("/api/llm-studio/chat", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              ...payloadBase,
-              systemPrompt: "You are the Fast Knowledge Extractor. Extract novel characters, state tags, and weapons directly into concise JSON.",
-              mode: "json",
-              reasoningEffort: "none",
-              targetService: "extract",
-            }),
-          }).then((r) => r.json()),
-          fetch("/api/llm-studio/chat", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              ...payloadBase,
-              systemPrompt: "You are the Ultra Visual Tagger. Tag location, lighting, camera framing, and outfit concisely.",
-              mode: "chat",
-              reasoningEffort: "none",
-              targetService: "tag",
-            }),
-          }).then((r) => r.json()),
-          fetch("/api/llm-studio/chat", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              ...payloadBase,
-              systemPrompt: "You are the Gate-3 QC Architect. Audit consistency, check lore, and reason through potential discrepancies.",
-              mode: "chat",
-              reasoningEffort: "low",
-              targetService: "qc",
-            }),
-          }).then((r) => r.json()),
-        ]);
-
-        const turnsToAdd: TurnMessage[] = [];
-        if (p4b.status === "fulfilled" && p4b.value?.answer) {
-          turnsToAdd.push({
-            id: `a-4b-${Date.now()}`,
-            role: "assistant",
-            content: p4b.value.answer,
-            meta: {
-              source: "Qwen3.5-4B Extractor (:8191)",
-              model: "qwen3.5-4b",
-              latencyMs: p4b.value.latencyMs || 0,
-              tokPerSec: p4b.value.tokPerSec || null,
-              completionTokens: p4b.value.usage?.completion_tokens,
-            },
-          });
-        }
-        if (pcpm.status === "fulfilled" && pcpm.value?.answer) {
-          turnsToAdd.push({
-            id: `a-cpm-${Date.now()}`,
-            role: "assistant",
-            content: pcpm.value.answer,
-            meta: {
-              source: "MiniCPM-V 4.7-1B Tagger (:8192)",
-              model: "minicpm-v-1b",
-              latencyMs: pcpm.value.latencyMs || 0,
-              tokPerSec: pcpm.value.tokPerSec || null,
-              completionTokens: pcpm.value.usage?.completion_tokens,
-            },
-          });
-        }
-        if (p9b.status === "fulfilled" && p9b.value?.answer) {
-          turnsToAdd.push({
-            id: `a-9b-${Date.now()}`,
-            role: "assistant",
-            content: p9b.value.answer,
-            thinking: p9b.value.thinking,
-            meta: {
-              source: "Qwen3.5-9B QC VLM (:8190)",
-              model: "qwen3.5-9b",
-              latencyMs: p9b.value.latencyMs || 0,
-              tokPerSec: p9b.value.tokPerSec || null,
-              completionTokens: p9b.value.usage?.completion_tokens,
-            },
-          });
-        }
-        setTurns((prev) => [...prev, ...turnsToAdd]);
-        toast.success(`Swarm complete (${turnsToAdd.length} models finished in parallel)`);
-      } catch (err) {
-        console.error("Swarm dispatch error:", err);
-        toast.error("Parallel swarm dispatch failed");
-      } finally {
-        setSending(false);
-      }
-      return;
-    }
-
-    try {
-      const res = await fetch("/api/llm-studio/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messages: nextTurns.map((t) => ({
-            role: t.role,
-            content: t.content,
-            imageDataUrls: t.imageDataUrls,
-          })),
-          systemPrompt,
-          mode,
-          jsonSchema: mode === "chat" ? undefined : jsonSchema,
-          reasoningEffort,
-          temperature,
-          maxTokens,
-          fallbackToVault,
-          targetService: selectedService,
-          targetVm: selectedTargetVm,
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        toast.error(data.error || "LLM request failed");
-        return;
-      }
-
-      const assistantTurn: TurnMessage = {
-        id: `a-${Date.now()}`,
-        role: "assistant",
-        content: String(data.answer || ""),
-        thinking: data.thinking || null,
-        meta: {
-          source: data.target ? `${data.target} · ${data.source}` : data.source,
-          model: data.model,
-          latencyMs: data.latencyMs,
-          tokPerSec: data.tokPerSec ?? null,
-          completionTokens: data.usage?.completion_tokens ?? null,
-        },
-      };
-
-      setTurns((prev) => [...prev, assistantTurn]);
-
-      if (curSessionId) {
-        fetch(`/api/llm-studio/sessions/${encodeURIComponent(curSessionId)}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            messages: [
-              {
-                role: userTurn.role,
-                content: userTurn.content,
-                imageDataUrls: userTurn.imageDataUrls,
-              },
-              {
-                role: assistantTurn.role,
-                content: assistantTurn.content,
-                thinking: assistantTurn.thinking,
-                meta: assistantTurn.meta,
-              },
-            ],
-          }),
-        })
-          .then(() => {
-            refetchSessions();
-            queryClient.invalidateQueries({ queryKey: ["llm-session", curSessionId] });
-          })
-          .catch(() => {});
-      }
+      );
+      const json = (await res.json()) as { dispatchedVia?: string; error?: string };
+      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+      toast.success(
+        `Switched Dual-T4 LLM topology to ${mode} (${json.dispatchedVia || "queued"})`
+      );
+      await refetchHealth();
+      onVmsUpdated?.();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Network error");
+      toast.error(err instanceof Error ? err.message : "Failed to switch LLM topology");
     } finally {
-      setSending(false);
+      setSwitchingTopo(null);
     }
   }
 
-  const selectedVmOption =
-    health?.onlineVms?.find((v) => v.target === selectedTargetVm) ||
-    health?.onlineVms?.[0] ||
-    null;
+  const originUrl =
+    typeof window !== "undefined" ? window.location.origin : "http://localhost:3000";
+  const curlSample = endpointInfo?.relayEndpoint
+    ? `curl -X POST "${endpointInfo.relayEndpoint}" \\\n  -H "Authorization: Bearer YOUR_SK_SCRIPTORIA_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"default","messages":[{"role":"user","content":"Hello!"}]}'`
+    : `curl -X POST "${originUrl}/api/v1/chat/completions" \\\n  -H "Authorization: Bearer YOUR_SK_SCRIPTORIA_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"default","messages":[{"role":"user","content":"Hello!"}]}'`;
 
   return (
-    <div className="space-y-3">
-      {/* Top Health & Wrong-Profile Guidance Strip */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-zinc-800 bg-[#111114] px-3.5 py-2.5">
-        <div className="flex flex-wrap items-center gap-2.5 text-xs">
-          <span
-            className={`inline-flex items-center gap-1.5 rounded border px-2 py-0.5 font-mono text-[10px] font-semibold ${
-              health?.reachable
-                ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-300"
-                : health?.vmStatus === "STARTING"
-                ? "border-amber-500/40 bg-amber-500/15 text-amber-300"
-                : "border-zinc-700 bg-zinc-900 text-zinc-400"
-            }`}
-          >
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${
-                health?.reachable
-                  ? "bg-emerald-400"
+    <div className="space-y-4">
+      {/* Top Compute & Dual-T4 LLM Topology Header */}
+      <div className="rounded-xl border border-zinc-800 bg-zinc-950/90 p-4 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <Bot className="size-5 text-violet-400" />
+              <h1 className="text-base font-semibold tracking-tight text-zinc-100">
+                LLM Studio & Benchmark Lab
+              </h1>
+              <Badge
+                variant="outline"
+                className={
+                  health?.reachable
+                    ? "border-emerald-500/40 bg-emerald-950/30 text-emerald-300"
+                    : health?.vmStatus === "STARTING"
+                    ? "border-amber-500/40 bg-amber-950/30 text-amber-300"
+                    : "border-zinc-700 bg-zinc-900 text-zinc-400"
+                }
+              >
+                {health?.reachable
+                  ? `ONLINE · ${health.target?.toUpperCase()} (${health.endpointPreview || "Ready"})`
                   : health?.vmStatus === "STARTING"
-                  ? "bg-amber-400"
-                  : "bg-zinc-500"
-              }`}
-            />
-            QWEN-LLM: {health?.reachable ? "ONLINE" : health?.vmStatus || "OFFLINE"}
-          </span>
+                  ? `STARTING · ${health.target?.toUpperCase() || "VM"}`
+                  : "GPU/TPU OFFLINE"}
+              </Badge>
+              {health?.loadedModel && (
+                <Badge variant="secondary" className="text-[11px]">
+                  {health.loadedModel}
+                </Badge>
+              )}
+              {(health?.vaultFallbackCount || 0) > 0 && (
+                <Badge variant="outline" className="text-[11px] border-cyan-500/30 text-cyan-300">
+                  +{health?.vaultFallbackCount} Vault API
+                  {(health?.vaultFallbackCount || 0) > 1 ? "s" : ""}
+                </Badge>
+              )}
+            </div>
+            <p className="text-xs text-zinc-400">
+              {health?.onlineVms && health.onlineVms.length > 0
+                ? `${health.onlineVms.length} active LLM worker${
+                    health.onlineVms.length > 1 ? "s" : ""
+                  } · ${health.gpuName || "Compute Ready"}${
+                    health.probeLatencyMs ? ` · ${health.probeLatencyMs}ms ping` : ""
+                  }`
+                : "Launch a Kaggle Dual-T4 LLM worker (tunneled or Safe Headless Relay), TPU v5e-8, or test directly against Vault cloud models."}
+            </p>
+          </div>
 
-          {/* Model / VM Selector Dropdown in Top Strip */}
-          <div className="flex items-center gap-1.5 rounded border border-zinc-800 bg-zinc-950 px-2 py-0.5 text-xs">
-            <Bot className="h-3.5 w-3.5 text-indigo-400 shrink-0" />
-            <span className="text-zinc-400 text-[10px] font-medium uppercase tracking-wide">Model / VM:</span>
+          {/* Compute Launcher & API Gateway Actions */}
+          <div className="flex flex-wrap items-center gap-2">
             <select
-              value={selectedTargetVm}
-              onChange={(e) => {
-                setSelectedTargetVm(e.target.value);
-                try {
-                  localStorage.setItem("scriptoria_llm_selected_vm", e.target.value);
-                } catch {}
-              }}
-              className="bg-transparent font-mono text-[11px] font-medium text-zinc-100 focus:outline-none cursor-pointer"
+              value={launchProfile}
+              onChange={(e) => setLaunchProfile(e.target.value as WorkerProfileId)}
+              className="h-8 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 text-xs text-zinc-100 outline-none focus:border-violet-500"
+              title="Select Kaggle LLM Worker Profile"
             >
-              <option value="auto" className="bg-zinc-900 text-zinc-200">
-                ⚡ Auto ({health?.target || "Fastest Online"})
-              </option>
-              {health?.onlineVms?.map((vm) => (
-                <option key={vm.target} value={vm.target} className="bg-zinc-900 text-zinc-200">
-                  {vm.accountAlias.toUpperCase()} ({vm.target}): {vm.loadedModel} {vm.reachable ? "●" : "○"}
+              {LLM_LAUNCH_PROFILES.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
                 </option>
               ))}
             </select>
+
+            <Button size="sm" onClick={() => setLauncherOpen(true)}>
+              <Rocket className="size-3.5" /> Boot GPU LLM
+            </Button>
+
+            <Link
+              href="/tpu-cluster"
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800"
+            >
+              <Cpu className="size-3.5 text-cyan-400" /> TPU v5e-8
+              <ExternalLink className="size-3 text-zinc-500" />
+            </Link>
+
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setApiDialogOpen(true);
+                void refetchEndpoint();
+              }}
+            >
+              <Terminal className="size-3.5" /> API Endpoint
+            </Button>
+
+            <Button
+              size="icon-sm"
+              variant="outline"
+              onClick={() => {
+                void refetchHealth();
+                onVmsUpdated?.();
+              }}
+              title="Refresh LLM worker telemetry"
+            >
+              {refreshingHealth ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="size-3.5" />
+              )}
+            </Button>
           </div>
-
-          {health?.loadedModel && (
-            <span className="inline-flex items-center gap-1 font-mono text-[11px] text-zinc-200">
-              <Cpu className="h-3 w-3 text-indigo-400" />
-              {health.loadedModel}
-            </span>
-          )}
-
-          {health?.reachable && (
-            <span className="font-mono text-[11px] text-zinc-400">
-              VRAM {(health.vramUsedGb ?? 0).toFixed(1)}/{(health.vramTotalGb ?? 30).toFixed(0)}G ·{" "}
-              {health.probeLatencyMs ?? "--"}ms
-            </span>
-          )}
-
-          {!health?.reachable && health?.vaultFallbackCount ? (
-            <span className="font-mono text-[10px] text-zinc-500">
-              Vault Fallback Ready ({health.vaultFallbackCount} key
-              {health.vaultFallbackCount === 1 ? "" : "s"})
-            </span>
-          ) : null}
         </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={handleCreateNewSession}
-            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-900 px-2.5 text-[11px] font-medium text-white hover:bg-zinc-800"
-          >
-            <Plus className="h-3 w-3 text-emerald-400" />
-            New Chat
-          </button>
-          <button
-            type="button"
-            onClick={() => setLeftTab(leftTab === "history" ? "controls" : "history")}
-            className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-[11px] font-medium transition ${
-              leftTab === "history"
-                ? "border-indigo-500/50 bg-indigo-500/20 text-indigo-200"
-                : "border-zinc-800 bg-zinc-900 text-zinc-300 hover:bg-zinc-800"
-            }`}
-          >
-            <History className="h-3 w-3 text-indigo-400" />
-            Sessions ({sessions.length})
-          </button>
-          <button
-            type="button"
-            onClick={() => refetchHealth()}
-            disabled={refreshingHealth}
-            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-900 px-2.5 text-[11px] text-zinc-300 hover:bg-zinc-800"
-          >
-            <RefreshCw className={`h-3 w-3 ${refreshingHealth ? "animate-spin" : ""}`} />
-            Probe
-          </button>
-          <Link
-            href="/tpu-cluster"
-            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/15 px-2.5 text-[11px] font-medium text-amber-300 hover:bg-amber-500/25"
-          >
-            <Zap className="h-3 w-3" />
-            TPU Cluster (130 tok/s)
-          </Link>
-          <Link
-            href="/vms"
-            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-indigo-500/40 bg-indigo-500/15 px-2.5 text-[11px] font-medium text-indigo-300 hover:bg-indigo-500/25"
-          >
-            GPU Cluster
-          </Link>
+        {/* Dual-T4 LLM Topology Switcher Bar */}
+        <div className="border-t border-zinc-800/90 pt-3 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-center gap-2 text-xs text-zinc-400">
+            <Layers className="size-3.5 text-violet-400 shrink-0" />
+            <span className="font-medium text-zinc-300">Dual-T4 GPU Topology:</span>
+            {!onlineGpuLlmVm && (
+              <span className="text-[11px] text-zinc-500">
+                (Boot a Kaggle Dual-T4 LLM worker to live-switch GPU0+GPU1 split vs 2x Replica / A-B Arena)
+              </span>
+            )}
+            {requestedTopology && requestedTopology !== activeTopology && (
+              <Badge variant="outline" className="text-[10px] border-amber-500/40 text-amber-300">
+                Switching to {requestedTopology}...
+              </Badge>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+            {LLM_TOPOLOGY_OPTIONS.map((opt) => {
+              const isSelected = Boolean(onlineGpuLlmVm) && activeTopology === opt.mode;
+              const isPending = switchingTopo === opt.mode || requestedTopology === opt.mode;
+              return (
+                <button
+                  key={opt.mode}
+                  type="button"
+                  disabled={!onlineGpuLlmVm || Boolean(switchingTopo)}
+                  onClick={() => handleSwitchTopology(opt.mode)}
+                  title={opt.description}
+                  className={`rounded-lg border px-2.5 py-1.5 text-left text-[11px] transition disabled:opacity-45 ${
+                    isSelected
+                      ? "border-violet-500/70 bg-violet-950/35 text-violet-100"
+                      : "border-zinc-800 bg-zinc-900/60 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-1 font-medium">
+                    <span className="truncate">{opt.shortLabel}</span>
+                    {isPending && <Loader2 className="size-3 animate-spin shrink-0" />}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
 
-      {health?.acc2RunningWrongProfile && (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3.5 py-2 text-xs text-amber-200">
-          <span className="flex items-center gap-2">
-            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
-            <span>
-              Kaggle Acc #2 (<strong className="font-mono">{health.acc2RunningWrongProfile.target}</strong>) is
-              currently running <strong className="font-mono">{health.acc2RunningWrongProfile.workerProfile}</strong>{" "}
-              (ComfyUI). Stop it on{" "}
-              <Link href="/vms" className="underline">
-                /vms
-              </Link>
-              , switch Profile to <strong className="font-mono">QWEN-LLM</strong>, and Boot Dual-T4 to run Qwen 27B.
-            </span>
-          </span>
-        </div>
+      {/* 4 Clean LLM Studio Workspace Tabs */}
+      <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-zinc-800 bg-zinc-950/70 p-1.5">
+        {[
+          { key: "playground" as const, label: "Playground & Test Bench", icon: Sparkles },
+          { key: "arena" as const, label: "A/B Compare Arena", icon: GitCompare },
+          { key: "batch" as const, label: "Batch Eval & Datasets", icon: ListChecks },
+          { key: "workflows" as const, label: "LLM Workflows (Chained)", icon: Workflow },
+        ].map(({ key, label, icon: Icon }) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setActiveSubTab(key)}
+            className={`flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-medium transition ${
+              activeSubTab === key
+                ? "bg-violet-600 text-white shadow-sm"
+                : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
+            }`}
+          >
+            <Icon className="size-3.5" />
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {activeSubTab === "playground" && <PlaygroundPanel targetOptions={targetOptions} />}
+      {activeSubTab === "arena" && <ArenaPanel targetOptions={targetOptions} />}
+      {activeSubTab === "batch" && (
+        <BatchEvalPanel
+          targetOptions={targetOptions}
+          isDualReplicaActive={isDualReplicaActive}
+        />
       )}
+      {activeSubTab === "workflows" && <WorkflowsChainPanel targetOptions={targetOptions} />}
 
-      {/* Split-Pane LLM + VLM Workstation */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-        {/* Left Configuration & Presets Pane */}
-        <div className="space-y-3 rounded-lg border border-zinc-800 bg-[#111114] p-3.5 lg:col-span-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1 rounded-md border border-zinc-800 bg-zinc-950 p-1 text-[11px]">
-              <button
-                type="button"
-                onClick={() => setLeftTab("controls")}
-                className={`rounded px-2.5 py-1 font-medium transition ${
-                  leftTab === "controls"
-                    ? "bg-indigo-600 text-white"
-                    : "text-zinc-400 hover:text-zinc-200"
-                }`}
-              >
-                <Wrench className="inline-block mr-1 h-3 w-3" />
-                Controls
-              </button>
-              <button
-                type="button"
-                onClick={() => setLeftTab("history")}
-                className={`rounded px-2.5 py-1 font-medium transition ${
-                  leftTab === "history"
-                    ? "bg-indigo-600 text-white"
-                    : "text-zinc-400 hover:text-zinc-200"
-                }`}
-              >
-                <History className="inline-block mr-1 h-3 w-3" />
-                Sessions ({sessions.length})
-              </button>
-            </div>
+      {/* Inline Kaggle Dual-T4 LLM Launcher */}
+      <KaggleVmLauncherDialog
+        open={launcherOpen}
+        onOpenChange={setLauncherOpen}
+        vms={vms}
+        desiredProfile={launchProfile}
+        prewarmModels={[]}
+        onTargetSelected={() => {
+          void refetchHealth();
+          onVmsUpdated?.();
+        }}
+      />
 
-            <button
-              type="button"
-              onClick={handleCreateNewSession}
-              className="inline-flex items-center gap-1 text-[11px] text-zinc-400 hover:text-white"
-              title="New Chat Session"
-            >
-              <Plus className="h-3.5 w-3.5 text-emerald-400" />
-              New
-            </button>
-          </div>
+      {/* OpenAI-Compatible API Gateway Modal */}
+      <Dialog open={apiDialogOpen} onOpenChange={setApiDialogOpen}>
+        <DialogContent className="sm:max-w-xl bg-zinc-950 border-zinc-800 text-zinc-100">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-zinc-100">
+              <Terminal className="size-4 text-violet-400" />
+              OpenAI-Compatible LLM Gateway
+            </DialogTitle>
+            <DialogDescription className="text-zinc-400">
+              Call Scriptoria from external apps, CI evals, or local agents via OpenAI SDK. Routes across Kaggle Dual-T4 (including Safe Headless Relay), TPU v5e-8, or Vault fallbacks.
+            </DialogDescription>
+          </DialogHeader>
 
-          {leftTab === "history" ? (
-            <div className="space-y-2">
-              <div className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
-                Saved Chat Sessions
+          <div className="space-y-3 text-xs">
+            <div className="rounded-lg border border-zinc-800 bg-zinc-900/70 p-3 space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-zinc-400">Status</span>
+                <Badge variant="outline">
+                  {endpointInfo?.online
+                    ? endpointInfo.headless
+                      ? "ONLINE (Safe Headless Relay)"
+                      : `ONLINE (${endpointInfo.target})`
+                    : "OFFLINE (Vault Fallback Ready)"}
+                </Badge>
               </div>
-              {sessions.length === 0 ? (
-                <div className="rounded border border-dashed border-zinc-800 p-4 text-center text-xs text-zinc-500">
-                  No saved sessions yet. Start chatting to auto-save!
-                </div>
-              ) : (
-                <div className="max-h-[520px] space-y-1.5 overflow-y-auto pr-1">
-                  {sessions.map((sess) => {
-                    const isCurrent = sess.id === activeSessionId;
-                    return (
-                      <div
-                        key={sess.id}
-                        onClick={() => setActiveSessionId(sess.id)}
-                        className={`group flex cursor-pointer items-center justify-between rounded-lg border p-2 text-xs transition ${
-                          isCurrent
-                            ? "border-indigo-500/50 bg-indigo-500/15 text-white"
-                            : "border-zinc-800 bg-zinc-950 text-zinc-300 hover:border-zinc-700 hover:bg-zinc-900"
-                        }`}
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-1.5 font-medium truncate">
-                            <MessageSquare
-                              className={`h-3 w-3 shrink-0 ${
-                                isCurrent ? "text-indigo-400" : "text-zinc-500"
-                              }`}
-                            />
-                            <span className="truncate">{sess.title}</span>
-                          </div>
-                          <div className="mt-0.5 flex items-center gap-2 text-[10px] text-zinc-500">
-                            <span className="uppercase font-mono">{sess.mode}</span>
-                            <span>·</span>
-                            <span>{sess._count?.messages ?? 0} msgs</span>
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={(e) => handleDeleteSession(sess.id, e)}
-                          className="opacity-0 group-hover:opacity-100 p-1 text-zinc-500 hover:text-rose-400 transition"
-                          title="Delete Session"
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </button>
-                      </div>
-                    );
-                  })}
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-zinc-400">Completions URL</span>
+                <code className="text-[11px] text-cyan-300 truncate">
+                  {endpointInfo?.relayEndpoint || `${originUrl}/api/v1/chat/completions`}
+                </code>
+              </div>
+              {endpointInfo?.llmTopologyMode && (
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-400">Active Dual-T4 Topology</span>
+                  <code className="text-[11px] text-violet-300">
+                    {endpointInfo.llmTopologyMode}
+                  </code>
                 </div>
               )}
             </div>
-          ) : (
-            <>
 
-          {/* Active Model / Worker VM Selector Card */}
-          <div className="space-y-1.5 rounded-lg border border-zinc-800 bg-zinc-950 p-2.5">
-            <div className="flex items-center justify-between text-[10px] font-medium uppercase tracking-wide text-zinc-500">
-              <span className="flex items-center gap-1.5 text-zinc-300">
-                <Cpu className="h-3.5 w-3.5 text-indigo-400" />
-                Target Model / Worker VM
-              </span>
-              <span
-                className={`font-mono text-[10px] ${
-                  (selectedTargetVm === "auto" ? health?.reachable : selectedVmOption?.reachable)
-                    ? "text-emerald-400"
-                    : "text-zinc-500"
-                }`}
-              >
-                {(selectedTargetVm === "auto" ? health?.reachable : selectedVmOption?.reachable)
-                  ? "● ONLINE"
-                  : "○ OFFLINE"}
-              </span>
-            </div>
-            <select
-              value={selectedTargetVm}
-              onChange={(e) => {
-                setSelectedTargetVm(e.target.value);
-                try {
-                  localStorage.setItem("scriptoria_llm_selected_vm", e.target.value);
-                } catch {}
-              }}
-              className="h-8 w-full rounded border border-zinc-800 bg-[#111114] px-2 font-mono text-[11px] text-zinc-100 focus:border-indigo-500"
-            >
-              <option value="auto">
-                ⚡ Auto-Route ({health?.loadedModel ? `${health.loadedModel} on ${health.target}` : "Fastest Online"})
-              </option>
-              {health?.onlineVms?.map((vm) => (
-                <option key={vm.target} value={vm.target}>
-                  [{vm.accountAlias.toUpperCase()}] {vm.loadedModel} ({vm.target})
-                </option>
-              ))}
-            </select>
-            {selectedVmOption && selectedTargetVm !== "auto" ? (
-              <div className="flex items-center justify-between text-[10px] font-mono text-zinc-400 pt-0.5">
-                <span>{selectedVmOption.gpuName || "Tesla T4 x2"}</span>
-                <span>{selectedVmOption.probeLatencyMs ?? "--"}ms latency</span>
-              </div>
-            ) : null}
-          </div>
-
-          {/* Mode Tabs */}
-          <div className="grid grid-cols-4 gap-1 rounded-md border border-zinc-800 bg-zinc-950 p-1 text-[11px]">
-            {(
-              [
-                { id: "chat", label: "Chat" },
-                { id: "json", label: "JSON" },
-                { id: "vision_qa", label: "VLM QA" },
-                { id: "swarm_arena", label: "⚡ Swarm" },
-              ] as const
-            ).map((m) => (
-              <button
-                key={m.id}
-                type="button"
-                onClick={() => setMode(m.id)}
-                className={`rounded py-1 font-medium transition ${
-                  mode === m.id
-                    ? "bg-indigo-600 text-white shadow-sm"
-                    : "text-zinc-400 hover:text-zinc-200"
-                }`}
-              >
-                {m.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Target Service Selector */}
-          <div className="space-y-1">
-            <div className="flex items-center justify-between text-[10px] font-medium uppercase tracking-wide text-zinc-500">
-              <span>Target Service / Port</span>
-              <span className="font-mono text-indigo-400">
-                {selectedService === "extract"
-                  ? ":8191 (4B)"
-                  : selectedService === "tag"
-                  ? ":8192 (1B)"
-                  : selectedService === "qc"
-                  ? ":8190 (9B)"
-                  : selectedService === "rag"
-                  ? ":8193 (RAG)"
-                  : "Auto / QC"}
-              </span>
-            </div>
-            <select
-              value={selectedService}
-              onChange={(e) =>
-                setSelectedService(e.target.value as "default" | "extract" | "tag" | "qc" | "rag")
-              }
-              disabled={mode === "swarm_arena"}
-              className="h-8 w-full rounded border border-zinc-800 bg-zinc-950 px-2 font-mono text-[11px] text-zinc-200 disabled:opacity-50"
-            >
-              <option value="default">Auto / Gate-3 QC (Qwen3.5-9B · :8190)</option>
-              <option value="extract">Fast Passage Extractor (Qwen3.5-4B · :8191)</option>
-              <option value="tag">Ultra Visual Tagger & OCR (MiniCPM-V 1B · :8192)</option>
-              <option value="rag">Lore RAG & Reranker (Qwen3-0.6B · :8193)</option>
-            </select>
-          </div>
-
-          {/* One-Click Presets */}
-          <div className="space-y-1.5">
-            <div className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
-              Quick Test Presets
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              <button
-                type="button"
-                onClick={() => applyPreset("swarm_test")}
-                className="rounded border border-indigo-700/60 bg-indigo-950/40 px-2 py-1 text-[11px] text-indigo-300 hover:border-indigo-500 hover:text-white"
-              >
-                ⚡ Swarm 3x Parallel
-              </button>
-              <button
-                type="button"
-                onClick={() => applyPreset("fast_extract")}
-                className="rounded border border-emerald-800/60 bg-emerald-950/40 px-2 py-1 text-[11px] text-emerald-300 hover:border-emerald-500 hover:text-white"
-              >
-                4B Chapter Extraction
-              </button>
-              <button
-                type="button"
-                onClick={() => applyPreset("cpm_tag")}
-                className="rounded border border-amber-800/60 bg-amber-950/40 px-2 py-1 text-[11px] text-amber-300 hover:border-amber-500 hover:text-white"
-              >
-                1B Visual Tag & OCR
-              </button>
-              <button
-                type="button"
-                onClick={() => applyPreset("json_test")}
-                className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-300 hover:border-indigo-500/40 hover:text-white"
-              >
-                JSON Continuity
-              </button>
-              <button
-                type="button"
-                onClick={() => applyPreset("vision_qa")}
-                className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-300 hover:border-indigo-500/40 hover:text-white"
-              >
-                VLM Shot QA
-              </button>
-              <button
-                type="button"
-                onClick={() => applyPreset("beat_shots")}
-                className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-300 hover:border-indigo-500/40 hover:text-white"
-              >
-                Beat → Shots
-              </button>
-            </div>
-          </div>
-
-          {/* Thinking / Temp / Tokens */}
-          <div className="grid grid-cols-3 gap-2">
-            <div>
-              <label className="text-[10px] text-zinc-500">Thinking</label>
-              <select
-                value={reasoningEffort}
-                onChange={(e) => setReasoningEffort(e.target.value as ThinkingLevel)}
-                className="mt-1 h-8 w-full rounded border border-zinc-800 bg-zinc-950 px-2 font-mono text-[11px] text-zinc-200"
-              >
-                <option value="none">none</option>
-                <option value="low">low</option>
-                <option value="medium">medium</option>
-                <option value="high">high</option>
-              </select>
-            </div>
-            <div>
-              <label className="text-[10px] text-zinc-500">Temp</label>
-              <input
-                type="number"
-                step="0.05"
-                min="0"
-                max="1.5"
-                value={temperature}
-                onChange={(e) => setTemperature(Number(e.target.value))}
-                className="mt-1 h-8 w-full rounded border border-zinc-800 bg-zinc-950 px-2 font-mono text-[11px] text-zinc-200"
-              />
-            </div>
-            <div>
-              <label className="text-[10px] text-zinc-500">Max Tokens</label>
-              <input
-                type="number"
-                step="64"
-                min="64"
-                max="4096"
-                value={maxTokens}
-                onChange={(e) => setMaxTokens(Number(e.target.value))}
-                className="mt-1 h-8 w-full rounded border border-zinc-800 bg-zinc-950 px-2 font-mono text-[11px] text-zinc-200"
-              />
-            </div>
-          </div>
-
-          <label className="flex items-center gap-2 text-[11px] text-zinc-400">
-            <input
-              type="checkbox"
-              checked={fallbackToVault}
-              onChange={(e) => setFallbackToVault(e.target.checked)}
-              className="rounded border-zinc-700 bg-zinc-950"
-            />
-            Auto-fallback to Vault LLM if QWEN-LLM is offline (text/JSON)
-          </label>
-
-          {/* System Prompt */}
-          <div>
-            <label className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
-              System Prompt
-            </label>
-            <textarea
-              rows={3}
-              value={systemPrompt}
-              onChange={(e) => setSystemPrompt(e.target.value)}
-              className="mt-1 w-full rounded-md border border-zinc-800 bg-zinc-950 p-2 font-mono text-[11px] text-zinc-200"
-            />
-          </div>
-
-          {mode !== "chat" && (
-            <div>
-              <label className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
-                JSON Schema Contract
-              </label>
-              <textarea
-                rows={6}
-                value={jsonSchema}
-                onChange={(e) => setJsonSchema(e.target.value)}
-                className="mt-1 w-full rounded-md border border-zinc-800 bg-zinc-950 p-2 font-mono text-[10px] text-cyan-300"
-              />
-            </div>
-          )}
-
-          {/* VLM Image Attachment */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
-                Vision Images ({attachedImages.length}/3)
-              </span>
-              <label className="inline-flex cursor-pointer items-center gap-1 rounded border border-zinc-800 bg-zinc-900 px-2 py-0.5 text-[11px] text-zinc-300 hover:bg-zinc-800">
-                <ImagePlus className="h-3 w-3" />
-                Attach PNG/JPG
-                <input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  className="hidden"
-                  onChange={(e) => {
-                    handleImagePick(e.target.files);
-                    e.target.value = "";
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="font-medium text-zinc-300">cURL Quickstart</span>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onClick={() => {
+                    navigator.clipboard.writeText(curlSample);
+                    setCopiedCurl(true);
+                    setTimeout(() => setCopiedCurl(false), 1500);
                   }}
-                />
-              </label>
-            </div>
-
-            {attachedImages.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                {attachedImages.map((src, idx) => (
-                  <div
-                    key={`att-${idx}`}
-                    className="relative h-14 w-14 overflow-hidden rounded border border-zinc-700 bg-zinc-950"
-                  >
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={src} alt={`Attachment ${idx + 1}`} className="h-full w-full object-cover" />
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setAttachedImages((prev) => prev.filter((_, i) => i !== idx))
-                      }
-                      className="absolute right-0.5 top-0.5 rounded bg-black/75 p-0.5 text-zinc-300 hover:text-white"
-                    >
-                      <X className="h-2.5 w-2.5" />
-                    </button>
-                  </div>
-                ))}
+                >
+                  {copiedCurl ? <Check className="size-3" /> : <Copy className="size-3" />}
+                  {copiedCurl ? "Copied" : "Copy"}
+                </Button>
               </div>
-            )}
-          </div>
-          </>
-          )}
-        </div>
-
-        {/* Right Conversation & Output Pane */}
-        <div className="flex min-h-[540px] flex-col rounded-lg border border-zinc-800 bg-[#111114] lg:col-span-8">
-          <div className="flex-1 space-y-3 overflow-y-auto p-4">
-            {turns.length === 0 ? (
-              <div className="flex h-full min-h-[360px] flex-col items-center justify-center gap-2 text-center text-zinc-500">
-                <Bot className="h-8 w-8 text-zinc-600" />
-                <div className="text-xs font-medium text-zinc-300">
-                  Scriptoria Qwen 27B LLM + VLM Studio
-                </div>
-                <div className="max-w-md text-[11px] text-zinc-500">
-                  Test text completions, structured JSON continuity checks, or attach rendered shots +
-                  Foundry reference plates for multimodal VLM QA against Kaggle Account #2.
-                </div>
-              </div>
-            ) : (
-              turns.map((t) => {
-                const thinkOpen = Boolean(expandedThinkingIds[t.id]);
-                return (
-                  <div
-                    key={t.id}
-                    className={`rounded-lg border p-3 text-xs ${
-                      t.role === "user"
-                        ? "border-zinc-800 bg-zinc-950/80 text-zinc-200"
-                        : "border-indigo-500/25 bg-[#0c0d14] text-zinc-100"
-                    }`}
-                  >
-                    <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2 text-[10px] font-mono text-zinc-500">
-                      <span className="flex items-center gap-1.5 font-semibold uppercase text-zinc-300">
-                        {t.role === "assistant" && <Sparkles className="h-3 w-3 text-indigo-400" />}
-                        {t.role}
-                      </span>
-                      {t.meta && (
-                        <span>
-                          {t.meta.source} · {t.meta.model} · {t.meta.latencyMs}ms
-                          {t.meta.tokPerSec ? ` · ${t.meta.tokPerSec} tok/s` : ""}
-                        </span>
-                      )}
-                    </div>
-
-                    {t.imageDataUrls && t.imageDataUrls.length > 0 && (
-                      <div className="mb-2 flex flex-wrap gap-2">
-                        {t.imageDataUrls.map((src, idx) => (
-                          /* eslint-disable-next-line @next/next/no-img-element */
-                          <img
-                            key={`msg-img-${idx}`}
-                            src={src}
-                            alt={`Shot input ${idx + 1}`}
-                            className="h-20 w-auto rounded border border-zinc-800 object-cover"
-                          />
-                        ))}
-                      </div>
-                    )}
-
-                    {t.thinking && (
-                      <div className="mb-2 rounded border border-zinc-800 bg-zinc-950/70">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setExpandedThinkingIds((prev) => ({
-                              ...prev,
-                              [t.id]: !thinkOpen,
-                            }))
-                          }
-                          className="flex w-full items-center gap-1.5 px-2.5 py-1 text-left font-mono text-[10px] text-amber-300/90"
-                        >
-                          {thinkOpen ? (
-                            <ChevronDown className="h-3 w-3" />
-                          ) : (
-                            <ChevronRight className="h-3 w-3" />
-                          )}
-                          Reasoning Trace ({t.thinking.length} chars)
-                        </button>
-                        {thinkOpen && (
-                          <pre className="max-h-48 overflow-y-auto whitespace-pre-wrap border-t border-zinc-800 p-2.5 font-mono text-[10px] text-zinc-400">
-                            {t.thinking}
-                          </pre>
-                        )}
-                      </div>
-                    )}
-
-                    <pre className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-zinc-200">
-                      {t.content}
-                    </pre>
-                  </div>
-                );
-              })
-            )}
-          </div>
-
-          {/* Prompt Composer */}
-          <div className="border-t border-zinc-800 p-3">
-            <div className="flex gap-2">
-              <textarea
-                rows={3}
-                value={promptInput}
-                onChange={(e) => setPromptInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-                    e.preventDefault();
-                    handleSend();
-                  }
-                }}
-                placeholder="Enter a prompt, narrative beat, or VLM QA instruction... (Ctrl+Enter to send)"
-                className="flex-1 rounded-md border border-zinc-800 bg-zinc-950 p-2.5 text-xs text-zinc-100 placeholder:text-zinc-600"
-              />
-              <button
-                type="button"
-                onClick={handleSend}
-                disabled={sending || (!promptInput.trim() && attachedImages.length === 0)}
-                className="inline-flex w-24 shrink-0 flex-col items-center justify-center gap-1 rounded-md bg-indigo-600 text-xs font-medium text-white transition hover:bg-indigo-500 disabled:opacity-40"
-              >
-                {sending ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Send className="h-4 w-4" />
-                )}
-                <span>{sending ? "Running" : "Send"}</span>
-              </button>
+              <pre className="overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-900 p-3 font-mono text-[11px] text-zinc-200">
+                {curlSample}
+              </pre>
             </div>
           </div>
-        </div>
-      </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
-

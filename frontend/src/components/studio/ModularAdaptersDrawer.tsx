@@ -362,7 +362,24 @@ export function ModularAdaptersDrawer({
                 }
                 className="h-7 text-[11px]"
               >
-                + 2-Char Left/Right Preset
+                + 2-Char Left/Right
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  update({
+                    characters: [
+                      { name: "Left", prompt: "character on left third", x: 0, y: 0.05, w: 0.34, h: 0.95 },
+                      { name: "Center", prompt: "main protagonist center", x: 0.33, y: 0, w: 0.34, h: 1 },
+                      { name: "Right", prompt: "companion on right third", x: 0.66, y: 0.05, w: 0.34, h: 0.95 },
+                    ],
+                  })
+                }
+                className="h-7 text-[11px]"
+              >
+                + 3-Char Trio
               </Button>
               <Button
                 type="button"
@@ -381,6 +398,13 @@ export function ModularAdaptersDrawer({
                 <Plus className="mr-1 h-3 w-3" /> Add Region
               </Button>
             </div>
+
+            {value.characters.length > 0 && (
+              <SpatialBoxCanvas
+                characters={value.characters}
+                onChange={(characters) => update({ characters })}
+              />
+            )}
 
             {value.characters.map((ch, idx) => (
               <div key={idx} className="space-y-1.5 rounded border border-zinc-800 bg-zinc-950 p-2 text-xs">
@@ -473,7 +497,7 @@ export function ModularAdaptersDrawer({
                     checked={value.dualGpuSplit}
                     onChange={(e) => update({ dualGpuSplit: e.target.checked })}
                   />
-                  Dual-T4 DiT Split (`cuda:0` DiT + `cuda:1` TE)
+                  Dual-T4 DiT Split (`gpu:0` DiT + `gpu:1` TE)
                 </label>
                 <label className="flex items-center gap-2">
                   <input
@@ -535,4 +559,115 @@ export function buildAdapterArraysFromState(state: ModularAdaptersState): {
         : undefined,
     characters: state.characters.length >= 2 ? state.characters : undefined,
   };
+}
+
+const REGION_COLORS = [
+  "border-indigo-400 bg-indigo-500/25 text-indigo-100",
+  "border-emerald-400 bg-emerald-500/25 text-emerald-100",
+  "border-amber-400 bg-amber-500/25 text-amber-100",
+  "border-rose-400 bg-rose-500/25 text-rose-100",
+];
+
+function clamp01(n: number): number {
+  return Math.round(Math.max(0, Math.min(1, n)) * 50) / 50;
+}
+
+function SpatialBoxCanvas({
+  characters,
+  onChange,
+}: {
+  characters: MultiCharRegionInput[];
+  onChange: (next: MultiCharRegionInput[]) => void;
+}) {
+  const containerRef = React.useRef<HTMLDivElement | null>(null);
+  const [dragState, setDragState] = React.useState<{
+    idx: number;
+    mode: "move" | "resize";
+    startX: number;
+    startY: number;
+    orig: MultiCharRegionInput;
+  } | null>(null);
+
+  React.useEffect(() => {
+    if (!dragState) return;
+    function onPointerMove(e: PointerEvent) {
+      if (!dragState || !containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      const dx = (e.clientX - dragState.startX) / rect.width;
+      const dy = (e.clientY - dragState.startY) / rect.height;
+      const next = [...characters];
+      const orig = dragState.orig;
+      if (dragState.mode === "move") {
+        const nx = clamp01(Math.min(1 - orig.w, orig.x + dx));
+        const ny = clamp01(Math.min(1 - orig.h, orig.y + dy));
+        next[dragState.idx] = { ...orig, x: nx, y: ny };
+      } else {
+        const nw = clamp01(Math.max(0.12, Math.min(1 - orig.x, orig.w + dx)));
+        const nh = clamp01(Math.max(0.12, Math.min(1 - orig.y, orig.h + dy)));
+        next[dragState.idx] = { ...orig, w: nw, h: nh };
+      }
+      onChange(next);
+    }
+    function onPointerUp() {
+      setDragState(null);
+    }
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+    };
+  }, [dragState, characters, onChange]);
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between text-[10px] text-zinc-400">
+        <span>Drag regions to position characters · drag bottom-right corner to resize</span>
+        <span className="font-mono">0.0 – 1.0 normalized</span>
+      </div>
+      <div
+        ref={containerRef}
+        className="relative h-44 w-full select-none overflow-hidden rounded-lg border border-zinc-800 bg-[linear-gradient(to_right,rgba(255,255,255,0.03)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.03)_1px,transparent_1px)] bg-[size:25%_25%] bg-zinc-950"
+      >
+        {characters.map((ch, idx) => (
+          <div
+            key={idx}
+            onPointerDown={(e) => {
+              e.preventDefault();
+              setDragState({ idx, mode: "move", startX: e.clientX, startY: e.clientY, orig: ch });
+            }}
+            style={{
+              left: `${ch.x * 100}%`,
+              top: `${ch.y * 100}%`,
+              width: `${ch.w * 100}%`,
+              height: `${ch.h * 100}%`,
+            }}
+            className={`absolute cursor-move rounded border-2 p-1.5 text-[10px] shadow-sm transition-colors ${
+              REGION_COLORS[idx % REGION_COLORS.length]
+            }`}
+          >
+            <div className="flex items-center justify-between gap-1 font-mono font-semibold">
+              <span className="truncate">{ch.name || `Char ${idx + 1}`}</span>
+              <span className="text-[9px] opacity-80">
+                {Math.round(ch.w * 100)}×{Math.round(ch.h * 100)}%
+              </span>
+            </div>
+            {ch.prompt && (
+              <p className="mt-0.5 line-clamp-2 text-[9px] opacity-85">{ch.prompt}</p>
+            )}
+            <div
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                setDragState({ idx, mode: "resize", startX: e.clientX, startY: e.clientY, orig: ch });
+              }}
+              title="Drag to resize"
+              className="absolute bottom-0 right-0 h-3.5 w-3.5 cursor-nwse-resize rounded-tl border-l border-t border-white/60 bg-black/50"
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }

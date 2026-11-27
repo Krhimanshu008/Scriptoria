@@ -79,11 +79,11 @@ function attachDualT4DeviceSplit(
   if (!enableSplit) {
     return { model, clip, vae };
   }
-  const mDev = ctx.addNode("SelectModelDevice", { model, device: "cuda:0" });
-  const vDev = ctx.addNode("SelectVAEDevice", { vae, device: "cuda:0" });
-  const cDev = clip ? ctx.addNode("SelectCLIPDevice", { clip, device: "cuda:1" }) : undefined;
+  const mDev = ctx.addNode("SelectModelDevice", { model, device: "gpu:0" });
+  const vDev = ctx.addNode("SelectVAEDevice", { vae, device: "gpu:0" });
+  const cDev = clip ? ctx.addNode("SelectCLIPDevice", { clip, device: "gpu:1" }) : undefined;
   ctx.recommendedProfile = "IMAGE_DIT_DUAL_T4";
-  ctx.addGuardrail("Applied Dual-T4 Split: DiT+VAE pinned to cuda:0, 9B Text Encoder pinned to cuda:1.");
+  ctx.addGuardrail("Applied Dual-T4 Split: DiT+VAE pinned to gpu:0, Text Encoder pinned to gpu:1.");
   return {
     model: ctx.ref(mDev, 0),
     clip: cDev ? ctx.ref(cDev, 0) : clip,
@@ -274,8 +274,9 @@ export function buildBaseModelLoader(
   }
 
   if (arch === "flux1_gguf") {
-    ctx.recommendedProfile = "IMAGE_GGUF_EDIT";
-    ctx.vramEstimateGb = 13.8;
+    const useSplit = Boolean(input.dualGpuSplit);
+    ctx.recommendedProfile = useSplit ? "IMAGE_DIT_DUAL_T4" : "IMAGE_GGUF_EDIT";
+    ctx.vramEstimateGb = useSplit ? 14.5 : 13.8;
     const unet = input.baseModel || "flux1-dev-Q4_K_S.gguf";
     const t5 = input.textEncoder1 || "t5-v1_1-xxl-encoder-Q4_K_M.gguf";
     const clipL = input.textEncoder2 || "clip_l.safetensors";
@@ -285,19 +286,22 @@ export function buildBaseModelLoader(
     ctx.registerModel("text_encoders", t5);
     ctx.registerModel("text_encoders", clipL);
     ctx.registerModel("vae", vaeName);
-    ctx.addGuardrail("Selected Flux.1 Q4_K_S GGUF + T5-XXL Q4_K_M to fit 16 GB Tesla T4.");
+    ctx.addGuardrail(
+      useSplit
+        ? "Flux.1 Q4_K_S split across Dual-T4 (UNet+VAE gpu:0, T5-XXL+CLIP-L gpu:1)."
+        : "Selected Flux.1 Q4_K_S GGUF + T5-XXL Q4_K_M to fit 16 GB Tesla T4."
+    );
 
     const unetNode = ctx.addNode("UnetLoaderGGUF", { unet_name: unet });
     const clipNode = ctx.addNode("DualCLIPLoaderGGUF", { clip_name1: t5, clip_name2: clipL, type: "flux" });
     const vaeNode = ctx.addNode("VAELoader", { vae_name: vaeName });
 
     const model = attachModelOnlyLoras(ctx, ctx.ref(unetNode, 0), input.loras);
+    const split = attachDualT4DeviceSplit(ctx, model, ctx.ref(clipNode, 0), ctx.ref(vaeNode, 0), useSplit);
     return {
       architecture: arch,
-      model,
-      clip: ctx.ref(clipNode, 0),
-      vae: ctx.ref(vaeNode, 0),
-      dualT4Split: false,
+      ...split,
+      dualT4Split: useSplit,
       defaultSteps: unet.toLowerCase().includes("schnell") ? 4 : 20,
       defaultCfg: 1.0,
       defaultSampler: "euler",
@@ -470,8 +474,9 @@ export function buildBaseModelLoader(
   }
 
   // qwen_edit (default fallback for Qwen-Image-Edit 2511)
-  ctx.recommendedProfile = "IMAGE_GGUF_EDIT";
-  ctx.vramEstimateGb = 14.5;
+  const useQwenEditSplit = Boolean(input.dualGpuSplit);
+  ctx.recommendedProfile = useQwenEditSplit ? "IMAGE_DIT_DUAL_T4" : "IMAGE_GGUF_EDIT";
+  ctx.vramEstimateGb = useQwenEditSplit ? 18.2 : 14.5;
   const unet = input.baseModel || "qwen-image-edit-2511-Q4_K_M.gguf";
   const te = input.textEncoder1 || "qwen_2.5_vl_7b_fp8_scaled.safetensors";
   const vaeName = pickCompatibleDiTVae(ctx, input.vaeModel, "qwen_image_vae.safetensors");
@@ -492,12 +497,18 @@ export function buildBaseModelLoader(
   const cfgNormNode = ctx.addNode("CFGNorm", { model: ctx.ref(auraNode, 0), strength: 1.0 });
   model = ctx.ref(cfgNormNode, 0);
 
+  const split = attachDualT4DeviceSplit(
+    ctx,
+    model,
+    ctx.ref(clipNode, 0),
+    ctx.ref(vaeNode, 0),
+    useQwenEditSplit
+  );
+
   return {
     architecture: "qwen_edit",
-    model,
-    clip: ctx.ref(clipNode, 0),
-    vae: ctx.ref(vaeNode, 0),
-    dualT4Split: false,
+    ...split,
+    dualT4Split: useQwenEditSplit,
     defaultSteps: 4,
     defaultCfg: 1.0,
     defaultSampler: "euler",

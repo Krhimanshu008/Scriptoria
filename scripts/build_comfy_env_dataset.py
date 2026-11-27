@@ -44,6 +44,7 @@ PROFILE_NODES = {
     ],
     "IMAGE_GGUF_EDIT": [
         ("ComfyUI-GGUF", "https://github.com/city96/ComfyUI-GGUF.git"),
+        ("ComfyUI-MultiGPU", "https://github.com/pollockjj/ComfyUI-MultiGPU.git"),
         ("ComfyUI-KJNodes", "https://github.com/kijai/ComfyUI-KJNodes.git"),
         ("ComfyUI-Anima-Ref-Adapter", "https://github.com/ElectronGirl/ComfyUI-Anima-Ref-Adapter.git"),
         ("ComfyUI-Anima-CharRef-LLLite", "https://github.com/quinteroac/ComfyUI-Anima-CharRef-LLLite.git"),
@@ -53,6 +54,7 @@ PROFILE_NODES = {
     ],
     "IMAGE_DIT_DUAL_T4": [
         ("ComfyUI-GGUF", "https://github.com/city96/ComfyUI-GGUF.git"),
+        ("ComfyUI-MultiGPU", "https://github.com/pollockjj/ComfyUI-MultiGPU.git"),
         ("ComfyUI-KJNodes", "https://github.com/kijai/ComfyUI-KJNodes.git"),
         ("ComfyUI-Inspire-Pack", "https://github.com/ltdrdata/ComfyUI-Inspire-Pack.git"),
         ("comfyui_controlnet_aux", "https://github.com/Fannovel16/comfyui_controlnet_aux.git"),
