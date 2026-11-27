@@ -554,6 +554,8 @@ if PROVIDER == "colab":
 
 for d in CATEGORIES:
     os.makedirs(f"/tmp/models/{d}", exist_ok=True)
+os.makedirs("/tmp/models/ultralytics/bbox", exist_ok=True)
+os.makedirs("/tmp/models/ultralytics/segm", exist_ok=True)
 os.makedirs("/tmp/outputs", exist_ok=True)
 os.makedirs(FASTBOOT_SITE, exist_ok=True)
 
@@ -563,17 +565,27 @@ with open("/tmp/extra_model_paths.yaml", "w", encoding="utf-8") as f:
     checkpoints: checkpoints/
     loras: loras/
     vae: vae/
-    unet: unet/
-    clip: clip/
+    unet: |
+        unet/
+        diffusion_models/
+    clip: |
+        clip/
+        text_encoders/
     clip_vision: clip_vision/
     controlnet: controlnet/
     ipadapter: ipadapter/
-    text_encoders: text_encoders/
+    text_encoders: |
+        text_encoders/
+        clip/
     upscale_models: upscale_models/
-    diffusion_models: diffusion_models/
+    diffusion_models: |
+        diffusion_models/
+        unet/
     model_patches: model_patches/
     lbm: lbm/
     ultralytics: ultralytics/
+    ultralytics_bbox: ultralytics/bbox/
+    ultralytics_segm: ultralytics/segm/
     sams: sams/
     tts: tts/
     audio_sfx: audio_sfx/
@@ -2331,6 +2343,17 @@ def _tail_comfy_logs(max_lines=8):
         except Exception:
             pass
 
+_comfy_models_dir = os.path.join(COMFY_DIR, "models")
+if os.path.isdir(_comfy_models_dir):
+    for _mcat in ("ultralytics", "sams", "lbm"):
+        _dst_m = os.path.join(_comfy_models_dir, _mcat)
+        _src_m = f"/tmp/models/{_mcat}"
+        try:
+            if not os.path.exists(_dst_m) and not os.path.islink(_dst_m):
+                os.symlink(_src_m, _dst_m)
+        except Exception:
+            pass
+
 for idx, port in enumerate(active_ports):
     if idx > 0:
         # Stagger GPU1 briefly (6s max) so GPU0 warms OS page cache before spawning concurrently
@@ -2714,8 +2737,16 @@ def _headless_worker_loop(worker_target, port):
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(q_req, timeout=20) as qr:
-                q_res = json.loads(qr.read().decode("utf-8"))
+            try:
+                with urllib.request.urlopen(q_req, timeout=20) as qr:
+                    q_res = json.loads(qr.read().decode("utf-8"))
+            except urllib.error.HTTPError as prompt_http_err:
+                err_body = ""
+                try:
+                    err_body = prompt_http_err.read().decode("utf-8", "ignore")
+                except Exception:
+                    pass
+                raise RuntimeError(f"ComfyUI /prompt HTTP {prompt_http_err.code}: {err_body[:600] or prompt_http_err}")
             prompt_id = q_res["prompt_id"]
 
             outputs_uploaded = []

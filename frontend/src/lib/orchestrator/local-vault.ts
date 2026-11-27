@@ -79,7 +79,7 @@ export async function readLocalOutputFile(
   if (!src.startsWith(dir + path.sep)) return null;
 
   try {
-    const bytes = await fs.promises.readFile(src);
+    const bytes = await fs.promises.readFile(/*turbopackIgnore: true*/ src);
     const ext = match[2].toLowerCase();
     return {
       bytes,
