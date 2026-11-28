@@ -75,7 +75,9 @@ export function StudioWorkspace({ onOpenArchitect }: { onOpenArchitect?: () => v
     },
     staleTime: 4000,
     refetchInterval: (q) =>
-      q.state.data?.vms?.some((v) => v.status === "STARTING") ? 3000 : 12000,
+      q.state.data?.vms?.some((v) => v.status === "STARTING" || Boolean(v.bootMetadata?.activeTransfer))
+        ? 3000
+        : 12000,
   });
 
   const vms = vmData?.vms ?? [];
@@ -587,6 +589,55 @@ export function StudioWorkspace({ onOpenArchitect }: { onOpenArchitect?: () => v
           </Button>
         </div>
       </div>
+
+      {isTargetOnline && (activeVm?.bootMetadata?.activeTransfer || activeVm?.bootMetadata?.disk || storedFiles.length > 0 || activeVm?.bootMetadata?.recentLog) && (
+        <div className="space-y-1.5 rounded-lg border border-zinc-800/90 bg-[#111114]/90 px-3.5 py-2 text-[11px]">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-zinc-400">
+            <div className="flex flex-wrap items-center gap-2 font-mono">
+              <span className="text-emerald-300 font-semibold">{target.toUpperCase()}</span>
+              {typeof (activeVm?.bootMetadata?.disk?.freeGb ?? storageData?.disk?.freeGb) === "number" && (
+                <span>
+                  /tmp free: <strong className="text-zinc-200">{(activeVm?.bootMetadata?.disk?.freeGb ?? storageData?.disk?.freeGb)?.toFixed(1)} GB</strong>
+                </span>
+              )}
+              <span>
+                · On disk: <strong className="text-zinc-200">{(activeVm?.bootMetadata?.storageFiles?.length ?? storedFiles.length)}</strong> file(s)
+              </span>
+            </div>
+            {activeVm?.bootMetadata?.recentLog && (
+              <span className="truncate font-mono text-[10px] text-zinc-500 max-w-full sm:max-w-[55%]">
+                &gt; {activeVm.bootMetadata.recentLog}
+              </span>
+            )}
+          </div>
+          {activeVm?.bootMetadata?.activeTransfer && (
+            <div className="space-y-1 pt-0.5">
+              <div className="flex items-center justify-between gap-2 font-mono text-[10px] text-cyan-200">
+                <span className="truncate">
+                  Staging {activeVm.bootMetadata.activeTransfer.filename}
+                  {(activeVm.bootMetadata.activeTransfer.queueCount ?? 1) > 1
+                    ? ` (+${(activeVm.bootMetadata.activeTransfer.queueCount ?? 1) - 1} queued)`
+                    : ""}
+                </span>
+                <span className="shrink-0">
+                  {activeVm.bootMetadata.activeTransfer.percentage}%
+                  {activeVm.bootMetadata.activeTransfer.speedMbps
+                    ? ` · ${activeVm.bootMetadata.activeTransfer.speedMbps.toFixed(1)} MB/s`
+                    : ""}
+                </span>
+              </div>
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-800">
+                <div
+                  className="h-full bg-cyan-400 transition-all duration-300"
+                  style={{
+                    width: `${Math.max(2, Math.min(100, activeVm.bootMetadata.activeTransfer.percentage))}%`,
+                  }}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ONE-CLICK WORKFLOW PRESETS + AI ARCHITECT JUMP BAR */}
       {onOpenArchitect && (

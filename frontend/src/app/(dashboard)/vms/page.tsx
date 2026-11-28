@@ -10,8 +10,6 @@ import {
   Copy,
   Check,
   Download,
-  Cpu,
-  HardDriveUpload,
   Wifi,
   Sparkles,
   Settings,
@@ -63,12 +61,22 @@ function VmClusterContent() {
   useEffect(() => {
     const connected = searchParams.get("colabConnected");
     const err = searchParams.get("colabError");
+    const gdConnected = searchParams.get("gdriveConnected");
+    const gdErr = searchParams.get("gdriveError");
     if (connected) {
       toast.success(`Connected Google account (${connected})`);
       queryClient.invalidateQueries({ queryKey: ["vm-accounts"] });
       router.replace("/vms");
     } else if (err) {
       toast.error(`Colab / Google error: ${err}`);
+      router.replace("/vms");
+    } else if (gdConnected) {
+      toast.success(`Connected Google Drive (${gdConnected})`);
+      queryClient.invalidateQueries({ queryKey: ["vm-accounts"] });
+      queryClient.invalidateQueries({ queryKey: ["vm-status"] });
+      router.replace("/vms");
+    } else if (gdErr) {
+      toast.error(`Google Drive error: ${gdErr}`);
       router.replace("/vms");
     }
   }, [searchParams, queryClient, router]);

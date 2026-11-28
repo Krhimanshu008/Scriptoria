@@ -5,12 +5,17 @@ import { getAuthUser, signVmClaimToken } from "@/lib/auth/session";
 import { generateVmSecret } from "@/lib/crypto/vault";
 import { getDecryptedCredential, saveUserCredential } from "@/lib/crypto/credentials";
 import { buildKaggleThinClaimStubCode } from "@/lib/orchestrator/notebook-builder";
-import { getWorkerProfile, isLlmWorkerProfile } from "@/lib/catalog/worker-profiles";
+import { getWorkerProfile } from "@/lib/catalog/worker-profiles";
 import { KaggleOrchestrator } from "@/lib/orchestrator/kaggle-client";
 import { VmGateway } from "@/lib/orchestrator/vm-gateway";
 import { resolveReachableWebhookBaseUrl } from "@/lib/orchestrator/webhook-tunnel";
 import {
+  KaggleRunnerSetupError,
+  prepareKagglePermanentCell,
+} from "@/lib/orchestrator/kaggle-runner";
+import {
   getKaggleKernelSlug,
+  markBootMetadataOffline,
   parseBootMetadata,
   sanitizeVmForClient,
   sortVmsByCanonicalTarget,
@@ -101,19 +106,22 @@ export async function POST(
         return NextResponse.json({ error: "The worker did not confirm shutdown." }, { status: 502 });
       }
 
-      await prisma.vmInstance.updateMany({
-        where: { userId: user.userId, sessionGroup: vm.sessionGroup },
-        data: {
-          status: "OFFLINE",
-          stepProgress: 0,
-          vramUsedGb: 0,
-          latencyMs: null,
-          onlineSince: null,
-          publicUrl: "",
-          vmSecret: null,
-          lastError: null,
-        },
-      });
+      for (const peer of groupVms) {
+        await prisma.vmInstance.update({
+          where: { id: peer.id },
+          data: {
+            status: "OFFLINE",
+            stepProgress: 0,
+            vramUsedGb: 0,
+            latencyMs: null,
+            onlineSince: null,
+            publicUrl: "",
+            vmSecret: null,
+            bootMetadataJson: markBootMetadataOffline(peer.bootMetadataJson),
+            lastError: null,
+          },
+        });
+      }
 
       await appendSystemLog({
         userId: user.userId,
@@ -135,8 +143,6 @@ export async function POST(
     }
 
     // TOGGLE ON: Provision Kaggle or prepare Colab bundle
-    const isLlmProfile = isLlmWorkerProfile(vm.workerProfile);
-
     const claimSecret = generateVmSecret();
 
     const webhook = await resolveReachableWebhookBaseUrl(req);
@@ -239,25 +245,33 @@ export async function POST(
       };
 
       // Fast path for already-allotted Kaggle Interactive Draft Sessions (/edit):
-      // Mints a fresh claimToken without cancelling or queueing a SaveKernel batch run.
+      // Returns the permanent non-expiring runner cell without queueing a SaveKernel batch run.
       if (isDraftCellRequested) {
-        const pythonCode = await mintClaimAndStub();
-        const notebookUrl = `https://www.kaggle.com/code/${kaggleCred.username}/${kernelSlug}/edit`;
+        let prepared;
+        try {
+          prepared = await prepareKagglePermanentCell({ req, userId: user.userId, vm });
+        } catch (prepErr) {
+          if (prepErr instanceof KaggleRunnerSetupError) {
+            return NextResponse.json({ error: prepErr.message }, { status: prepErr.status });
+          }
+          throw prepErr;
+        }
         await appendSystemLog({
           userId: user.userId,
           vmInstanceId: vm.id,
           category: "KAGGLE",
           level: "INFO",
-          message: `Generated Interactive Draft Cell for ${vm.accountAlias} (${groupTargets.join(" & ")}, callback=${appWebhookUrl}).`,
+          message: `Generated Permanent Interactive Cell for ${vm.accountAlias} (${groupTargets.join(" & ")}, callback=${prepared.primaryUrl}).`,
         });
         const refreshed = await prisma.vmInstance.findMany({
           where: { userId: user.userId, sessionGroup: vm.sessionGroup },
         });
         return NextResponse.json({
-          message: "Copied fresh claim cell for Interactive Kaggle Draft Session",
-          draftCode: pythonCode,
-          webhookUrl: appWebhookUrl,
-          notebookUrl,
+          message: "Copied permanent claim cell for Interactive Kaggle Session",
+          draftCode: prepared.pythonCode,
+          webhookUrl: prepared.primaryUrl,
+          beaconUrl: prepared.beaconUrl,
+          notebookUrl: prepared.notebookUrl,
           vm: sanitizeVmForClient(refreshed.find((r) => r.target === target) || vm),
           groupVms: sortVmsByCanonicalTarget(refreshed).map(sanitizeVmForClient),
         });
@@ -320,8 +334,6 @@ export async function POST(
           pythonCode,
           datasetDataSources: isTpu
             ? Array.from(new Set(["rahim3/qwen3-8-27b-bf16", "rahim3/qwen38-tpu-env-v5e8", ...customDatasets]))
-            : isLlmProfile && profileSpec.id === "LLM_QWEN_VLM"
-            ? Array.from(new Set(["swift15/qwen38-27b-q4km-gguf", ...customDatasets]))
             : customDatasets,
           enableTpu: isTpu,
           enableGpu: !isTpu,

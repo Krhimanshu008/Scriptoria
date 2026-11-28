@@ -356,66 +356,104 @@ export function LlmStudioTab({
         </div>
 
         {/* Decoupled Model Stage / VRAM Loader Strip (only when an online GPU LLM VM exists) */}
-        {onlineGpuLlmVm && (
-          <div className="border-t border-zinc-800/90 pt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex items-center gap-2 text-xs text-zinc-400">
-              <span className="font-medium text-zinc-300">
-                Model Loader ({onlineGpuLlmVm.target.toUpperCase()}):
-              </span>
-              <span className="text-[11px] text-zinc-500">
-                {onlineGpuLlmVm.loadedModel
-                  ? `Active in VRAM: ${onlineGpuLlmVm.loadedModel}`
-                  : onlineGpuLlmVm.runtimeMode === "loading_model"
-                  ? `Loading ${onlineGpuLlmVm.activeModelName || "model"} into VRAM...`
-                  : "Compute booted empty (0 models). Stage or Load a model before running local inference."}
-              </span>
-            </div>
-            <div className="flex flex-wrap items-center gap-1.5">
-              <select
-                value={effectiveQuickPresetId}
-                disabled={Boolean(modelActionBusy)}
-                onChange={(e) => setSelectedPresetId(e.target.value)}
-                className="h-8 rounded-lg border border-zinc-800 bg-zinc-900 px-2 text-xs text-zinc-200 outline-none focus:border-violet-500"
-              >
-                {LLM_MODEL_PRESETS.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.shortLabel} (~{p.approxDiskGb}G · {p.approxVramGb}G VRAM)
-                  </option>
-                ))}
-              </select>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={Boolean(modelActionBusy)}
-                onClick={() => handleModelControlAction("stage_llm")}
-              >
-                {modelActionBusy === "stage_llm" && <Loader2 className="size-3 animate-spin" />}
-                Stage Disk
-              </Button>
-              <Button
-                size="sm"
-                variant="secondary"
-                disabled={Boolean(modelActionBusy)}
-                onClick={() => handleModelControlAction("load_llm")}
-              >
-                {modelActionBusy === "load_llm" && <Loader2 className="size-3 animate-spin" />}
-                Load VRAM
-              </Button>
-              {onlineGpuLlmVm.loadedModel && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={Boolean(modelActionBusy)}
-                  onClick={() => handleModelControlAction("unload_llm")}
-                  className="border-rose-500/35 text-rose-300 hover:bg-rose-500/15"
-                >
-                  {modelActionBusy === "unload_llm" && <Loader2 className="size-3 animate-spin" />}
-                  Unload
-                </Button>
+        {onlineGpuLlmVm && (() => {
+          const activeVmMeta = vms.find((v) => v.target === onlineGpuLlmVm.target)?.bootMetadata;
+          const activeTransfer = activeVmMeta?.activeTransfer;
+          const cachedFiles = activeVmMeta?.storageFiles ?? [];
+          const diskFreeGb = activeVmMeta?.disk?.freeGb;
+          return (
+            <div className="border-t border-zinc-800/90 pt-3 space-y-2">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+                  <span className="font-medium text-zinc-300">
+                    Model Loader ({onlineGpuLlmVm.target.toUpperCase()}):
+                  </span>
+                  <span className="text-[11px] text-zinc-500">
+                    {onlineGpuLlmVm.loadedModel
+                      ? `Active in VRAM: ${onlineGpuLlmVm.loadedModel}`
+                      : onlineGpuLlmVm.runtimeMode === "loading_model"
+                      ? `Loading ${onlineGpuLlmVm.activeModelName || "model"} into VRAM...`
+                      : "Setup-only boot (0 models). Stage or Load a model before running local inference."}
+                  </span>
+                  {typeof diskFreeGb === "number" && (
+                    <span className="rounded border border-zinc-800 bg-zinc-900/70 px-1.5 py-0.5 font-mono text-[10px] text-zinc-400">
+                      /tmp free {diskFreeGb.toFixed(1)}G · {cachedFiles.length} file{cachedFiles.length === 1 ? "" : "s"}
+                    </span>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <select
+                    value={effectiveQuickPresetId}
+                    disabled={Boolean(modelActionBusy)}
+                    onChange={(e) => setSelectedPresetId(e.target.value)}
+                    className="h-8 rounded-lg border border-zinc-800 bg-zinc-900 px-2 text-xs text-zinc-200 outline-none focus:border-violet-500"
+                  >
+                    {LLM_MODEL_PRESETS.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.shortLabel} (~{p.approxDiskGb}G · {p.approxVramGb}G VRAM)
+                      </option>
+                    ))}
+                  </select>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={Boolean(modelActionBusy)}
+                    onClick={() => handleModelControlAction("stage_llm")}
+                  >
+                    {modelActionBusy === "stage_llm" && <Loader2 className="size-3 animate-spin" />}
+                    Stage Disk
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={Boolean(modelActionBusy)}
+                    onClick={() => handleModelControlAction("load_llm")}
+                  >
+                    {modelActionBusy === "load_llm" && <Loader2 className="size-3 animate-spin" />}
+                    Load VRAM
+                  </Button>
+                  {onlineGpuLlmVm.loadedModel && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={Boolean(modelActionBusy)}
+                      onClick={() => handleModelControlAction("unload_llm")}
+                      className="border-rose-500/35 text-rose-300 hover:bg-rose-500/15"
+                    >
+                      {modelActionBusy === "unload_llm" && <Loader2 className="size-3 animate-spin" />}
+                      Unload
+                    </Button>
+                  )}
+                </div>
+              </div>
+              {activeTransfer && (
+                <div className="rounded-lg border border-cyan-500/30 bg-cyan-950/20 px-3 py-2 text-[11px]">
+                  <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-cyan-200">
+                    <span className="truncate">
+                      Downloading {activeTransfer.filename}
+                      {(activeTransfer.queueCount ?? 1) > 1 ? ` (+${(activeTransfer.queueCount ?? 1) - 1} queued)` : ""}
+                    </span>
+                    <span className="shrink-0">
+                      {activeTransfer.percentage}%
+                      {activeTransfer.speedMbps ? ` · ${activeTransfer.speedMbps.toFixed(1)} MB/s` : ""}
+                    </span>
+                  </div>
+                  <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-zinc-800">
+                    <div
+                      className="h-full bg-cyan-400 transition-all duration-300"
+                      style={{ width: `${Math.max(2, Math.min(100, activeTransfer.percentage))}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+              {activeVmMeta?.recentLog && (
+                <div className="truncate font-mono text-[10px] text-zinc-500">
+                  &gt; {activeVmMeta.recentLog}
+                </div>
               )}
             </div>
-          </div>
-        )}
+          );
+        })()}
       </div>
 
       {/* 4 Clean LLM Studio Workspace Tabs */}

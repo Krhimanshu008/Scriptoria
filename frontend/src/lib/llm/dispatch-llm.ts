@@ -331,7 +331,9 @@ export async function dispatchLlmChat(params: DispatchLlmParams): Promise<Dispat
       }
 
       // Path B: Safe Headless Mode Outbound Relay (no inbound tunnel needed)
-      const relayPayload = { ...payload, stream: false };
+      const { stream_options: _omitStreamOpts, ...relayPayloadBase } = payload;
+      void _omitStreamOpts;
+      const relayPayload = { ...relayPayloadBase, stream: false };
       const relay = await prisma.llmRelayRequest.create({
         data: {
           userId,

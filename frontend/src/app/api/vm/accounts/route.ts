@@ -11,6 +11,7 @@ import {
   peekActiveTunnelUrl,
   prewarmLocalTunnelIfNeeded,
 } from "@/lib/orchestrator/webhook-tunnel";
+import { syncDriveTunnelBeaconIfEphemeral } from "@/lib/orchestrator/kaggle-runner";
 
 export interface KaggleAccountSummary {
   accountAlias: string;
@@ -58,6 +59,7 @@ export async function GET(req: NextRequest) {
     }
 
     prewarmLocalTunnelIfNeeded(req);
+    syncDriveTunnelBeaconIfEphemeral(user.userId);
     await ensureUserVmSlots(user.userId);
 
     const [vms, colabRelatedCreds, gdriveCred, kaggleCreds] = await Promise.all([

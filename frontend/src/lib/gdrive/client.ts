@@ -172,8 +172,8 @@ export async function refreshAndPersistGDriveToken(
       authTag: cred.authTag,
     });
     parsed = JSON.parse(rawTokenJson);
-  } catch (err: any) {
-    decryptErrorMsg = err?.message || "Decryption failed";
+  } catch (err: unknown) {
+    decryptErrorMsg = err instanceof Error ? err.message : "Decryption failed";
     console.error("[refreshAndPersistGDriveToken] decryptSecret failed:", decryptErrorMsg);
     parsed = {};
   }
@@ -680,21 +680,26 @@ async function ensureFolderIdByPath(
   return parentId;
 }
 
-/**
- * Creates or updates a Colab .ipynb notebook in Google Drive using either
- * `drive` or `drive.file` OAuth scope, preserving fileId across runs.
- */
-export async function upsertColabNotebookInDrive(params: {
+async function upsertDriveRawFile(params: {
   accessToken: string;
   filename: string;
-  notebookJson: Record<string, unknown>;
+  contentStr: string;
+  contentType: string;
+  mimeType: string;
   existingFileId?: string | null;
   folderSegments?: string[];
   hasFullDriveScope?: boolean;
 }): Promise<{ fileId: string; updated: boolean }> {
-  const { accessToken, filename, notebookJson, existingFileId, folderSegments, hasFullDriveScope } =
-    params;
-  const contentStr = JSON.stringify(notebookJson, null, 2);
+  const {
+    accessToken,
+    filename,
+    contentStr,
+    contentType,
+    mimeType,
+    existingFileId,
+    folderSegments,
+    hasFullDriveScope,
+  } = params;
 
   if (existingFileId) {
     const patchRes = await fetch(
@@ -703,7 +708,7 @@ export async function upsertColabNotebookInDrive(params: {
         method: "PATCH",
         headers: {
           Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/x-ipynb+json",
+          "Content-Type": contentType,
         },
         body: contentStr,
         cache: "no-store",
@@ -739,7 +744,7 @@ export async function upsertColabNotebookInDrive(params: {
           method: "PATCH",
           headers: {
             Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/x-ipynb+json",
+            "Content-Type": contentType,
           },
           body: contentStr,
           cache: "no-store",
@@ -751,10 +756,10 @@ export async function upsertColabNotebookInDrive(params: {
     }
   }
 
-  const boundary = `scriptoria_colab_nb_${Date.now()}`;
+  const boundary = `scriptoria_drive_${Date.now()}`;
   const metadata = JSON.stringify({
     name: filename,
-    mimeType: "application/vnd.google.colaboratory",
+    mimeType,
     ...(parentId ? { parents: [parentId] } : {}),
   });
   const multipartBody =
@@ -762,7 +767,7 @@ export async function upsertColabNotebookInDrive(params: {
     `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
     `${metadata}\r\n` +
     `--${boundary}\r\n` +
-    `Content-Type: application/x-ipynb+json\r\n\r\n` +
+    `Content-Type: ${contentType}\r\n\r\n` +
     `${contentStr}\r\n` +
     `--${boundary}--`;
 
@@ -781,7 +786,7 @@ export async function upsertColabNotebookInDrive(params: {
 
   if (!createRes.ok) {
     const errText = await createRes.text().catch(() => createRes.statusText);
-    throw new Error(`Failed uploading Colab notebook to Google Drive (${createRes.status}): ${errText}`);
+    throw new Error(`Failed uploading '${filename}' to Google Drive (${createRes.status}): ${errText}`);
   }
 
   const created = (await createRes.json()) as { id?: string };
@@ -789,6 +794,133 @@ export async function upsertColabNotebookInDrive(params: {
     throw new Error("Google Drive upload succeeded without returning a file ID.");
   }
   return { fileId: created.id, updated: false };
+}
+
+/**
+ * Creates or updates a Colab .ipynb notebook in Google Drive using either
+ * `drive` or `drive.file` OAuth scope, preserving fileId across runs.
+ */
+export async function upsertColabNotebookInDrive(params: {
+  accessToken: string;
+  filename: string;
+  notebookJson: Record<string, unknown>;
+  existingFileId?: string | null;
+  folderSegments?: string[];
+  hasFullDriveScope?: boolean;
+}): Promise<{ fileId: string; updated: boolean }> {
+  return upsertDriveRawFile({
+    accessToken: params.accessToken,
+    filename: params.filename,
+    contentStr: JSON.stringify(params.notebookJson, null, 2),
+    contentType: "application/x-ipynb+json",
+    mimeType: "application/vnd.google.colaboratory",
+    existingFileId: params.existingFileId,
+    folderSegments: params.folderSegments,
+    hasFullDriveScope: params.hasFullDriveScope,
+  });
+}
+
+const lastBeaconUrlByUser = new Map<string, { appUrl: string; beaconUrl: string }>();
+
+/**
+ * Updates a small link-readable JSON beacon in Google Drive holding strictly `{ appUrl }`
+ * (no secrets or tokens) so saved Kaggle cells survive localhost trycloudflare restarts.
+ */
+export async function syncKaggleTunnelBeaconInDrive(
+  userId: string,
+  appUrl: string,
+  force = false
+): Promise<string | null> {
+  const cleanUrl = appUrl.trim().replace(/\/$/, "");
+  if (!cleanUrl || /localhost|127\.0\.0\.1/i.test(cleanUrl)) return null;
+
+  const cached = lastBeaconUrlByUser.get(userId);
+  if (!force && cached?.appUrl === cleanUrl) {
+    return cached.beaconUrl;
+  }
+
+  const gdriveCred = await getUserGDriveCredential(userId, undefined, { ensureFresh: true }).catch(() => null);
+  const accessToken = gdriveCred?.parsed.access_token;
+  if (!gdriveCred || !accessToken) return null;
+
+  const existingBeaconCred = await prisma.credential.findFirst({
+    where: { userId, provider: "kaggle-beacon", accountAlias: "default" },
+  });
+  let existingFileId: string | null = null;
+  if (existingBeaconCred) {
+    try {
+      existingFileId = decryptSecret({
+        ciphertext: existingBeaconCred.encryptedKey,
+        iv: existingBeaconCred.iv,
+        authTag: existingBeaconCred.authTag,
+      }).trim();
+    } catch {
+      existingFileId = null;
+    }
+  }
+
+  const scopeStr = String(gdriveCred.parsed.scope || "");
+  const hasFullDriveScope = scopeStr.includes("/auth/drive") && !scopeStr.includes("drive.file");
+  const folderSegments = gdriveCred.baseFolder.split("/").filter(Boolean);
+
+  const upserted = await upsertDriveRawFile({
+    accessToken,
+    filename: "scriptoria-tunnel-beacon.json",
+    contentStr: JSON.stringify({ appUrl: cleanUrl, updatedAt: Date.now() }),
+    contentType: "application/json",
+    mimeType: "application/json",
+    existingFileId,
+    folderSegments,
+    hasFullDriveScope,
+  });
+
+  if (!upserted.updated || upserted.fileId !== existingFileId) {
+    await fetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(upserted.fileId)}/permissions?supportsAllDrives=true`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ role: "reader", type: "anyone" }),
+        cache: "no-store",
+      }
+    ).catch(() => null);
+
+    const enc = encryptSecret(upserted.fileId);
+    await prisma.credential.upsert({
+      where: {
+        userId_provider_accountAlias: {
+          userId,
+          provider: "kaggle-beacon",
+          accountAlias: "default",
+        },
+      },
+      update: {
+        username: "tunnel-beacon",
+        encryptedKey: enc.ciphertext,
+        iv: enc.iv,
+        authTag: enc.authTag,
+        metadataJson: JSON.stringify({ fileId: upserted.fileId, updatedAt: new Date().toISOString() }),
+      },
+      create: {
+        userId,
+        provider: "kaggle-beacon",
+        accountAlias: "default",
+        username: "tunnel-beacon",
+        authType: "file_id",
+        encryptedKey: enc.ciphertext,
+        iv: enc.iv,
+        authTag: enc.authTag,
+        metadataJson: JSON.stringify({ fileId: upserted.fileId, updatedAt: new Date().toISOString() }),
+      },
+    });
+  }
+
+  const beaconUrl = `https://drive.google.com/uc?export=download&id=${encodeURIComponent(upserted.fileId)}`;
+  lastBeaconUrlByUser.set(userId, { appUrl: cleanUrl, beaconUrl });
+  return beaconUrl;
 }
 
 /**

@@ -5,14 +5,17 @@ import { getDecryptedCredential } from "@/lib/crypto/credentials";
 import { appendSystemLog } from "@/lib/logs/logger";
 import { ComfyClient } from "@/lib/orchestrator/comfy-client";
 import { KaggleOrchestrator } from "@/lib/orchestrator/kaggle-client";
+import { kaggleCustomKernelSlug } from "@/lib/orchestrator/kaggle-connection";
 import {
   getKaggleKernelSlug,
+  markBootMetadataOffline,
   parseBootMetadata,
   sanitizeVmForClient,
   sortVmsByCanonicalTarget,
 } from "@/lib/orchestrator/vm-helpers";
+import { syncDriveTunnelBeaconIfEphemeral } from "@/lib/orchestrator/kaggle-runner";
 
-const HEARTBEAT_STALE_MS = 90_000;
+const HEARTBEAT_STALE_MS = 240_000;
 const KAGGLE_PRE_HEARTBEAT_POLL_MS = 8_000;
 const KAGGLE_ACTIVE_POLL_MS = 30_000;
 const lastKagglePollAt = new Map<string, number>();
@@ -49,6 +52,7 @@ export async function GET(req: NextRequest) {
     }
 
     await ensureUserVmSlots(user.userId);
+    syncDriveTunnelBeaconIfEphemeral(user.userId);
 
     const forceProbe = req.nextUrl.searchParams.get("probe") === "true";
     const rows = await prisma.vmInstance.findMany({
@@ -95,31 +99,61 @@ export async function GET(req: NextRequest) {
                   vramUsedGb: 0,
                   onlineSince: null,
                   publicUrl: "",
+                  vmSecret: null,
+                  bootMetadataJson: markBootMetadataOffline(vm.bootMetadataJson),
                 },
               });
             }
           }
+        } else if (stale && !vm.publicUrl && isOnline) {
+          return prisma.vmInstance.update({
+            where: { id: vm.id },
+            data: {
+              status: "OFFLINE",
+              stepProgress: 0,
+              latencyMs: null,
+              vramUsedGb: 0,
+              onlineSince: null,
+              publicUrl: "",
+              vmSecret: null,
+              bootMetadataJson: markBootMetadataOffline(vm.bootMetadataJson),
+              lastError: "Worker heartbeat timed out (>4m).",
+            },
+          });
         }
         return vm;
       })
     );
 
-    // Rate-limited Kaggle boot polling: catch failed kernels or silent heartbeat blocks quickly
-    const startingKaggleGroups = new Map<string, { alias: string; sessionGroup: string; isTpu: boolean }>();
+    // Rate-limited Kaggle polling: catches failed boots & manually cancelled headless Kaggle kernels quickly
+    const kagglePollGroups = new Map<string, { alias: string; sessionGroup: string; isTpu: boolean }>();
     for (const vm of updatedRows) {
-      if (vm.provider !== "kaggle" || vm.status !== "STARTING") continue;
+      if (vm.provider !== "kaggle") continue;
+      const isStarting = vm.status === "STARTING";
+      const isHeadlessOnline = (vm.status === "ONLINE" || vm.status === "BUSY") && !vm.publicUrl;
+      if (!isStarting && !isHeadlessOnline) continue;
+
       const meta = parseBootMetadata(vm.bootMetadataJson);
-      if (meta?.draftMode && (!meta.draftArmedAt || now - meta.draftArmedAt < 15 * 60_000)) {
+      const lastBeatMs = vm.lastHeartbeat ? vm.lastHeartbeat.getTime() : 0;
+      const interactiveHeartbeatActive = now - lastBeatMs <= HEARTBEAT_STALE_MS;
+      const interactiveArmedRecently = !meta?.draftArmedAt || now - meta.draftArmedAt < 15 * 60_000;
+      if (meta?.draftMode && (isHeadlessOnline || interactiveHeartbeatActive || interactiveArmedRecently)) {
         // Interactive Draft sessions don't surface in Kaggle's batch /kernels/status API;
-        // skipping batch polling prevents stale prior batch errors from killing STARTING.
+        // stale heartbeats (>4m) above still clean them up cleanly if closed.
         continue;
       }
+
+      if (isHeadlessOnline && !forceProbe && now - lastBeatMs <= 45_000) {
+        continue;
+      }
+
       const pollKey = `${user.userId}:${vm.sessionGroup}`;
       const lastPolledMs = lastKagglePollAt.get(pollKey) || 0;
-      const lastActivityMs = Math.max(vm.updatedAt.getTime(), vm.lastHeartbeat?.getTime() || 0, lastPolledMs);
-      const pollInterval = vm.stepProgress <= 1 ? KAGGLE_PRE_HEARTBEAT_POLL_MS : KAGGLE_ACTIVE_POLL_MS;
+      const lastActivityMs = Math.max(vm.updatedAt.getTime(), lastBeatMs, lastPolledMs);
+      const pollInterval =
+        isStarting && vm.stepProgress <= 1 ? KAGGLE_PRE_HEARTBEAT_POLL_MS : KAGGLE_ACTIVE_POLL_MS;
       if (forceProbe || now - lastActivityMs >= pollInterval) {
-        startingKaggleGroups.set(vm.sessionGroup, {
+        kagglePollGroups.set(vm.sessionGroup, {
           alias: vm.accountAlias,
           sessionGroup: vm.sessionGroup,
           isTpu: vm.target.startsWith("tpu") || vm.workerProfile === "TPU_QWEN27B_V5E",
@@ -128,11 +162,11 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    if (startingKaggleGroups.size > 0) {
+    if (kagglePollGroups.size > 0) {
       await Promise.all(
-        Array.from(startingKaggleGroups.values()).map(async (group) => {
+        Array.from(kagglePollGroups.values()).map(async (group) => {
           const groupRows = updatedRows.filter(
-            (r) => r.userId === user.userId && r.sessionGroup === group.sessionGroup && r.status === "STARTING"
+            (r) => r.userId === user.userId && r.sessionGroup === group.sessionGroup && r.status !== "OFFLINE"
           );
           if (groupRows.length === 0) return;
 
@@ -145,36 +179,48 @@ export async function GET(req: NextRequest) {
             authType: (kc.authType === "bearer" ? "bearer" : "basic") as "bearer" | "basic",
           };
 
-          const kernelSlug = getKaggleKernelSlug(group.alias, group.isTpu);
+          const customSlug = kaggleCustomKernelSlug(kc.metadata, group.isTpu);
+          const kernelSlug = getKaggleKernelSlug(group.alias, group.isTpu, customSlug);
 
           try {
             const st = await KaggleOrchestrator.getKernelStatus(creds, kernelSlug);
             const kStatus = String(st.status || "").toLowerCase();
 
             if (kStatus === "error" || kStatus === "cancelacknowledged" || kStatus === "complete") {
-              const logLines = await KaggleOrchestrator.getKernelOutput(
-                creds,
-                kernelSlug
-              );
+              const maxBeatMs = Math.max(0, ...groupRows.map((r) => r.lastHeartbeat?.getTime() || 0));
+              if (!forceProbe && maxBeatMs > 0 && now - maxBeatMs <= 15_000) {
+                return;
+              }
+              const hadStarting = groupRows.some((r) => r.status === "STARTING");
+              const nextStatus = hadStarting && kStatus !== "cancelacknowledged" ? "ERROR" : "OFFLINE";
+              const logLines =
+                nextStatus === "ERROR"
+                  ? await KaggleOrchestrator.getKernelOutput(creds, kernelSlug)
+                  : [];
               const detail =
                 kStatus === "cancelacknowledged"
                   ? "Cancelled on Kaggle."
                   : pickBestKernelError(logLines, st.failureMessage);
-              const nextStatus = kStatus === "cancelacknowledged" ? "OFFLINE" : "ERROR";
 
-              await prisma.vmInstance.updateMany({
-                where: {
-                  userId: user.userId,
-                  sessionGroup: group.sessionGroup,
-                  status: "STARTING",
-                },
-                data: {
-                  status: nextStatus,
-                  stepProgress: 0,
-                  publicUrl: "",
-                  lastError: nextStatus === "ERROR" ? detail : null,
-                },
-              });
+              for (const row of groupRows) {
+                await prisma.vmInstance.update({
+                  where: { id: row.id },
+                  data: {
+                    status: nextStatus,
+                    stepProgress: 0,
+                    vramUsedGb: 0,
+                    latencyMs: null,
+                    onlineSince: null,
+                    publicUrl: "",
+                    vmSecret: null,
+                    bootMetadataJson:
+                      nextStatus === "OFFLINE"
+                        ? markBootMetadataOffline(row.bootMetadataJson)
+                        : row.bootMetadataJson,
+                    lastError: nextStatus === "ERROR" ? detail : null,
+                  },
+                });
+              }
 
               await appendSystemLog({
                 userId: user.userId,
@@ -184,7 +230,9 @@ export async function GET(req: NextRequest) {
                 message: `Kaggle (${group.alias} / ${group.sessionGroup}) ${kStatus}: ${detail}`,
               });
             } else {
-              const allPreHeartbeat = groupRows.every((r) => r.stepProgress <= 1);
+              const startingRows = groupRows.filter((r) => r.status === "STARTING");
+              const allPreHeartbeat =
+                startingRows.length > 0 && startingRows.every((r) => r.stepProgress <= 1);
               if (allPreHeartbeat) {
                 const hint =
                   kStatus === "running"
@@ -192,7 +240,7 @@ export async function GET(req: NextRequest) {
                     : kStatus === "queued"
                     ? `Queued on Kaggle ${group.isTpu ? "TPU v5e-8" : "GPU"}...`
                     : null;
-                if (groupRows.some((r) => r.lastError !== hint)) {
+                if (startingRows.some((r) => r.lastError !== hint)) {
                   await prisma.vmInstance.updateMany({
                     where: {
                       userId: user.userId,

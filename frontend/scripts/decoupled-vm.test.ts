@@ -29,7 +29,11 @@ async function compilePythonCode(code: string, label: string): Promise<void> {
 }
 
 test("Generated Python worker & 0-GPU Qwen LLM dataset scripts compile cleanly with Python AST", async () => {
-  const { buildUnifiedNotebookPythonCode } = await import("../src/lib/orchestrator/notebook-builder");
+  const {
+    buildUnifiedNotebookPythonCode,
+    buildKagglePermanentLauncherCode,
+    buildKaggleLauncherNotebookJson,
+  } = await import("../src/lib/orchestrator/notebook-builder");
   const { buildLlmDatasetPythonCode } = await import("../src/lib/orchestrator/fastboot-builder");
   const { LLM_MODEL_PRESETS } = await import("../src/lib/llm/llm-model-presets");
 
@@ -50,7 +54,7 @@ test("Generated Python worker & 0-GPU Qwen LLM dataset scripts compile cleanly w
   });
   assert.match(llmIdlePy, /AUTO_LOAD_ON_BOOT = False/);
   assert.match(llmIdlePy, /RUNTIME_MODE = "idle_empty" if PROFILE_ID\.startswith\("LLM_"\) else "comfy_ready"/);
-  assert.match(llmIdlePy, /Pure Compute Boot active/);
+  assert.match(llmIdlePy, /Setup-Only Boot ready/);
   await compilePythonCode(llmIdlePy, "llm_idle_empty");
 
   const llmAutoPy = buildUnifiedNotebookPythonCode({
@@ -66,6 +70,7 @@ test("Generated Python worker & 0-GPU Qwen LLM dataset scripts compile cleanly w
     autoLoadOnBoot: true,
   });
   assert.match(llmAutoPy, /AUTO_LOAD_ON_BOOT = True/);
+  assert.match(llmAutoPy, /def _bg_autoload_llm\(/);
   await compilePythonCode(llmAutoPy, "llm_auto_load");
 
   const comfyIdlePy = buildUnifiedNotebookPythonCode({
@@ -82,6 +87,10 @@ test("Generated Python worker & 0-GPU Qwen LLM dataset scripts compile cleanly w
     autoLoadOnBoot: false,
   });
   assert.match(comfyIdlePy, /if PREWARM_MODELS and AUTO_LOAD_ON_BOOT:/);
+  assert.match(comfyIdlePy, /def _worker_auth_headers\(/);
+  assert.match(comfyIdlePy, /def _get_active_transfer\(/);
+  assert.match(comfyIdlePy, /GDRIVE_AUTH_BROKEN = False/);
+  assert.match(comfyIdlePy, /ACTIVE_LLM_TRANSFER = None/);
   await compilePythonCode(comfyIdlePy, "comfy_idle_empty");
 
   for (const preset of LLM_MODEL_PRESETS) {
@@ -101,6 +110,39 @@ test("Generated Python worker & 0-GPU Qwen LLM dataset scripts compile cleanly w
     assert.match(dsPy, /scriptoria_llm_manifest\.json/);
     await compilePythonCode(dsPy, `dataset_${preset.id}`);
   }
+
+  const permStaticPy = buildKagglePermanentLauncherCode({
+    target: "gpu2",
+    runnerToken: "user-1.abcdef0123456789",
+    primaryUrl: "https://scriptoria.example.test",
+    beaconUrl: null,
+  });
+  assert.match(permStaticPy, /RUNNER_TOKEN = "user-1\.abcdef0123456789"/);
+  assert.match(permStaticPy, /\/api\/vm\/kaggle\/claim/);
+  await compilePythonCode(permStaticPy, "kaggle_perm_static");
+
+  const permBeaconPy = buildKagglePermanentLauncherCode({
+    target: "gpu2",
+    runnerToken: "user-1.abcdef0123456789",
+    primaryUrl: "https://old-tunnel.trycloudflare.com",
+    beaconUrl: "https://drive.google.com/uc?export=download&id=fakeBeacon123",
+  });
+  assert.match(permBeaconPy, /BEACON_URL = "https:\/\/drive\.google\.com\/uc\?export=download&id=fakeBeacon123"/);
+  await compilePythonCode(permBeaconPy, "kaggle_perm_beacon");
+
+  const gpuNb = buildKaggleLauncherNotebookJson({
+    target: "gpu2",
+    runnerToken: "user-1.abcdef",
+    primaryUrl: "https://scriptoria.example.test",
+  });
+  assert.equal(gpuNb.cells.length, 2);
+  assert.equal(gpuNb.metadata.accelerator, "GPU");
+  const tpuNb = buildKaggleLauncherNotebookJson({
+    target: "tpu0",
+    runnerToken: "user-1.abcdef",
+    primaryUrl: "https://scriptoria.example.test",
+  });
+  assert.equal(tpuNb.metadata.accelerator, "TPU");
 });
 
 test("Decoupled VmCommand lifecycle, 409 empty-VM guard, and autoLoadOnBoot config behave deterministically", async () => {
@@ -261,8 +303,278 @@ test("Decoupled VmCommand lifecycle, 409 empty-VM guard, and autoLoadOnBoot conf
 
     const cmdRow = await prisma.vmCommand.findUniqueOrThrow({ where: { id: cmdId } });
     assert.equal(cmdRow.status, "COMPLETED");
+
+    // 5. Heartbeat telemetry propagates activeTransfer, recentLog, and driveNeedsReconnect
+    const hb3 = await heartbeat(
+      new NextRequest("http://localhost/api/vm/heartbeat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          token: regToken,
+          targets: ["gpu0", "gpu1"],
+          stepProgress: 5,
+          status: "ONLINE",
+          telemetry: {
+            gpu0: { ready: true, vramTotalGb: 15, vramUsedGb: 0.2 },
+            driveNeedsReconnect: true,
+            recentLog: "[DOWNLOAD] Qwen 2.1 Turbo 42%",
+            activeTransfer: {
+              filename: "qwen-image-2.1-turbo.safetensors",
+              category: "unet",
+              percentage: 42,
+              speedMbps: 118.4,
+              bytesDone: 5_000_000_000,
+              totalBytes: 12_000_000_000,
+              queueCount: 3,
+              source: "huggingface",
+            },
+          },
+        }),
+      })
+    );
+    assert.equal(hb3.status, 200);
+    const updatedAfterTx = await prisma.vmInstance.findUniqueOrThrow({ where: { id: vm.id } });
+    const parsedTxMeta = JSON.parse(updatedAfterTx.bootMetadataJson!);
+    assert.equal(parsedTxMeta.driveNeedsReconnect, true);
+    assert.equal(parsedTxMeta.recentLog, "[DOWNLOAD] Qwen 2.1 Turbo 42%");
+    assert.equal(parsedTxMeta.activeTransfer.percentage, 42);
+    assert.equal(parsedTxMeta.activeTransfer.queueCount, 3);
+
+    // 6. Image Model Pack staging (stage_image_pack) queues missing models via ModelFetch DB queue + low-disk guard
+    await prisma.vmInstance.updateMany({
+      where: { userId: user.id, sessionGroup: vm.sessionGroup },
+      data: {
+        status: "ONLINE",
+        workerProfile: "IMAGE_DIT_DUAL_T4",
+        publicUrl: "",
+        vmSecret: "sec-img",
+        lastHeartbeat: new Date(),
+        bootMetadataJson: JSON.stringify({
+          modelFetch: true,
+          runtimeMode: "comfy_ready",
+          disk: { totalGb: 40, usedGb: 5, freeGb: 35 },
+        }),
+      },
+    });
+    const packOkRes = await modelControl(
+      new NextRequest("http://localhost/api/vm/gpu0/model-control", {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ action: "stage_image_pack", packId: "qwen21-turbo-pack" }),
+      }),
+      { params: Promise.resolve({ target: "gpu0" }) }
+    );
+    assert.equal(packOkRes.status, 200);
+    const packOkJson = await packOkRes.json();
+    assert.equal(packOkJson.packId, "qwen21-turbo-pack");
+    assert.equal(packOkJson.summary.total, 3);
+    assert.equal(packOkJson.summary.started, 3);
+    const queuedFetches = await prisma.modelFetch.findMany({ where: { vmId: vm.id } });
+    assert.equal(queuedFetches.length, 3);
+
+    await prisma.vmInstance.update({
+      where: { id: vm.id },
+      data: {
+        bootMetadataJson: JSON.stringify({
+          modelFetch: true,
+          runtimeMode: "comfy_ready",
+          disk: { totalGb: 30, usedGb: 26, freeGb: 4.0 },
+        }),
+      },
+    });
+    const packLowDiskRes = await modelControl(
+      new NextRequest("http://localhost/api/vm/gpu0/model-control", {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ action: "stage_image_pack", packId: "qwen-edit-2511-pack" }),
+      }),
+      { params: Promise.resolve({ target: "gpu0" }) }
+    );
+    assert.equal(packLowDiskRes.status, 409);
+
+    // 7. Stale headless ONLINE VM automatically transitions to OFFLINE & clears activeTransfer on GET /api/vm/status
+    const { GET: vmStatus } = await import("../src/app/api/vm/status/route");
+    await prisma.vmInstance.updateMany({
+      where: { userId: user.id, target: { in: ["gpu0", "gpu1"] } },
+      data: {
+        status: "ONLINE",
+        stepProgress: 5,
+        publicUrl: "",
+        vramUsedGb: 0.1,
+        lastHeartbeat: new Date(Date.now() - 300_000),
+        bootMetadataJson: JSON.stringify({
+          runtimeMode: "loading_model",
+          activeModelName: "unsloth/Qwen3.8-27B-GGUF",
+          activeTransfer: {
+            filename: "Qwen3.8-27B-UD-Q4_K_M.gguf",
+            percentage: 0,
+            queueCount: 1,
+          },
+          driveNeedsReconnect: true,
+        }),
+      },
+    });
+    const staleStatusRes = await vmStatus(
+      new NextRequest("http://localhost/api/vm/status", {
+        headers: { cookie },
+      })
+    );
+    assert.equal(staleStatusRes.status, 200);
+    const staleStatusJson = await staleStatusRes.json();
+    const staleGpu0 = staleStatusJson.vms.find((v: { target: string }) => v.target === "gpu0");
+    assert.equal(staleGpu0.status, "OFFLINE");
+    assert.equal(staleGpu0.bootMetadata.runtimeMode, "offline");
+    assert.equal(staleGpu0.bootMetadata.activeTransfer, null);
+    assert.equal(staleGpu0.bootMetadata.driveNeedsReconnect, false);
+
+    // 8. Permanent Kaggle runner token auto-adopts from OFFLINE & re-claims seamlessly across ONLINE runs
+    const prevAppUrl = process.env.NEXT_PUBLIC_APP_URL;
+    process.env.NEXT_PUBLIC_APP_URL = "https://example.test";
+    try {
+      const { GET: getKaggleNotebook } = await import("../src/app/api/vm/kaggle/[target]/notebook/route");
+      const { POST: postKaggleClaim } = await import("../src/app/api/vm/kaggle/claim/route");
+      const { POST: postKaggleConfig } = await import("../src/app/api/vm/kaggle/[target]/config/route");
+
+      const nbRes1 = await getKaggleNotebook(
+        new NextRequest("http://localhost/api/vm/kaggle/gpu0/notebook?format=python", {
+          headers: { cookie },
+        }),
+        { params: Promise.resolve({ target: "gpu0" }) }
+      );
+      assert.equal(nbRes1.status, 200);
+      const nbJson1 = await nbRes1.json();
+      assert.match(nbJson1.pythonCode, /RUNNER_TOKEN = "([^"]+)"/);
+      const tokenMatch1 = nbJson1.pythonCode.match(/RUNNER_TOKEN = "([^"]+)"/);
+      const runnerToken1 = tokenMatch1![1];
+
+      // Auto-adopt while OFFLINE
+      const claimRes1 = await postKaggleClaim(
+        new NextRequest("https://example.test/api/vm/kaggle/claim", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ target: "gpu0", runnerToken: runnerToken1 }),
+        })
+      );
+      assert.equal(claimRes1.status, 200);
+      const claimJson1 = await claimRes1.json();
+      assert.equal(claimJson1.ok, true);
+      assert.match(claimJson1.pythonCode, /REG_JWT = "/);
+      assert.match(claimJson1.pythonCode, /VM_SECRET = "/);
+
+      const claimedRow1 = await prisma.vmInstance.findUniqueOrThrow({
+        where: { userId_target: { userId: user.id, target: "gpu0" } },
+      });
+      assert.equal(claimedRow1.status, "STARTING");
+      assert.equal(claimedRow1.stepProgress, 2);
+      assert.ok(claimedRow1.vmSecret && claimedRow1.vmSecret.length > 10);
+      const claimedMeta1 = JSON.parse(claimedRow1.bootMetadataJson || "{}");
+      assert.equal(claimedMeta1.draftMode, true);
+      assert.equal(claimedMeta1.activeTransfer, null);
+
+      // Simulate container heartbeat -> ONLINE for >15m (status route must still keep interactive session alive)
+      await prisma.vmInstance.updateMany({
+        where: { userId: user.id, sessionGroup: vm.sessionGroup },
+        data: {
+          status: "ONLINE",
+          stepProgress: 5,
+          publicUrl: "",
+          lastHeartbeat: new Date(Date.now() - 10_000),
+          bootMetadataJson: JSON.stringify({
+            draftMode: true,
+            draftArmedAt: Date.now() - 25 * 60_000,
+            runtimeMode: "idle_empty",
+          }),
+        },
+      });
+      const liveStatusRes = await vmStatus(
+        new NextRequest("http://localhost/api/vm/status", { headers: { cookie } })
+      );
+      assert.equal(liveStatusRes.status, 200);
+      const liveStatusJson = await liveStatusRes.json();
+      const liveGpu0 = liveStatusJson.vms.find((v: { target: string }) => v.target === "gpu0");
+      assert.equal(liveGpu0.status, "ONLINE");
+
+      // Re-claim using the exact same permanent token while previously ONLINE
+      const claimRes2 = await postKaggleClaim(
+        new NextRequest("https://example.test/api/vm/kaggle/claim", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ target: "gpu0", runnerToken: runnerToken1 }),
+        })
+      );
+      assert.equal(claimRes2.status, 200);
+      const claimedRow2 = await prisma.vmInstance.findUniqueOrThrow({
+        where: { userId_target: { userId: user.id, target: "gpu0" } },
+      });
+      assert.equal(claimedRow2.status, "STARTING");
+      assert.notEqual(claimedRow2.vmSecret, claimedRow1.vmSecret);
+
+      // 9. Rotating key immediately blocks old permanent cells (401) and mints a working replacement
+      const rotRes = await postKaggleConfig(
+        new NextRequest("http://localhost/api/vm/kaggle/gpu0/config", {
+          method: "POST",
+          headers: { "content-type": "application/json", cookie },
+          body: JSON.stringify({ action: "rotate_key" }),
+        }),
+        { params: Promise.resolve({ target: "gpu0" }) }
+      );
+      assert.equal(rotRes.status, 200);
+
+      const oldClaimRes = await postKaggleClaim(
+        new NextRequest("https://example.test/api/vm/kaggle/claim", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ target: "gpu0", runnerToken: runnerToken1 }),
+        })
+      );
+      assert.equal(oldClaimRes.status, 401);
+
+      const nbRes2 = await getKaggleNotebook(
+        new NextRequest("http://localhost/api/vm/kaggle/gpu0/notebook?format=python", {
+          headers: { cookie },
+        }),
+        { params: Promise.resolve({ target: "gpu0" }) }
+      );
+      assert.equal(nbRes2.status, 200);
+      const nbJson2 = await nbRes2.json();
+      const tokenMatch2 = nbJson2.pythonCode.match(/RUNNER_TOKEN = "([^"]+)"/);
+      const runnerToken2 = tokenMatch2![1];
+      assert.notEqual(runnerToken2, runnerToken1);
+
+      const newClaimRes = await postKaggleClaim(
+        new NextRequest("https://example.test/api/vm/kaggle/claim", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ target: "gpu0", runnerToken: runnerToken2 }),
+        })
+      );
+      assert.equal(newClaimRes.status, 200);
+    } finally {
+      process.env.NEXT_PUBLIC_APP_URL = prevAppUrl;
+    }
   } finally {
     await prisma.$disconnect();
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("Profile-matched image packs and Setup-Only Boot config omit implicit Qwen dataset auto-attach", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { getImagePacksForProfile, resolveImagePackById } = await import("../src/lib/catalog/image-model-packs");
+
+  const ditPacks = getImagePacksForProfile("IMAGE_DIT_DUAL_T4").map((p) => p.id);
+  assert.ok(ditPacks.includes("qwen21-turbo-pack"));
+  assert.ok(ditPacks.includes("qwen-edit-2511-pack"));
+  assert.ok(!ditPacks.includes("audio-sfx-pack"));
+
+  const corePacks = getImagePacksForProfile("IMAGE_CORE").map((p) => p.id);
+  assert.ok(corePacks.includes("noobai-vpred-pack"));
+  assert.ok(!corePacks.includes("qwen21-turbo-pack"));
+  assert.equal(resolveImagePackById("nonexistent-pack"), null);
+
+  const toggleSource = await readFile(
+    path.join(process.cwd(), "src/app/api/vm/[target]/toggle/route.ts"),
+    "utf8"
+  );
+  assert.equal(toggleSource.includes("swift15/qwen38-27b-q4km-gguf"), false);
 });

@@ -1,8 +1,10 @@
 "use client";
 
 import { LLM_MODEL_PRESETS, getDefaultPresetForLlmProfile } from "@/lib/llm/llm-model-presets";
+import { getImagePacksForProfile } from "@/lib/catalog/image-model-packs";
 
 import React, { useState } from "react";
+import Link from "next/link";
 import {
   Power,
   Skull,
@@ -25,6 +27,10 @@ import {
   X,
   Database,
   Plus,
+  ChevronDown,
+  ChevronRight,
+  HardDrive,
+  KeyRound,
 } from "lucide-react";
 import type { PrewarmModelRef, PublicVmInstance } from "@/lib/orchestrator/vm-helpers";
 import type { KaggleAccountSummary, ColabAccountSummary } from "@/app/api/vm/accounts/route";
@@ -152,17 +158,33 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
   const isLlmProfile = isLlmWorkerProfile(activeProfile.id);
   const defaultLlmPreset = getDefaultPresetForLlmProfile(activeProfile.id);
   const [selectedLlmPresetId, setSelectedLlmPresetId] = useState<string>(defaultLlmPreset.id);
+  const [selectedPackId, setSelectedPackId] = useState<string>("");
   const [selectedImageSlug, setSelectedImageSlug] = useState<string>("");
+  const [showSingleFilePicker, setShowSingleFilePicker] = useState(false);
+  const [showDiskFiles, setShowDiskFiles] = useState(false);
   const [modelControlLoading, setModelControlLoading] = useState<string | null>(null);
   const effectiveLlmPresetId = LLM_MODEL_PRESETS.some((p) => p.id === selectedLlmPresetId)
     ? selectedLlmPresetId
     : defaultLlmPreset.id;
+  const profilePacks = getImagePacksForProfile(activeProfile.id);
+  const effectivePackId = profilePacks.some((p) => p.id === selectedPackId)
+    ? selectedPackId
+    : profilePacks[0]?.id || "";
   const runtimeMode =
     primaryVm?.bootMetadata?.runtimeMode ||
     (isOnline ? (isLlmProfile ? "idle_empty" : "comfy_ready") : "offline");
   const activeModelName = primaryVm?.bootMetadata?.activeModelName ?? null;
   const autoLoadOnBoot = primaryVm?.bootMetadata?.autoLoadOnBoot === true;
   const freeDiskGb = primaryVm?.bootMetadata?.disk?.freeGb;
+  const storageFiles = primaryVm?.bootMetadata?.storageFiles ?? [];
+  const totalCachedGb =
+    storageFiles.reduce((acc, f) => acc + (f.sizeBytes || 0), 0) / (1024 ** 3);
+  const activeTransfer = primaryVm?.bootMetadata?.activeTransfer ?? null;
+  const recentLog = primaryVm?.bootMetadata?.recentLog ?? null;
+  const driveNeedsReconnect = primaryVm?.bootMetadata?.driveNeedsReconnect === true;
+  const isModelReadyStep = isLlmProfile
+    ? runtimeMode === "llm_ready" || storageFiles.some((f) => f.category === "llm")
+    : storageFiles.length > 0;
 
   const totalSec = kaggleAccount?.quota?.totalAllowedSeconds ?? 108000;
   const remainSec = kaggleAccount?.quota?.remainingSeconds ?? totalSec;
@@ -286,9 +308,27 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
     }
   }
 
+  const profileModalities =
+    activeProfile.id === "AUDIO_LIPSYNC"
+      ? ["AUDIO", "VOICE"]
+      : activeProfile.id === "VIDEO_MOTION"
+      ? ["VIDEO"]
+      : ["IMAGE"];
+  const filteredByProfile = catalogChoices.filter((m) =>
+    profileModalities.includes(String(m.modality || "").toUpperCase())
+  );
+  const profileCatalogChoices =
+    filteredByProfile.length > 0 ? filteredByProfile : catalogChoices;
+
   async function handleModelControl(
-    action: "stage_llm" | "load_llm" | "unload_llm" | "free_vram" | "stage_image_model",
-    extra?: { slug?: string; category?: string; filename?: string; force?: boolean }
+    action:
+      | "stage_llm"
+      | "load_llm"
+      | "unload_llm"
+      | "free_vram"
+      | "stage_image_model"
+      | "stage_image_pack",
+    extra?: { slug?: string; packId?: string; category?: string; filename?: string; force?: boolean }
   ) {
     if (!primaryTarget || modelControlLoading) return;
     setModelControlLoading(action);
@@ -320,6 +360,13 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
           body.result?.status === "skipped"
             ? "Image model already cached on VM!"
             : `Queued image model staging on ${primaryTarget.toUpperCase()}.`
+        );
+      } else if (action === "stage_image_pack") {
+        const s = body.summary;
+        toast.success(
+          s
+            ? `Pack '${body.packLabel}' on ${primaryTarget.toUpperCase()}: ${s.started} queued, ${s.skipped} cached${s.failed > 0 ? `, ${s.failed} failed` : ""}`
+            : `Queued image model pack on ${primaryTarget.toUpperCase()}.`
         );
       }
       onRefresh();
@@ -360,33 +407,88 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
 
   const [hotReloadLoading, setHotReloadLoading] = useState(false);
   const [syncLoading, setSyncLoading] = useState(false);
-  const [draftCellLoading, setDraftCellLoading] = useState(false);
+  const [permanentCellLoading, setPermanentCellLoading] = useState(false);
+  const [permanentCopied, setPermanentCopied] = useState(false);
+  const [rotateKeyOpen, setRotateKeyOpen] = useState(false);
+  const [rotateKeyLoading, setRotateKeyLoading] = useState(false);
 
-  async function handleCopyDraftCell() {
+  const kaggleEditUrl =
+    kind === "kaggle" && kaggleAccount?.username && kaggleAccount?.kernelSlug
+      ? `https://www.kaggle.com/code/${kaggleAccount.username}/${kaggleAccount.kernelSlug}/edit`
+      : null;
+
+  async function fetchPermanentCellCode(): Promise<{
+    pythonCode?: string;
+    primaryUrl?: string;
+    beaconUrl?: string | null;
+    error?: string;
+    ok: boolean;
+  }> {
+    if (!primaryTarget) return { ok: false, error: "No target available" };
+    const res = await fetch(
+      `/api/vm/kaggle/${encodeURIComponent(primaryTarget)}/notebook?format=python`
+    );
+    const data = await res.json();
+    return {
+      ok: res.ok,
+      pythonCode: data.pythonCode,
+      primaryUrl: data.primaryUrl,
+      beaconUrl: data.beaconUrl,
+      error: data.error,
+    };
+  }
+
+  async function handleCopyPermanentCell() {
     if (!primaryTarget) return;
-    setDraftCellLoading(true);
+    setPermanentCellLoading(true);
     try {
-      const res = await fetch(`/api/vm/${encodeURIComponent(primaryTarget)}/toggle`, {
+      const data = await fetchPermanentCellCode();
+      if (!data.ok || !data.pythonCode) {
+        toast.error(data.error || "Failed to generate Permanent Cell code");
+        return;
+      }
+      await navigator.clipboard.writeText(String(data.pythonCode));
+      setPermanentCopied(true);
+      setTimeout(() => setPermanentCopied(false), 2200);
+      toast.success(
+        `Copied permanent Kaggle cell (${data.beaconUrl ? "Drive beacon fallback enabled" : data.primaryUrl || "ready"}) — save in Kaggle & press Run anytime!`
+      );
+    } catch {
+      toast.error("Failed to copy Permanent Kaggle Cell");
+    } finally {
+      setPermanentCellLoading(false);
+    }
+  }
+
+  async function handleRotateKaggleKey() {
+    if (!primaryTarget) return;
+    setRotateKeyLoading(true);
+    try {
+      const res = await fetch(`/api/vm/kaggle/${encodeURIComponent(primaryTarget)}/config`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "draft_cell" }),
+        body: JSON.stringify({ action: "rotate_key" }),
       });
       const data = await res.json();
       if (!res.ok) {
-        toast.error(data.error || "Failed to generate Draft Cell code");
+        toast.error(data.error || "Failed to rotate Kaggle runner key");
         return;
       }
-      if (data.draftCode) {
-        await navigator.clipboard.writeText(String(data.draftCode));
+      const nextCell = await fetchPermanentCellCode().catch(() => null);
+      if (nextCell?.ok && nextCell.pythonCode) {
+        await navigator.clipboard.writeText(String(nextCell.pythonCode)).catch(() => {});
       }
+      setRotateKeyOpen(false);
       toast.success(
-        `Copied claim cell for Interactive Draft Session (${data.webhookUrl || "ready"}) — paste into Kaggle & click Run!`
+        nextCell?.ok && nextCell.pythonCode
+          ? "Rotated permanent Kaggle key & copied updated cell to clipboard!"
+          : "Rotated permanent Kaggle key. Copy a fresh Permanent Cell before your next run."
       );
       onRefresh();
     } catch {
-      toast.error("Failed to copy Kaggle Draft Cell");
+      toast.error("Failed to rotate Kaggle runner key");
     } finally {
-      setDraftCellLoading(false);
+      setRotateKeyLoading(false);
     }
   }
 
@@ -793,8 +895,8 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
               />
               <span className="font-medium">Auto-load on boot</span>
               {!autoLoadOnBoot && (
-                <span className="rounded bg-cyan-500/10 px-1 py-0.5 font-mono text-[9px] text-cyan-300">
-                  Empty Boot (0 Models)
+                <span className="rounded bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[9px] text-cyan-300">
+                  Setup-Only Boot (0 models) · load packs after boot
                 </span>
               )}
             </label>
@@ -839,7 +941,7 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
               <option value="" className="bg-zinc-900">
                 + Queue model ({selectedPrewarm.length}/3)
               </option>
-              {catalogChoices.map((m) => (
+              {profileCatalogChoices.map((m) => (
                 <option key={m.slug} value={m.slug} className="bg-zinc-900">
                   [{m.modality}] {m.displayName}
                 </option>
@@ -985,22 +1087,108 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
 
         {/* Decoupled Online Model & VRAM Loader Strip */}
         {isOnline && (
-          <div className="space-y-1.5 rounded-md border border-zinc-800 bg-zinc-950/75 px-2.5 py-2">
-            <div className="flex flex-wrap items-center justify-between gap-2 text-[10px]">
-              <div className="flex items-center gap-2">
-                <span className="font-semibold uppercase tracking-wide text-zinc-400">
-                  Model & VRAM Loader
+          <div className="space-y-2 rounded-md border border-zinc-800 bg-zinc-950/75 px-2.5 py-2">
+            {/* Guided 3-Step Flow */}
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-800/80 pb-1.5 text-[10px]">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 font-mono text-emerald-300">
+                  1. Setup Boot ✓
                 </span>
-                {typeof freeDiskGb === "number" && (
-                  <span className="font-mono text-zinc-500">
-                    /tmp free: <span className="text-zinc-300">{freeDiskGb.toFixed(1)} GB</span>
-                  </span>
-                )}
+                <span className="text-zinc-600">→</span>
+                <span
+                  className={`rounded px-1.5 py-0.5 font-mono ${
+                    isModelReadyStep
+                      ? "bg-emerald-500/15 text-emerald-300"
+                      : activeTransfer
+                      ? "bg-cyan-500/15 text-cyan-300"
+                      : "bg-amber-500/15 text-amber-300"
+                  }`}
+                >
+                  2.{" "}
+                  {activeTransfer
+                    ? "Staging Model..."
+                    : isModelReadyStep
+                    ? "Model Ready ✓"
+                    : "Stage / Load Model"}
+                </span>
+                <span className="text-zinc-600">→</span>
+                <Link
+                  href={isLlmProfile ? "/llm-studio" : "/studio"}
+                  className="rounded border border-indigo-500/35 bg-indigo-500/15 px-1.5 py-0.5 font-mono font-medium text-indigo-200 hover:bg-indigo-500/25"
+                >
+                  3. Open {isLlmProfile ? "LLM Studio" : "Studio"} →
+                </Link>
               </div>
-              {isLlmProfile && activeModelName && (
-                <span className="font-mono text-[10px] text-violet-300 truncate max-w-[200px]">
-                  Active: {activeModelName}
+              {typeof freeDiskGb === "number" && (
+                <span className="font-mono text-zinc-500">
+                  /tmp free: <span className="text-zinc-300">{freeDiskGb.toFixed(1)} GB</span>
                 </span>
+              )}
+            </div>
+
+            {driveNeedsReconnect && (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-amber-500/35 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-200">
+                <span className="flex items-center gap-1.5">
+                  <AlertTriangle className="h-3 w-3 shrink-0 text-amber-400" />
+                  Google Drive OAuth expired (invalid_grant). Retries paused.
+                </span>
+                <Link
+                  href="/settings/vault"
+                  className="rounded border border-amber-400/40 bg-amber-500/20 px-1.5 py-0.5 font-medium text-amber-100 hover:bg-amber-500/30"
+                >
+                  Reconnect Drive →
+                </Link>
+              </div>
+            )}
+
+            {activeTransfer && (
+              <div className="space-y-1 rounded border border-cyan-500/35 bg-cyan-950/25 px-2 py-1.5 text-[10px]">
+                <div className="flex items-center justify-between gap-2 font-mono text-cyan-200">
+                  <span className="truncate font-medium">
+                    Downloading {activeTransfer.filename}
+                    {(activeTransfer.queueCount ?? 1) > 1
+                      ? ` (+${(activeTransfer.queueCount ?? 1) - 1} queued)`
+                      : ""}
+                  </span>
+                  <span className="shrink-0">
+                    {activeTransfer.percentage}%
+                    {activeTransfer.speedMbps ? ` · ${activeTransfer.speedMbps.toFixed(1)} MB/s` : ""}
+                    {activeTransfer.totalBytes
+                      ? ` · ${((activeTransfer.bytesDone || 0) / 1024 ** 3).toFixed(1)}/${(activeTransfer.totalBytes / 1024 ** 3).toFixed(1)} GB`
+                      : ""}
+                  </span>
+                </div>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-800">
+                  <div
+                    className="h-full bg-cyan-400 transition-all duration-300"
+                    style={{
+                      width: `${Math.max(2, Math.min(100, activeTransfer.percentage))}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[10px]">
+              <span className="font-semibold uppercase tracking-wide text-zinc-400">
+                {isLlmProfile ? "LLM Model & VRAM Loader" : `Model Pack Loader (${activeProfile.shortTag})`}
+              </span>
+              {isLlmProfile ? (
+                activeModelName ? (
+                  <span className="font-mono text-[10px] text-violet-300 truncate max-w-[200px]">
+                    Active: {activeModelName}
+                  </span>
+                ) : (
+                  <span className="font-mono text-[10px] text-zinc-500">VRAM empty (0 models)</span>
+                )
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setShowSingleFilePicker((v) => !v)}
+                  className="font-mono text-[10px] text-zinc-400 hover:text-zinc-200"
+                >
+                  {showSingleFilePicker ? "Hide single file" : "+ Single file"}
+                </button>
               )}
             </div>
 
@@ -1050,44 +1238,142 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
                 </button>
               </div>
             ) : (
-              <div className="flex flex-wrap items-center gap-1.5">
-                <select
-                  value={selectedImageSlug || catalogChoices[0]?.slug || ""}
-                  disabled={Boolean(modelControlLoading)}
-                  onChange={(e) => setSelectedImageSlug(e.target.value)}
-                  className="h-7 min-w-0 flex-1 rounded border border-zinc-800 bg-zinc-900 px-2 font-mono text-[10px] text-zinc-200"
-                >
-                  {catalogChoices.map((m) => (
-                    <option key={m.slug} value={m.slug} className="bg-zinc-900">
-                      [{m.modality}] {m.displayName}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  disabled={Boolean(modelControlLoading) || !(selectedImageSlug || catalogChoices[0]?.slug)}
-                  onClick={() =>
-                    handleModelControl("stage_image_model", {
-                      slug: selectedImageSlug || catalogChoices[0]?.slug,
-                    })
-                  }
-                  className="inline-flex h-7 items-center gap-1 rounded border border-zinc-700 bg-zinc-800 px-2 text-[10px] font-medium text-zinc-200 hover:bg-zinc-700 disabled:opacity-45"
-                >
-                  {modelControlLoading === "stage_image_model" && <Loader2 className="h-2.5 w-2.5 animate-spin" />}
-                  Stage Model
-                </button>
-                <button
-                  type="button"
-                  disabled={Boolean(modelControlLoading)}
-                  onClick={() => handleModelControl("free_vram")}
-                  className="inline-flex h-7 items-center gap-1 rounded border border-amber-500/35 bg-amber-500/10 px-2 text-[10px] font-medium text-amber-300 hover:bg-amber-500/20 disabled:opacity-45"
-                  title="Call ComfyUI /free to unload checkpoint & clear VRAM"
-                >
-                  {modelControlLoading === "free_vram" && <Loader2 className="h-2.5 w-2.5 animate-spin" />}
-                  Free VRAM
-                </button>
+              <div className="space-y-1.5">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <select
+                    value={effectivePackId}
+                    disabled={Boolean(modelControlLoading)}
+                    onChange={(e) => setSelectedPackId(e.target.value)}
+                    className="h-7 min-w-0 flex-1 rounded border border-zinc-800 bg-zinc-900 px-2 font-mono text-[10px] text-zinc-200"
+                  >
+                    {profilePacks.map((pack) => (
+                      <option key={pack.id} value={pack.id} className="bg-zinc-900">
+                        {pack.label}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={Boolean(modelControlLoading) || !effectivePackId}
+                    onClick={() =>
+                      handleModelControl("stage_image_pack", {
+                        packId: effectivePackId,
+                      })
+                    }
+                    className="inline-flex h-7 items-center gap-1 rounded border border-cyan-500/40 bg-cyan-500/15 px-2.5 text-[10px] font-medium text-cyan-200 hover:bg-cyan-500/25 disabled:opacity-45"
+                    title="Queue all checkpoints, encoders, LoRAs, and VAE in this pack onto /tmp/models"
+                  >
+                    {modelControlLoading === "stage_image_pack" && (
+                      <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                    )}
+                    Stage Pack
+                  </button>
+                  <button
+                    type="button"
+                    disabled={Boolean(modelControlLoading)}
+                    onClick={() => handleModelControl("free_vram")}
+                    className="inline-flex h-7 items-center gap-1 rounded border border-amber-500/35 bg-amber-500/10 px-2 text-[10px] font-medium text-amber-300 hover:bg-amber-500/20 disabled:opacity-45"
+                    title="Call ComfyUI /free to unload checkpoint & clear VRAM"
+                  >
+                    {modelControlLoading === "free_vram" && <Loader2 className="h-2.5 w-2.5 animate-spin" />}
+                    Free VRAM
+                  </button>
+                </div>
+
+                {showSingleFilePicker && (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <select
+                      value={selectedImageSlug || profileCatalogChoices[0]?.slug || ""}
+                      disabled={Boolean(modelControlLoading)}
+                      onChange={(e) => setSelectedImageSlug(e.target.value)}
+                      className="h-7 min-w-0 flex-1 rounded border border-zinc-800 bg-zinc-900 px-2 font-mono text-[10px] text-zinc-200"
+                    >
+                      {profileCatalogChoices.map((m) => (
+                        <option key={m.slug} value={m.slug} className="bg-zinc-900">
+                          [{m.modality}] {m.displayName}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      disabled={
+                        Boolean(modelControlLoading) ||
+                        !(selectedImageSlug || profileCatalogChoices[0]?.slug)
+                      }
+                      onClick={() =>
+                        handleModelControl("stage_image_model", {
+                          slug: selectedImageSlug || profileCatalogChoices[0]?.slug,
+                        })
+                      }
+                      className="inline-flex h-7 items-center gap-1 rounded border border-zinc-700 bg-zinc-800 px-2 text-[10px] font-medium text-zinc-200 hover:bg-zinc-700 disabled:opacity-45"
+                    >
+                      {modelControlLoading === "stage_image_model" && (
+                        <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                      )}
+                      Stage File
+                    </button>
+                  </div>
+                )}
               </div>
             )}
+
+            {/* Expandable On-Disk Cache Inventory & Last Activity */}
+            <div className="space-y-1 border-t border-zinc-800/70 pt-1.5">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[10px]">
+                <button
+                  type="button"
+                  onClick={() => setShowDiskFiles((v) => !v)}
+                  className="inline-flex items-center gap-1 font-mono text-zinc-400 hover:text-zinc-200"
+                >
+                  {showDiskFiles ? (
+                    <ChevronDown className="h-3 w-3" />
+                  ) : (
+                    <ChevronRight className="h-3 w-3" />
+                  )}
+                  <HardDrive className="h-3 w-3 text-zinc-500" />
+                  <span>
+                    On disk: <strong className="text-zinc-200">{storageFiles.length}</strong> file
+                    {storageFiles.length === 1 ? "" : "s"} ({totalCachedGb.toFixed(1)} GB)
+                  </span>
+                </button>
+              </div>
+
+              {showDiskFiles && (
+                <div className="max-h-28 space-y-0.5 overflow-y-auto rounded border border-zinc-800/80 bg-zinc-900/60 px-2 py-1.5 font-mono text-[10px]">
+                  {storageFiles.length === 0 ? (
+                    <div className="text-zinc-500">
+                      0 models cached on disk yet (Setup-Only Boot). Stage a pack or model above.
+                    </div>
+                  ) : (
+                    storageFiles.map((f) => {
+                      const sizeMb = (f.sizeBytes || 0) / (1024 * 1024);
+                      const sizeLabel =
+                        sizeMb >= 1024
+                          ? `${(sizeMb / 1024).toFixed(2)} GB`
+                          : `${sizeMb.toFixed(0)} MB`;
+                      return (
+                        <div
+                          key={`${f.category}/${f.name}`}
+                          className="flex items-center justify-between gap-2 text-zinc-300"
+                        >
+                          <span className="truncate">
+                            <span className="text-zinc-500">{f.category}/</span>
+                            {f.name}
+                          </span>
+                          <span className="shrink-0 text-zinc-400">{sizeLabel}</span>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              )}
+
+              {recentLog && (
+                <div className="truncate font-mono text-[10px] text-zinc-500">
+                  &gt; {recentLog}
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -1226,21 +1512,49 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
             Fetch VM
           </button>
 
-          {kind === "kaggle" && !isOnline && (
-            <button
-              type="button"
-              onClick={handleCopyDraftCell}
-              disabled={draftCellLoading || actionLoading || !kaggleAccount?.configured}
-              title="Copy claim cell for an already-allotted Kaggle Interactive Draft Session without cancelling it"
-              className="inline-flex h-7 items-center gap-1 rounded-md border border-emerald-500/35 bg-emerald-500/10 px-2 text-[11px] font-medium text-emerald-200 hover:bg-emerald-500/20 disabled:opacity-40"
-            >
-              {draftCellLoading ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
-              ) : (
-                <Copy className="h-3 w-3" />
+          {kind === "kaggle" && (
+            <>
+              <button
+                type="button"
+                onClick={handleCopyPermanentCell}
+                disabled={permanentCellLoading || !kaggleAccount?.configured}
+                title="Copy reusable permanent Kaggle Interactive cell (no expiry; auto-discovers tunnel URL via Drive beacon)"
+                className="inline-flex h-7 items-center gap-1 rounded-md border border-emerald-500/35 bg-emerald-500/10 px-2 text-[11px] font-medium text-emerald-200 hover:bg-emerald-500/20 disabled:opacity-40"
+              >
+                {permanentCellLoading ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : permanentCopied ? (
+                  <Check className="h-3 w-3 text-emerald-400" />
+                ) : (
+                  <Copy className="h-3 w-3" />
+                )}
+                Permanent Cell
+              </button>
+
+              {kaggleEditUrl && (
+                <a
+                  href={kaggleEditUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={`Open ${kaggleAccount?.kernelSlug} in Kaggle Interactive Editor (/edit)`}
+                  className="inline-flex h-7 items-center gap-1 rounded-md border border-zinc-800 bg-zinc-900 px-2 text-[11px] font-medium text-zinc-200 hover:border-violet-500/40 hover:bg-zinc-800"
+                >
+                  Open Kaggle
+                  <ExternalLink className="h-3 w-3 text-zinc-400" />
+                </a>
               )}
-              Draft Cell
-            </button>
+
+              <button
+                type="button"
+                onClick={() => setRotateKeyOpen(true)}
+                disabled={!kaggleAccount?.configured}
+                title="Rotate permanent Kaggle runner key (revokes old saved cells)"
+                className="inline-flex h-7 items-center gap-1 rounded-md border border-zinc-800 bg-zinc-900 px-2 text-[11px] font-medium text-zinc-300 hover:border-amber-500/40 hover:bg-amber-500/10 hover:text-amber-200 disabled:opacity-40"
+              >
+                <KeyRound className="h-3 w-3" />
+                Rotate Key
+              </button>
+            </>
           )}
 
           {anyActive && primaryVm?.publicUrl && (
@@ -1353,6 +1667,48 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
             ) : (
               <div className="text-zinc-500">No checkpoints currently cached on this GPU.</div>
             )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={rotateKeyOpen} onOpenChange={setRotateKeyOpen}>
+        <DialogContent className="border-zinc-800 bg-[#111114] text-zinc-100 sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-sm font-semibold">
+              <KeyRound className="h-4 w-4 text-amber-400" />
+              Rotate Permanent Kaggle Runner Key
+            </DialogTitle>
+            <DialogDescription className="text-xs text-zinc-400">
+              Rotating the key for{" "}
+              <span className="font-mono text-zinc-200">
+                {kaggleAccount?.displayName || primaryTarget}
+              </span>{" "}
+              immediately invalidates any previously copied Kaggle Permanent Cells for this VM
+              slot. Clicking Stop only ends the active container and keeps your existing key intact.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={() => setRotateKeyOpen(false)}
+              disabled={rotateKeyLoading}
+              className="inline-flex h-8 items-center rounded-md border border-zinc-800 bg-zinc-900 px-3 text-xs text-zinc-300 hover:bg-zinc-800"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleRotateKaggleKey}
+              disabled={rotateKeyLoading}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md bg-amber-600 px-3 text-xs font-medium text-white hover:bg-amber-500 disabled:opacity-50"
+            >
+              {rotateKeyLoading ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <KeyRound className="h-3.5 w-3.5" />
+              )}
+              Rotate Key &amp; Copy Cell
+            </button>
           </div>
         </DialogContent>
       </Dialog>

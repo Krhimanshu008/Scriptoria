@@ -47,6 +47,18 @@ export interface BootMetadata {
   disk?: { totalGb: number; usedGb: number; freeGb: number } | null;
   cachedModels?: Record<string, string[]>;
   storageFiles?: Array<{ category: string; name: string; sizeBytes: number }>;
+  activeTransfer?: {
+    filename: string;
+    category?: string;
+    percentage: number;
+    speedMbps?: number;
+    bytesDone?: number;
+    totalBytes?: number;
+    queueCount?: number;
+    source?: string;
+  } | null;
+  recentLog?: string | null;
+  driveNeedsReconnect?: boolean;
 }
 
 export function parseBootMetadata(jsonStr: string | null | undefined): BootMetadata | null {
@@ -88,7 +100,10 @@ export function mergeBootMetadata(
         rawTelem.cachedModels ||
         rawTelem.storageFiles ||
         rawTelem.disk ||
-        rawTelem.hotModels
+        rawTelem.hotModels ||
+        rawTelem.activeTransfer !== undefined ||
+        rawTelem.recentLog !== undefined ||
+        rawTelem.driveNeedsReconnect !== undefined
     ) ||
     Boolean(Object.keys(prev).length > 0);
 
@@ -144,7 +159,41 @@ export function mergeBootMetadata(
     storageFiles: Array.isArray(rawTelem.storageFiles)
       ? (rawTelem.storageFiles as BootMetadata["storageFiles"])
       : prev.storageFiles,
+    activeTransfer:
+      rawTelem.activeTransfer === null
+        ? null
+        : rawTelem.activeTransfer && typeof rawTelem.activeTransfer === "object"
+        ? (rawTelem.activeTransfer as BootMetadata["activeTransfer"])
+        : prev.activeTransfer,
+    recentLog:
+      rawTelem.recentLog === null
+        ? null
+        : typeof rawTelem.recentLog === "string"
+        ? rawTelem.recentLog
+        : prev.recentLog,
+    driveNeedsReconnect:
+      typeof rawTelem.driveNeedsReconnect === "boolean"
+        ? rawTelem.driveNeedsReconnect
+        : prev.driveNeedsReconnect,
   };
+}
+
+export function markBootMetadataOffline(
+  existingJson: string | null | undefined
+): string | null {
+  const prev = parseBootMetadata(existingJson);
+  if (!prev) return existingJson ?? null;
+  return JSON.stringify({
+    ...prev,
+    runtimeMode: "offline",
+    activeModelName: null,
+    activeModelRepo: null,
+    llmEndpoints: [],
+    hotModels: undefined,
+    activeTransfer: null,
+    recentLog: null,
+    driveNeedsReconnect: false,
+  });
 }
 
 export interface PublicVmInstance {

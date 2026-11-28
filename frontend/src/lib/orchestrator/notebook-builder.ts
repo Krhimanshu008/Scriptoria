@@ -189,10 +189,12 @@ def _write_rclone_conf_unlocked(push_rc=True):
     return True
 
 def refresh_gdrive_oauth_in_vm(force=False):
-    global GDRIVE_TOKEN_EXPIRY_EPOCH, NEEDS_GDRIVE_SYNC
+    global GDRIVE_TOKEN_EXPIRY_EPOCH, NEEDS_GDRIVE_SYNC, GDRIVE_AUTH_BROKEN
     with RCLONE_LOCK:
         rtok = str(GDRIVE_CFG.get("refresh_token") or "").strip()
         if not rtok or not GDRIVE_CLIENT_ID or not GDRIVE_CLIENT_SECRET:
+            return False
+        if GDRIVE_AUTH_BROKEN and not force:
             return False
         if not force and GDRIVE_TOKEN_EXPIRY_EPOCH > 0 and time.time() < (GDRIVE_TOKEN_EXPIRY_EPOCH - 600):
             return True
@@ -215,6 +217,7 @@ def refresh_gdrive_oauth_in_vm(force=False):
                     GDRIVE_CFG["expiry"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + max(60, expires_in - 60)))
                     GDRIVE_TOKEN_EXPIRY_EPOCH = time.time() + max(60, expires_in - 60)
                     NEEDS_GDRIVE_SYNC = False
+                    GDRIVE_AUTH_BROKEN = False
                     _write_rclone_conf_unlocked(push_rc=True)
                     return True
         except urllib.error.HTTPError as he:
@@ -224,17 +227,31 @@ def refresh_gdrive_oauth_in_vm(force=False):
             except Exception:
                 pass
             if "invalid_grant" in err_body.lower():
-                NEEDS_GDRIVE_SYNC = True
-            log_event(f"OAuth refresh notice (HTTP {he.code}): {err_body[:160] or he.reason}", category="RCLONE", level="WARN")
+                if not GDRIVE_AUTH_BROKEN:
+                    GDRIVE_AUTH_BROKEN = True
+                    NEEDS_GDRIVE_SYNC = True
+                    log_event("Google Drive OAuth token expired/revoked (invalid_grant). Reconnect Google Drive in Settings Vault to re-enable Drive mirror.", category="RCLONE", level="WARN")
+            else:
+                log_event(f"OAuth refresh notice (HTTP {he.code}): {err_body[:160] or he.reason}", category="RCLONE", level="WARN")
         except Exception as e:
             log_event(f"OAuth refresh notice: {e}", category="RCLONE", level="WARN")
         return False
 
 def apply_synced_gdrive_token(payload_dict, updated_at_ms=None):
-    global GDRIVE_CFG, GDRIVE_CLIENT_ID, GDRIVE_CLIENT_SECRET, GDRIVE_TOKEN_EXPIRY_EPOCH, GDRIVE_SYNCED_AT_MS, NEEDS_GDRIVE_SYNC
+    global GDRIVE_CFG, GDRIVE_CLIENT_ID, GDRIVE_CLIENT_SECRET, GDRIVE_TOKEN_EXPIRY_EPOCH, GDRIVE_SYNCED_AT_MS, NEEDS_GDRIVE_SYNC, GDRIVE_AUTH_BROKEN
     if not isinstance(payload_dict, dict):
         return False
     with RCLONE_LOCK:
+        incoming_ts = 0
+        if updated_at_ms:
+            try:
+                incoming_ts = int(updated_at_ms)
+            except Exception:
+                incoming_ts = 0
+        # Prevent re-applying identical expired Vault token in a loop every 15s heartbeat
+        if GDRIVE_AUTH_BROKEN and incoming_ts and incoming_ts <= GDRIVE_SYNCED_AT_MS:
+            NEEDS_GDRIVE_SYNC = False
+            return False
         cfg = dict(payload_dict)
         cid = str(cfg.pop("client_id", "") or GDRIVE_CLIENT_ID or "").strip()
         csec = str(cfg.pop("client_secret", "") or GDRIVE_CLIENT_SECRET or "").strip()
@@ -245,11 +262,9 @@ def apply_synced_gdrive_token(payload_dict, updated_at_ms=None):
         GDRIVE_CFG = cfg
         GDRIVE_TOKEN_EXPIRY_EPOCH = _parse_expiry_epoch(cfg.get("expiry"))
         NEEDS_GDRIVE_SYNC = False
-        if updated_at_ms:
-            try:
-                GDRIVE_SYNCED_AT_MS = max(GDRIVE_SYNCED_AT_MS, int(updated_at_ms))
-            except Exception:
-                pass
+        GDRIVE_AUTH_BROKEN = False
+        if incoming_ts > 0:
+            GDRIVE_SYNCED_AT_MS = max(GDRIVE_SYNCED_AT_MS, incoming_ts)
         _write_rclone_conf_unlocked(push_rc=True)
         log_event("Hot-reloaded Google Drive OAuth token from Scriptoria Vault without VM restart.", category="RCLONE", level="SUCCESS")
         return True
@@ -294,6 +309,89 @@ except urllib.error.HTTPError as err:
 if payload:
     print("Runtime active.", flush=True)
     exec(compile(payload["pythonCode"], "runtime_worker.py", "exec"), {"__name__": "__main__"})
+`;
+}
+
+export const KAGGLE_RUNNER_PROVIDER = "kaggle-runner";
+
+export interface KagglePermanentLauncherConfig {
+  target: string;
+  runnerToken: string;
+  primaryUrl: string;
+  beaconUrl?: string | null;
+}
+
+/**
+ * Generates a permanent, self-adapting Python launcher cell for Kaggle Interactive (/edit)
+ * or TPU notebooks. Uses a rotatable per-VM runnerToken (never expires on reboot) and an
+ * optional public-by-link Google Drive beacon fallback across local tunnel restarts.
+ */
+export function buildKagglePermanentLauncherCode(cfg: KagglePermanentLauncherConfig): string {
+  const cleanPrimary = cfg.primaryUrl.replace(/\/$/, "");
+  const cleanBeacon = (cfg.beaconUrl || "").trim();
+  return `import json, urllib.request, urllib.error
+
+TARGET = ${JSON.stringify(cfg.target)}
+RUNNER_TOKEN = ${JSON.stringify(cfg.runnerToken)}
+PRIMARY_URL = ${JSON.stringify(cleanPrimary)}
+BEACON_URL = ${JSON.stringify(cleanBeacon)}
+
+def _http_json(url, data=None, timeout=6):
+    headers = {"User-Agent": "Scriptoria-Runner/1.0"}
+    body = None
+    method = "GET"
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+        body = json.dumps(data).encode("utf-8")
+        method = "POST"
+    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+def _probe_health(base_url):
+    if not base_url:
+        return False
+    try:
+        res = _http_json(f"{base_url.rstrip('/')}/api/health", timeout=4)
+        return bool(res)
+    except Exception:
+        return False
+
+def _resolve_app_url():
+    if _probe_health(PRIMARY_URL):
+        return PRIMARY_URL.rstrip("/")
+    if BEACON_URL:
+        print("[SCRIPTORIA] Primary URL unreachable; checking Google Drive tunnel beacon...", flush=True)
+        try:
+            beacon = _http_json(BEACON_URL, timeout=10)
+            discovered = str(beacon.get("appUrl") or "").strip().rstrip("/")
+            if discovered and _probe_health(discovered):
+                print(f"[SCRIPTORIA] Discovered live tunnel via Drive beacon: {discovered}", flush=True)
+                return discovered
+        except Exception as exc:
+            print(f"[SCRIPTORIA] Drive beacon lookup failed: {exc}", flush=True)
+    raise RuntimeError(
+        f"Scriptoria unreachable at {PRIMARY_URL} (and Drive beacon). Ensure Scriptoria is running cleanly, then re-run this cell."
+    )
+
+app_url = _resolve_app_url()
+print(f"[SCRIPTORIA] Claiming permanent interactive runner for {TARGET}...", flush=True)
+try:
+    payload = _http_json(
+        f"{app_url}/api/vm/kaggle/claim",
+        data={"target": TARGET, "runnerToken": RUNNER_TOKEN},
+        timeout=30,
+    )
+except urllib.error.HTTPError as err:
+    err_body = err.read().decode("utf-8", errors="ignore")
+    if err.code in (401, 403):
+        raise RuntimeError(
+            f"Runner key rejected ({err.code}). Click 'Permanent Cell' in Scriptoria /vms to copy the updated key. ({err_body})"
+        )
+    raise RuntimeError(f"Kaggle permanent claim failed ({err.code}): {err_body}")
+
+print(f"[SCRIPTORIA] Connected ({payload.get('accountAlias', 'acc1')}). Booting runtime worker...", flush=True)
+exec(compile(payload["pythonCode"], f"scriptoria_{TARGET}_worker.py", "exec"), {"__name__": "__main__"})
 `;
 }
 
@@ -396,6 +494,9 @@ GDRIVE_CLIENT_SECRET = ""
 GDRIVE_TOKEN_EXPIRY_EPOCH = 0.0
 GDRIVE_SYNCED_AT_MS = int(time.time() * 1000)
 NEEDS_GDRIVE_SYNC = False
+GDRIVE_AUTH_BROKEN = False
+ACTIVE_LLM_TRANSFER = None
+RECENT_LOG_LINE = None
 TUNNEL_URL = None
 CURRENT_STEP = 1
 T_BOOT_START = time.time()
@@ -425,6 +526,9 @@ except Exception:
     pass
 
 def log_event(msg, category="SYSTEM", level="INFO"):
+    global RECENT_LOG_LINE
+    clean_one_line = (" ".join(str(msg).split()))[:140]
+    RECENT_LOG_LINE = f"[{category}] {clean_one_line}"
     line = f"[{category}] {msg}"
     try:
         with open("/tmp/scriptoria_worker.log", "a", encoding="utf-8") as _wl:
@@ -441,6 +545,31 @@ def log_event(msg, category="SYSTEM", level="INFO"):
 def has_pending_logs():
     with LOG_LOCK:
         return len(PENDING_LOGS) > 0
+
+def _get_active_transfer():
+    try:
+        with FETCH_LOCK:
+            active = [
+                j for j in FETCH_JOBS.values()
+                if isinstance(j, dict) and j.get("status") in ("downloading", "queued")
+            ]
+        if active:
+            cur = next((j for j in active if j.get("status") == "downloading"), active[0])
+            return {
+                "filename": cur.get("filename") or "model",
+                "category": cur.get("category") or "checkpoints",
+                "percentage": int(cur.get("percentage") or 0),
+                "speedMbps": float(cur.get("speedMbps") or 0),
+                "bytesDone": int(cur.get("bytesDone") or 0),
+                "totalBytes": int(cur.get("totalBytes") or 0),
+                "queueCount": len(active),
+                "source": cur.get("source") or "mirror",
+            }
+    except Exception:
+        pass
+    if isinstance(ACTIVE_LLM_TRANSFER, dict):
+        return dict(ACTIVE_LLM_TRANSFER)
+    return None
 
 ${buildPythonRcloneHelpers()}
 
@@ -556,6 +685,7 @@ def post_heartbeat(step, status="STARTING", telemetry=None):
     telem["needsGdriveSync"] = bool(NEEDS_GDRIVE_SYNC)
     telem["gdriveSyncedAtMs"] = GDRIVE_SYNCED_AT_MS
     telem["driveHealthy"] = bool(GDRIVE_HEALTHY)
+    telem["driveNeedsReconnect"] = bool(GDRIVE_AUTH_BROKEN)
     telem["headlessMode"] = bool(HEADLESS_MODE)
     telem["modelFetch"] = bool(HEADLESS_MODE)
     telem["autoLoadOnBoot"] = bool(AUTO_LOAD_ON_BOOT)
@@ -564,6 +694,8 @@ def post_heartbeat(step, status="STARTING", telemetry=None):
     telem["activeModelRepo"] = ACTIVE_MODEL_REPO
     telem["topologyMode"] = TOPOLOGY_MODE
     telem["hotModels"] = {str(k): list(v) for k, v in HOT_MODELS_BY_PORT.items()}
+    telem["activeTransfer"] = _get_active_transfer()
+    telem["recentLog"] = RECENT_LOG_LINE
     if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B", "LLM_LIGHTWEIGHT_SWARM"):
         telem["llmTopologyMode"] = LLM_TOPO_MODE
         telem["llmEndpoints"] = list(LLM_ACTIVE_ENDPOINTS)
@@ -644,6 +776,7 @@ def _record_cmd_ack(cmd_id, status="COMPLETED", msg=None):
         })
 
 def _execute_vm_command(cmd):
+    globals()["LAST_ACTIVE"] = time.time()
     cmd_id = str(cmd.get("id") or "")
     action = str(cmd.get("action") or "").upper()
     try:
@@ -691,15 +824,20 @@ def _schedule_vm_commands(cmds):
             CMD_SEEN_IDS.add(cid)
         threading.Thread(target=_execute_vm_command, args=(cmd,), daemon=True).start()
 
+def _worker_auth_headers(extra=None):
+    hdrs = {
+        "Authorization": f"VmToken {REG_JWT}",
+        "User-Agent": "Scriptoria-HeadlessWorker/1.0",
+    }
+    if isinstance(extra, dict):
+        hdrs.update(extra)
+    return hdrs
+
 def _worker_api_post(path, body_dict, timeout=20):
     req = urllib.request.Request(
         f"{APP_URL}{path}",
         data=json.dumps(body_dict).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"VmToken {REG_JWT}",
-            "User-Agent": "Scriptoria-HeadlessWorker/1.0",
-        },
+        headers=_worker_auth_headers({"Content-Type": "application/json"}),
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -1607,9 +1745,8 @@ if not HEADLESS_MODE:
     threading.Thread(target=setup_cloudflared, daemon=True).start()
 else:
     log_event("Safe Headless Mode active (tunnel/proxy disabled; outbound worker polling enabled).", category="NETWORK", level="INFO")
-if PREWARM_MODELS and AUTO_LOAD_ON_BOOT:
-    aria2_started = True
-    threading.Thread(target=setup_aria2, daemon=True).start()
+aria2_started = True
+threading.Thread(target=setup_aria2, daemon=True).start()
 uv_thread = threading.Thread(target=setup_uv, daemon=True)
 uv_thread.start()
 rclone_thread = threading.Thread(target=setup_rclone, daemon=True)
@@ -1739,55 +1876,118 @@ def _resolve_llama_bin():
     return "/tmp/llama_bin/llama-server"
 
 def _fast_download_hf(repo_id, filename, dst_dir="/tmp/models/llm/qwen3_vl_8b", label="Model"):
+    global ACTIVE_LLM_TRANSFER
     os.makedirs(dst_dir, exist_ok=True)
-    final_path = os.path.join(dst_dir, os.path.basename(filename))
+    base_fn = os.path.basename(filename)
+    final_path = os.path.join(dst_dir, base_fn)
     if os.path.exists(final_path) and os.path.getsize(final_path) > 1000000:
-        log_event(f"Local cache hit for {os.path.basename(filename)} ({round(os.path.getsize(final_path)/(1024**3), 2)}GB)", category="SYSTEM", level="SUCCESS")
+        log_event(f"Local cache hit for {base_fn} ({round(os.path.getsize(final_path)/(1024**3), 2)}GB)", category="SYSTEM", level="SUCCESS")
         return final_path
     try:
         free_gb = shutil.disk_usage("/tmp").free / (1024 ** 3)
         if free_gb < 1.5:
-            raise RuntimeError(f"Insufficient /tmp free disk space ({free_gb:.1f} GB free) to download {os.path.basename(filename)}. Attach a 0-GPU Qwen Dataset or free cache.")
+            raise RuntimeError(f"Insufficient /tmp free disk space ({free_gb:.1f} GB free) to download {base_fn}. Attach a 0-GPU Qwen Dataset or free cache.")
     except RuntimeError:
         raise
     except Exception:
         pass
     hf_url = f"https://huggingface.co/{repo_id}/resolve/main/{filename}"
+    total_bytes = 0
+    try:
+        head_req = urllib.request.Request(hf_url, method="HEAD", headers={"User-Agent": "Scriptoria-VM/3.0"})
+        with urllib.request.urlopen(head_req, timeout=5) as hr:
+            total_bytes = int(hr.headers.get("Content-Length") or 0)
+    except Exception:
+        total_bytes = 0
     part_path = final_path + ".part"
     t0 = time.time()
     last_log = time.time()
     log_event(f"Fast-downloading {filename} from Hugging Face CDN (16 parallel streams)...", category="DOWNLOAD")
-    if shutil.which("aria2c"):
-        cmd = [
-            "aria2c", "-x", "16", "-s", "16", "-k", "4M",
-            "--file-allocation=none", "--allow-overwrite=true",
-            "--auto-file-renaming=false", "--summary-interval=1",
-            "-d", dst_dir, "-o", os.path.basename(part_path),
-            hf_url
-        ]
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        while proc.poll() is None:
-            if os.path.exists(part_path):
-                sz = os.path.getsize(part_path)
-                now = time.time()
-                if now - last_log >= 5:
-                    spd = sz / max(0.1, now - t0)
-                    spd_mb = round(spd / (1024 * 1024), 1)
-                    log_event(f"[{label}] Transferred {round(sz/(1024**3), 2)}GB @ {spd_mb} MB/s", category="DOWNLOAD")
-                    last_log = now
-            time.sleep(1)
-        if proc.returncode == 0 and os.path.exists(part_path):
-            os.replace(part_path, final_path)
-            dur = round(time.time() - t0, 1)
-            spd_mb = round(os.path.getsize(final_path) / (max(0.1, dur) * 1024 * 1024), 1)
-            log_event(f"[{label}] {os.path.basename(final_path)} ready in {dur}s ({spd_mb} MB/s)!", category="DOWNLOAD", level="SUCCESS")
-            return final_path
-    uv_thread.join(timeout=30)
-    from huggingface_hub import hf_hub_download
-    dl_p = hf_hub_download(repo_id=repo_id, filename=filename, local_dir=dst_dir)
-    if os.path.abspath(dl_p) != os.path.abspath(final_path) and os.path.exists(dl_p):
-        shutil.move(dl_p, final_path)
-    return final_path
+    ACTIVE_LLM_TRANSFER = {
+        "filename": base_fn,
+        "category": "llm",
+        "percentage": 0,
+        "speedMbps": 0,
+        "bytesDone": 0,
+        "totalBytes": total_bytes,
+        "queueCount": 1,
+        "source": "huggingface",
+    }
+    def _update_llm_dl_progress(sz, last_log_ref):
+        global ACTIVE_LLM_TRANSFER, LAST_ACTIVE
+        now = time.time()
+        LAST_ACTIVE = now
+        spd = sz / max(0.1, now - t0)
+        spd_mb = round(spd / (1024 * 1024), 1)
+        pct = min(99, round((sz / total_bytes) * 100)) if total_bytes > 0 else 0
+        ACTIVE_LLM_TRANSFER = {
+            "filename": base_fn,
+            "category": "llm",
+            "percentage": pct,
+            "speedMbps": spd_mb,
+            "bytesDone": sz,
+            "totalBytes": total_bytes,
+            "queueCount": 1,
+            "source": "huggingface",
+        }
+        if now - last_log_ref[0] >= 5:
+            log_event(f"[{label}] Transferred {round(sz/(1024**3), 2)}GB ({pct}%) @ {spd_mb} MB/s", category="DOWNLOAD")
+            last_log_ref[0] = now
+
+    try:
+        if shutil.which("aria2c") is None:
+            setup_aria2()
+        if shutil.which("aria2c"):
+            cmd = [
+                "aria2c", "-x", "16", "-s", "16", "-k", "4M",
+                "--file-allocation=none", "--allow-overwrite=true",
+                "--auto-file-renaming=false", "--summary-interval=1",
+                "-d", dst_dir, "-o", os.path.basename(part_path),
+                hf_url
+            ]
+            last_log_ref = [last_log]
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            while proc.poll() is None:
+                if os.path.exists(part_path):
+                    _update_llm_dl_progress(os.path.getsize(part_path), last_log_ref)
+                else:
+                    globals()["LAST_ACTIVE"] = time.time()
+                time.sleep(1)
+            if proc.returncode == 0 and os.path.exists(part_path):
+                os.replace(part_path, final_path)
+                dur = round(time.time() - t0, 1)
+                spd_mb = round(os.path.getsize(final_path) / (max(0.1, dur) * 1024 * 1024), 1)
+                globals()["MODEL_SCAN_DIRTY"] = True
+                log_event(f"[{label}] {base_fn} ready in {dur}s ({spd_mb} MB/s)!", category="DOWNLOAD", level="SUCCESS")
+                return final_path
+        uv_thread.join(timeout=30)
+        stop_mon = threading.Event()
+        def _watch_hf_incomplete():
+            from pathlib import Path as _P
+            last_log_ref = [last_log]
+            while not stop_mon.is_set():
+                try:
+                    cands = list(_P(dst_dir).rglob("*.incomplete"))
+                    if cands:
+                        sz = max(p.stat().st_size for p in cands)
+                        _update_llm_dl_progress(sz, last_log_ref)
+                    else:
+                        globals()["LAST_ACTIVE"] = time.time()
+                except Exception:
+                    pass
+                stop_mon.wait(1.0)
+        threading.Thread(target=_watch_hf_incomplete, daemon=True).start()
+        try:
+            from huggingface_hub import hf_hub_download
+            dl_p = hf_hub_download(repo_id=repo_id, filename=filename, local_dir=dst_dir)
+        finally:
+            stop_mon.set()
+        if os.path.abspath(dl_p) != os.path.abspath(final_path) and os.path.exists(dl_p):
+            shutil.move(dl_p, final_path)
+        globals()["MODEL_SCAN_DIRTY"] = True
+        return final_path
+    finally:
+        ACTIVE_LLM_TRANSFER = None
 
 # -------------------------------------------------------------
 # 3B. Dedicated LLM Nodes (LLM_QWEN_VLM, LLM_QWEN_TEXT_TURBO, LLM_QWEN_MOE_35B & LLM_QWEN_FAST_8B on Dual-T4)
@@ -2336,17 +2536,22 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
     _VM_CMD_HANDLERS["llm_command"] = _handle_llm_command
 
     if AUTO_LOAD_ON_BOOT:
-        log_event(f"autoLoadOnBoot enabled — loading default LLM for {PROFILE_ID}...", category="SYSTEM")
-        try:
-            start_llm_workers()
-        except Exception as _boot_err:
-            stop_llm_workers(update_mode=True)
-            log_event(f"Auto-load fallback to Idle Compute Mode: {_boot_err}", category="SYSTEM", level="WARN")
+        RUNTIME_MODE = "loading_model"
+        ACTIVE_MODEL_NAME = LLM_MODEL_REPO
+        log_event(f"Setup complete; autoLoadOnBoot queued in background for {PROFILE_ID}...", category="SYSTEM")
+        def _bg_autoload_llm():
+            try:
+                start_llm_workers()
+                post_heartbeat(5, "ONLINE")
+            except Exception as _boot_err:
+                stop_llm_workers(update_mode=True)
+                log_event(f"Auto-load fallback to Idle Compute Mode: {_boot_err}", category="SYSTEM", level="WARN")
+        threading.Thread(target=_bg_autoload_llm, daemon=True).start()
     else:
         RUNTIME_MODE = "idle_empty"
         ACTIVE_MODEL_NAME = None
         ACTIVE_MODEL_REPO = None
-        log_event("Pure Compute Boot active (0 models auto-downloaded or loaded in VRAM). Use GPU Cluster or LLM Studio to Stage/Load when ready.", category="SYSTEM", level="SUCCESS")
+        log_event("Setup-Only Boot ready (0 models downloaded or loaded in VRAM). Use Model & VRAM Loader to Stage or Load a model when needed.", category="SYSTEM", level="SUCCESS")
 
     def _tail_llama_log(log_path, label):
         while not os.path.exists(log_path):
@@ -2651,8 +2856,9 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
 
         if RCLONE_READY:
             refresh_gdrive_oauth_in_vm(force=False)
-        hb_int = 10 if all_ready else 5
-        if next_step != _llm_last_step or has_pending_logs() or (time.time() - LAST_HB_SENT) >= hb_int:
+        _active_tx = _get_active_transfer()
+        hb_int = 3 if _active_tx else (10 if all_ready else 5)
+        if next_step != _llm_last_step or has_pending_logs() or _active_tx is not None or (time.time() - LAST_HB_SENT) >= hb_int:
             post_heartbeat(next_step, next_status, telem)
             _llm_last_step = next_step
 
@@ -2671,7 +2877,7 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
             log_event("LLM idle timeout reached. Stopping to preserve Kaggle quota.", category="ACTION", level="WARN")
             post_heartbeat(0, "OFFLINE", {})
             break
-        time.sleep(5 if all_ready else 2)
+        time.sleep(2 if (_active_tx is not None or not all_ready) else 5)
 
     stop_llm_workers()
     sys.exit(0)
@@ -3520,7 +3726,7 @@ def _headless_worker_loop(slot_idx, worker_target):
                             pass
                     if not os.path.exists(dst_in) and dep_out.get("previewUrl") and str(dep_out["previewUrl"]).startswith("/api/outputs/"):
                         try:
-                            dl_req = urllib.request.Request(f"{APP_URL}{dep_out['previewUrl']}", headers=_headers())
+                            dl_req = urllib.request.Request(f"{APP_URL}{dep_out['previewUrl']}", headers=_worker_auth_headers())
                             with urllib.request.urlopen(dl_req, timeout=60) as dl_resp:
                                 with open(dst_in, "wb") as dl_f:
                                     dl_f.write(dl_resp.read())
@@ -3546,7 +3752,7 @@ def _headless_worker_loop(slot_idx, worker_target):
                             dst_ref = os.path.join(in_dir, safe_name)
                             if not os.path.exists(dst_ref):
                                 asset_url = f"{APP_URL}/api/v1/workers/ref-asset?kit={_up.quote(kit_name)}&path={_up.quote(rel_ref_path)}"
-                                ref_req = urllib.request.Request(asset_url, headers=_headers())
+                                ref_req = urllib.request.Request(asset_url, headers=_worker_auth_headers())
                                 with urllib.request.urlopen(ref_req, timeout=60) as ref_resp:
                                     with open(dst_ref, "wb") as rf_out:
                                         rf_out.write(ref_resp.read())
@@ -3700,11 +3906,13 @@ while True:
         refresh_gdrive_oauth_in_vm(force=False)
 
     steady_poll = all_ready or (any_ready and (time.time() - t_loop_start) > 90)
-    hb_interval = 10 if steady_poll else 6
+    _active_tx = _get_active_transfer()
+    hb_interval = 3 if _active_tx else (10 if steady_poll else 6)
     if (
         next_step != last_step_sent
         or ready_count != last_ready_count
         or has_pending_logs()
+        or _active_tx is not None
         or (time.time() - LAST_HB_SENT) >= hb_interval
     ):
         post_heartbeat(next_step, next_status, telem)
@@ -3729,7 +3937,7 @@ while True:
             except Exception:
                 pass
         break
-    time.sleep(8 if steady_poll else 2)
+    time.sleep(2 if (_active_tx is not None or not steady_poll) else 8)
 `;
 }
 
@@ -3771,36 +3979,68 @@ exec(compile(payload["pythonCode"], f"scriptoria_{TARGET}_worker.py", "exec"), {
 }
 
 /**
- * Wraps Python bootstrap code inside a ready-to-run Colab T4 .ipynb document.
+ * Wraps Python bootstrap code inside a ready-to-run Jupyter .ipynb document.
  */
-function wrapColabNotebookDocument(target: string, pyCode: string) {
+function wrapJupyterNotebookDocument<T extends Record<string, unknown>>(opts: {
+  title: string;
+  intro: string;
+  pyCode: string;
+  metadata: T;
+}) {
   return {
     cells: [
       {
         cell_type: "markdown",
         metadata: {},
-        source: [
-          `# Scriptoria Colab GPU Worker (${target})\n`,
-          "Click **Runtime ➔ Run all** (`Ctrl+F9`). Automatically renews your Scriptoria session ID, mounts Rclone GDrive streaming, and starts ComfyUI + Caddy ingress.\n",
-        ],
+        source: [`# ${opts.title}\n`, `${opts.intro}\n`],
       },
       {
         cell_type: "code",
         execution_count: null,
         metadata: {},
         outputs: [],
-        source: pyCode.split("\n").map((line) => `${line}\n`),
+        source: opts.pyCode.split("\n").map((line) => `${line}\n`),
       },
     ],
-    metadata: {
-      accelerator: "GPU",
-      colab: { gpuType: "T4", provenance: [] },
-      kernelspec: { display_name: "Python 3", language: "python", name: "python3" },
-      language_info: { name: "python", version: "3.10.12" },
-    },
+    metadata: Object.assign(
+      {
+        kernelspec: { display_name: "Python 3", language: "python", name: "python3" },
+        language_info: { name: "python", version: "3.10.12" },
+      },
+      opts.metadata
+    ),
     nbformat: 4,
     nbformat_minor: 4,
   };
+}
+
+/**
+ * Wraps Python bootstrap code inside a ready-to-run Colab T4 .ipynb document.
+ */
+function wrapColabNotebookDocument(target: string, pyCode: string) {
+  return wrapJupyterNotebookDocument({
+    title: `Scriptoria Colab GPU Worker (${target})`,
+    intro:
+      "Click **Runtime ➔ Run all** (`Ctrl+F9`). Automatically renews your Scriptoria session ID, mounts Rclone GDrive streaming, and starts ComfyUI + Caddy ingress.",
+    pyCode,
+    metadata: {
+      accelerator: "GPU",
+      colab: { gpuType: "T4", provenance: [] },
+    },
+  });
+}
+
+export function buildKaggleLauncherNotebookJson(cfg: KagglePermanentLauncherConfig) {
+  const isTpu = cfg.target.startsWith("tpu");
+  return wrapJupyterNotebookDocument({
+    title: `Scriptoria Kaggle Permanent Worker (${cfg.target})`,
+    intro:
+      "Press **Run** in Kaggle Interactive Editor (`/edit`). Re-connects to Scriptoria automatically using your permanent key (and Drive tunnel beacon on localhost).",
+    pyCode: buildKagglePermanentLauncherCode(cfg),
+    metadata: {
+      accelerator: isTpu ? "TPU" : "GPU",
+    },
+  });
 }
 
 export function buildColabLauncherNotebookJson(cfg: ColabLauncherConfig) {

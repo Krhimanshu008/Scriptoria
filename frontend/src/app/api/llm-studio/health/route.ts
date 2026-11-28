@@ -44,7 +44,7 @@ export async function GET() {
 
         if (headless) {
           const hbAgeMs = vm.lastHeartbeat ? Date.now() - vm.lastHeartbeat.getTime() : 999_999;
-          reachable = hbAgeMs < 90_000;
+          reachable = hbAgeMs < 240_000;
           probeLatencyMs = reachable ? 15 : null;
           loadedModel =
             meta?.llmEndpoints?.[0]?.model ||

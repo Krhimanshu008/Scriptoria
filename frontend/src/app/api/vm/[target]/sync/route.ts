@@ -7,6 +7,8 @@ import { KaggleOrchestrator } from "@/lib/orchestrator/kaggle-client";
 import { VmGateway } from "@/lib/orchestrator/vm-gateway";
 import {
   getKaggleKernelSlug,
+  markBootMetadataOffline,
+  parseBootMetadata,
 } from "@/lib/orchestrator/vm-helpers";
 import { appendSystemLog } from "@/lib/logs/logger";
 
@@ -82,8 +84,12 @@ export async function POST(
             kernelSlug
           );
           kaggleState = kStatus.status;
+          const normStatus = String(kStatus.status || "").toLowerCase();
+          const bootMeta = parseBootMetadata(vm.bootMetadataJson);
+          const lastBeatMs = vm.lastHeartbeat ? vm.lastHeartbeat.getTime() : 0;
+          const heartbeatStale = Date.now() - lastBeatMs > 240_000;
 
-          if (kStatus.status === "queued") {
+          if (normStatus === "queued") {
             await prisma.vmInstance.updateMany({
               where: { userId: user.userId, sessionGroup: vm.sessionGroup },
               data: {
@@ -91,18 +97,76 @@ export async function POST(
                 stepProgress: Math.max(1, vm.stepProgress),
               },
             });
-          } else if (kStatus.status === "running") {
-            await prisma.vmInstance.updateMany({
+          } else if (normStatus === "running") {
+            if (!tunnelAlive && (vm.status === "ONLINE" || vm.status === "BUSY") && !vm.publicUrl && heartbeatStale) {
+              const groupRows = await prisma.vmInstance.findMany({
+                where: { userId: user.userId, sessionGroup: vm.sessionGroup },
+              });
+              for (const row of groupRows) {
+                await prisma.vmInstance.update({
+                  where: { id: row.id },
+                  data: {
+                    status: "OFFLINE",
+                    stepProgress: 0,
+                    vramUsedGb: 0,
+                    latencyMs: null,
+                    onlineSince: null,
+                    publicUrl: "",
+                    vmSecret: null,
+                    bootMetadataJson: markBootMetadataOffline(row.bootMetadataJson),
+                    lastError: "Worker heartbeat stopped (>4m) even though Kaggle runner has not exited yet.",
+                  },
+                });
+              }
+            } else {
+              await prisma.vmInstance.updateMany({
+                where: { userId: user.userId, sessionGroup: vm.sessionGroup },
+                data: {
+                  ...(vm.status === "OFFLINE"
+                    ? {
+                        status: "STARTING",
+                        lastError: `Kaggle reports '${kernelSlug}' is running (awaiting worker heartbeat).`,
+                      }
+                    : {}),
+                  stepProgress: Math.max(2, vm.stepProgress),
+                },
+              });
+            }
+          } else if (
+            !tunnelAlive &&
+            (normStatus === "cancelacknowledged" || normStatus === "complete" || normStatus === "error") &&
+            vm.status !== "OFFLINE" &&
+            (!bootMeta?.draftMode || heartbeatStale)
+          ) {
+            const nextStatus = vm.status === "STARTING" && normStatus === "error" ? "ERROR" : "OFFLINE";
+            const groupRows = await prisma.vmInstance.findMany({
               where: { userId: user.userId, sessionGroup: vm.sessionGroup },
-              data: {
-                ...(vm.status === "OFFLINE"
-                  ? {
-                      status: "STARTING",
-                      lastError: `Kaggle reports '${kernelSlug}' is running (awaiting worker heartbeat).`,
-                    }
-                  : {}),
-                stepProgress: Math.max(2, vm.stepProgress),
-              },
+            });
+            for (const row of groupRows) {
+              await prisma.vmInstance.update({
+                where: { id: row.id },
+                data: {
+                  status: nextStatus,
+                  stepProgress: 0,
+                  vramUsedGb: 0,
+                  latencyMs: null,
+                  onlineSince: null,
+                  publicUrl: "",
+                  vmSecret: null,
+                  bootMetadataJson: markBootMetadataOffline(row.bootMetadataJson),
+                  lastError:
+                    nextStatus === "ERROR"
+                      ? kStatus.failureMessage || "Kaggle kernel errored."
+                      : null,
+                },
+              });
+            }
+            await appendSystemLog({
+              userId: user.userId,
+              vmInstanceId: vm.id,
+              category: "ACTION",
+              level: nextStatus === "ERROR" ? "ERROR" : "WARN",
+              message: `Synced '${target}': Kaggle reported '${kStatus.status}' -> marked ${vm.sessionGroup} ${nextStatus}.`,
             });
           }
         }

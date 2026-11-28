@@ -13,6 +13,8 @@ import {
   ensureVmCommandTableReady,
 } from "@/lib/orchestrator/vm-commands";
 import { ensureModelReadyOnVm } from "@/lib/catalog/ensure-helper";
+import { resolveImagePackById } from "@/lib/catalog/image-model-packs";
+import { ensureUserCatalogSeeded } from "@/lib/catalog/seed-catalog";
 
 export async function GET(
   req: NextRequest,
@@ -70,6 +72,7 @@ export async function POST(
     const body = (await req.json().catch(() => ({}))) as {
       action?: string;
       presetId?: string;
+      packId?: string;
       repoId?: string;
       modelName?: string;
       fileHints?: string[];
@@ -117,6 +120,105 @@ export async function POST(
           { status: errStatus }
         );
       }
+    }
+
+    if (action === "stage_image_pack") {
+      const pack = resolveImagePackById(body.packId);
+      if (!pack) {
+        return NextResponse.json(
+          { error: "Specify a valid packId to stage." },
+          { status: 400 }
+        );
+      }
+
+      await ensureUserCatalogSeeded(user.userId);
+      const bootMeta = parseBootMetadata(vm.bootMetadataJson);
+      const existingNames = new Set(
+        (bootMeta?.storageFiles || []).map((f) => f.name.toLowerCase())
+      );
+      const packAssets = await prisma.modelAsset.findMany({
+        where: { userId: user.userId, slug: { in: pack.slugs } },
+        select: { slug: true, filename: true, sizeBytes: true },
+      });
+      const estimatedRemainingGb = packAssets.reduce((acc, a) => {
+        if (existingNames.has(a.filename.toLowerCase())) return acc;
+        return acc + (a.sizeBytes ? a.sizeBytes / 1024 ** 3 : pack.approxDiskGb / pack.slugs.length);
+      }, 0);
+      const diskFreeGb = bootMeta?.disk?.freeGb;
+      if (
+        !body.force &&
+        typeof diskFreeGb === "number" &&
+        estimatedRemainingGb > 0 &&
+        diskFreeGb < estimatedRemainingGb + 0.8
+      ) {
+        return NextResponse.json(
+          {
+            error: `Low /tmp disk space on ${vm.target}: ${diskFreeGb.toFixed(1)} GB free, but '${pack.shortLabel}' needs ~${estimatedRemainingGb.toFixed(1)} GB more.`,
+          },
+          { status: 409 }
+        );
+      }
+
+      const results: Array<{
+        slug: string;
+        status: "started" | "skipped" | "failed";
+        file?: string;
+        fetchJobId?: string | null;
+        error?: string;
+      }> = [];
+      for (const slug of pack.slugs) {
+        try {
+          const r = await ensureModelReadyOnVm({
+            userId: user.userId,
+            vm,
+            slug,
+            backupToGdrive: true,
+            preferSource: "auto",
+          });
+          results.push({
+            slug,
+            status: r.status,
+            file: r.file,
+            fetchJobId: r.fetchJobId ?? null,
+          });
+        } catch (stageErr) {
+          results.push({
+            slug,
+            status: "failed",
+            error: stageErr instanceof Error ? stageErr.message : "Failed to stage model",
+          });
+        }
+      }
+
+      const started = results.filter((r) => r.status === "started").length;
+      const skipped = results.filter((r) => r.status === "skipped").length;
+      const failed = results.filter((r) => r.status === "failed").length;
+      if (started === 0 && skipped === 0 && failed > 0) {
+        return NextResponse.json(
+          {
+            error: results.find((r) => r.error)?.error || `Failed to stage pack '${pack.shortLabel}'.`,
+            packId: pack.id,
+            results,
+          },
+          { status: 400 }
+        );
+      }
+
+      await appendSystemLog({
+        userId: user.userId,
+        vmInstanceId: vm.id,
+        category: "ACTION",
+        level: failed > 0 ? "WARN" : "INFO",
+        message: `Staged image pack '${pack.shortLabel}' on ${vm.target}: ${started} queued, ${skipped} cached${failed > 0 ? `, ${failed} failed` : ""}.`,
+      });
+
+      return NextResponse.json({
+        ok: true,
+        packId: pack.id,
+        packLabel: pack.shortLabel,
+        results,
+        summary: { total: pack.slugs.length, started, skipped, failed },
+      });
     }
 
     if (action === "free_vram") {
@@ -298,7 +400,7 @@ export async function POST(
     }
 
     return NextResponse.json(
-      { error: `Unsupported action '${action}'. Allowed: stage_llm, load_llm, unload_llm, free_vram, stage_image_model.` },
+      { error: `Unsupported action '${action}'. Allowed: stage_llm, load_llm, unload_llm, free_vram, stage_image_model, stage_image_pack.` },
       { status: 400 }
     );
   } catch (error) {
