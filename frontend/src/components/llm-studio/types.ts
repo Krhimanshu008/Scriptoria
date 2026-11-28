@@ -98,7 +98,7 @@ export interface LlmProfileLaunchOption {
 export const LLM_LAUNCH_PROFILES: LlmProfileLaunchOption[] = [
   { id: "LLM_QWEN_FAST_8B", label: "Qwen3-VL 8B / Dual Replica", hint: "~5.1 GB · Best for Dual Replica 2x T4 & Vision QA" },
   { id: "LLM_QWEN_TEXT_TURBO", label: "Qwen3.5-9B Text Turbo", hint: "~6.2 GB · High-speed text + reasoning + A/B Arena" },
-  { id: "LLM_QWEN_VLM", label: "Qwen3.8-27B VLM + Draft", hint: "~18 GB · Dual-T4 layer split flagship reasoning + Vision" },
+  { id: "LLM_QWEN_VLM", label: "Qwen3.8-27B VLM + MTP", hint: "~19 GB · Dual-T4 layer split with Native MTP + Vision" },
   { id: "LLM_QWEN_MOE_35B", label: "Qwen3.6-35B-A3B MoE", hint: "~22 GB · Sparse MoE fast decode across Dual-T4" },
   { id: "LLM_LIGHTWEIGHT_SWARM", label: "4-Service LLM Swarm", hint: "~11 GB · Parallel Reasoning + JSON Extract + OCR + RAG" },
 ];
@@ -282,7 +282,7 @@ export function buildTargetOptions(health?: LlmHealthResponse): LlmTargetOption[
     } else if (vm.llmTopologyMode === "llm_swarm_multi" || vm.workerProfile === "LLM_LIGHTWEIGHT_SWARM") {
       opts.push(
         { value: `${vm.target}::extract`, label: `${vm.target.toUpperCase()} Swarm · Extract (:8191)`, targetVm: vm.target, targetService: "extract", badge: "4B" },
-        { value: `${vm.target}::qc`, label: `${vm.target.toUpperCase()} Swarm · Vision QC (:8192)`, targetVm: vm.target, targetService: "qc", badge: "VLM" },
+        { value: `${vm.target}::tag`, label: `${vm.target.toUpperCase()} Swarm · Vision Tag/QC (:8192)`, targetVm: vm.target, targetService: "tag", badge: "VLM" },
         { value: `${vm.target}::rag`, label: `${vm.target.toUpperCase()} Swarm · RAG Embed (:8193)`, targetVm: vm.target, targetService: "rag", badge: "RAG" }
       );
     }

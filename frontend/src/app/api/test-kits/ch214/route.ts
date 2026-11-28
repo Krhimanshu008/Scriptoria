@@ -98,12 +98,12 @@ export async function GET(req: NextRequest) {
   const expectedKeywordsByBeat: Record<number, string[]> = {
     1: ["Klein", "top hat", "bag"],
     2: ["watch", "6:39"],
-    3: ["smog", "Backlund"],
+    3: ["smoke", "chimney"],
     4: ["15 Minsk Street", "Cherwood"],
     5: ["ticket", "metro"],
     6: ["train", "platform"],
     7: ["carriage", "second"],
-    8: ["red", "boy"],
+    8: ["boy", "carriage"],
   };
 
   const llmEvalCases = ch214Data.beats.map((b) => ({

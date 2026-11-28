@@ -123,6 +123,7 @@ export function BatchEvalPanel({
   const [fallbackToVault, setFallbackToVault] = useState(true);
 
   const [running, setRunning] = useState(false);
+  const [progressText, setProgressText] = useState<string>("");
   const [evalRes, setEvalRes] = useState<BatchEvalResponse | null>(null);
   const [filterStatus, setFilterStatus] = useState<"all" | "passed" | "failed">("all");
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
@@ -151,36 +152,72 @@ export function BatchEvalPanel({
     setEvalRes(null);
 
     const { targetVm, targetService } = parseTargetOption(selectedTarget);
+    const chunkSize = isDualReplicaActive ? 4 : 3;
+    const accumulated: BatchEvalResponse["results"] = [];
+    let dualReplicaParallelized = false;
 
     try {
-      const res = await fetch("/api/v1/llm-eval", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "run_batch_eval",
+      for (let offset = 0; offset < cases.length; offset += chunkSize) {
+        const slice = cases.slice(offset, offset + chunkSize);
+        setProgressText(`Evaluating ${Math.min(offset + slice.length, cases.length)}/${cases.length}...`);
+        const res = await fetch("/api/v1/llm-eval", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "run_batch_eval",
+            title,
+            targetVm,
+            targetService,
+            mode,
+            systemPrompt,
+            jsonSchema: jsonSchema.trim() || undefined,
+            reasoningEffort: "none",
+            temperature: 0.15,
+            maxTokens: 1024,
+            fallbackToVault,
+            cases: slice,
+          }),
+        });
+        const json = (await res.json()) as BatchEvalResponse & { error?: string };
+        if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+
+        dualReplicaParallelized = dualReplicaParallelized || json.dualReplicaParallelized;
+        for (const r of json.results) {
+          accumulated.push({ ...r, index: offset + r.index });
+        }
+
+        const passedCount = accumulated.filter((r) => r.passed).length;
+        const validLatencies = accumulated.filter((r) => r.latencyMs > 0).map((r) => r.latencyMs);
+        const validTps = accumulated
+          .filter((r) => typeof r.tokPerSec === "number")
+          .map((r) => r.tokPerSec as number);
+
+        setEvalRes({
+          ok: true,
           title,
-          targetVm,
-          targetService,
-          mode,
-          systemPrompt,
-          jsonSchema: jsonSchema.trim() || undefined,
-          reasoningEffort: "none",
-          temperature: 0.15,
-          maxTokens: 1024,
-          fallbackToVault,
-          cases,
-        }),
-      });
-      const json = (await res.json()) as BatchEvalResponse & { error?: string };
-      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
-      setEvalRes(json);
-      toast.success(
-        `Batch complete: ${json.passedCount}/${json.totalCases} passed (${json.passRatePct}%)`
-      );
+          totalCases: accumulated.length,
+          passedCount,
+          failedCount: accumulated.length - passedCount,
+          passRatePct: Math.round((passedCount / accumulated.length) * 100),
+          avgLatencyMs: validLatencies.length
+            ? Math.round(validLatencies.reduce((a, b) => a + b, 0) / validLatencies.length)
+            : 0,
+          avgTokPerSec: validTps.length
+            ? Number((validTps.reduce((a, b) => a + b, 0) / validTps.length).toFixed(1))
+            : null,
+          dualReplicaParallelized,
+          results: [...accumulated],
+        });
+      }
+
+      const finalPassed = accumulated.filter((r) => r.passed).length;
+      const finalPct = Math.round((finalPassed / accumulated.length) * 100);
+      toast.success(`Batch complete: ${finalPassed}/${accumulated.length} passed (${finalPct}%)`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Batch evaluation failed");
     } finally {
       setRunning(false);
+      setProgressText("");
     }
   }
 
@@ -371,7 +408,7 @@ export function BatchEvalPanel({
             </div>
             <Button onClick={handleRunEval} disabled={running} className="w-full">
               {running ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
-              {running ? "Evaluating Dataset (max 50 rows)..." : "Run Batch Eval"}
+              {running ? (progressText || "Evaluating Dataset (max 50 rows)...") : "Run Batch Eval"}
             </Button>
           </div>
         </div>

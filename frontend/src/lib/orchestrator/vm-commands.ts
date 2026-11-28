@@ -19,6 +19,7 @@ export interface VmCommandPayload {
   gpuLayers?: number;
   ctxSize?: number;
   approxDiskGb?: number;
+  useDflash2?: boolean;
 }
 
 export interface VmCommandAckInput {

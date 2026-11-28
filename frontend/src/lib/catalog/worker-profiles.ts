@@ -266,19 +266,19 @@ export const WORKER_PROFILES: Record<WorkerProfileId, WorkerProfileSpec> = {
   },
   LLM_QWEN_VLM: {
     id: "LLM_QWEN_VLM",
-    label: "Qwen 27B Vision + LLM (~16 tok/s · Dual-T4)",
+    label: "Qwen 27B Vision + MTP (~20-42 tok/s · Dual-T4)",
     shortTag: "QWEN-LLM",
     description:
-      "Dual-T4 llama-server + mmproj vision. Best for Visual QA, multi-modal frame auditing, and mixed storyboarding (~16 tok/s).",
+      "Dual-T4 llama-server + mmproj vision + embedded Native MTP (draft-mtp). Best unified server for Visual QA and strict JSON storyboarding.",
     recommendedTargets: ["gpu0", "gpu1", "gpu2", "gpu3", "gpu4", "gpu5"],
     customNodes: [],
   },
   LLM_QWEN_TEXT_TURBO: {
     id: "LLM_QWEN_TEXT_TURBO",
-    label: "Qwen 27B Ultra Text (ExLlamaV3 55-154 tok/s)",
+    label: "Qwen 27B Text + MTP (~28-42 tok/s · Dual-T4)",
     shortTag: "QWEN-TURBO",
     description:
-      "Dual-T4 ExLlamaV3 + DFlash2 drafter + Tensor Parallelism. Fastest single-user text throughput (55-154 tok/s) for ingesting 100s of novel chapters without vision.",
+      "Dual-T4 llama-server with Native MTP (and optional text-only DFlash2) without vision projector overhead, maximizing VRAM headroom for 16K context.",
     recommendedTargets: ["gpu0", "gpu1", "gpu2", "gpu3", "gpu4", "gpu5"],
     customNodes: [],
   },

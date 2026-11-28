@@ -109,6 +109,46 @@ export function validateJsonAgainstSchema(
   }
 }
 
+export function buildLlmResponseFormat(
+  mode: LlmChatMode,
+  jsonSchema?: string
+): Record<string, unknown> | undefined {
+  if (mode !== "json" && mode !== "vision_qa") return undefined;
+  const trimmed = jsonSchema?.trim();
+  if (trimmed) {
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const schema: Record<string, unknown> = { ...parsed };
+        if (!schema.type) schema.type = "object";
+        if (schema.type === "object" && !schema.properties) {
+          const props: Record<string, unknown> = {};
+          if (Array.isArray(schema.required)) {
+            for (const key of schema.required) {
+              props[String(key)] = {};
+            }
+          }
+          schema.properties = props;
+        }
+        if (schema.type === "object" && schema.additionalProperties === undefined) {
+          schema.additionalProperties = true;
+        }
+        return {
+          type: "json_schema",
+          json_schema: {
+            name: "scriptoria_output",
+            strict: true,
+            schema,
+          },
+        };
+      }
+    } catch {
+      // Fall back to generic json_object when schema metadata is not valid JSON
+    }
+  }
+  return { type: "json_object" };
+}
+
 export class LlmDispatchError extends Error {
   status: number;
   constructor(message: string, status = 500) {
@@ -228,8 +268,9 @@ export async function dispatchLlmChat(params: DispatchLlmParams): Promise<Dispat
           enable_thinking: reasoningEffort !== "none" && reasoningEffort !== "low",
         },
       };
-      if (mode === "json" || mode === "vision_qa") {
-        payload.response_format = { type: "json_object" };
+      const respFormat = buildLlmResponseFormat(mode, jsonSchema);
+      if (respFormat) {
+        payload.response_format = respFormat;
       }
 
       // Path A: Direct HTTP/Tunnel SSE execution

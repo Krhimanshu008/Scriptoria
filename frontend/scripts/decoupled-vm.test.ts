@@ -55,6 +55,13 @@ test("Generated Python worker & 0-GPU Qwen LLM dataset scripts compile cleanly w
   assert.match(llmIdlePy, /AUTO_LOAD_ON_BOOT = False/);
   assert.match(llmIdlePy, /RUNTIME_MODE = "idle_empty" if PROFILE_ID\.startswith\("LLM_"\) else "comfy_ready"/);
   assert.match(llmIdlePy, /Setup-Only Boot ready/);
+  assert.match(llmIdlePy, /llama_server_t4_v2\.tar\.gz/);
+  assert.match(llmIdlePy, /def _get_llama_caps\(/);
+  assert.match(llmIdlePy, /"--spec-type", "draft-mtp"/);
+  assert.match(llmIdlePy, /def _repo_identity_tokens\(/);
+  assert.match(llmIdlePy, /def _mmproj_matches\(/);
+  assert.match(llmIdlePy, /if active_topo in \("llm_dual_replica", "llm_ab_arena", "llm_swarm_multi"\) and model_gb > 13\.0:/);
+  assert.match(llmIdlePy, /if sz < pos:/);
   await compilePythonCode(llmIdlePy, "llm_idle_empty");
 
   const llmAutoPy = buildUnifiedNotebookPythonCode({
@@ -253,6 +260,55 @@ test("Decoupled VmCommand lifecycle, 409 empty-VM guard, and autoLoadOnBoot conf
     assert.equal(loadRes.status, 200);
     const loadJson = await loadRes.json();
     const cmdId = loadJson.command.id as string;
+
+    // 4b. Explicit presetId overrides stale bootMeta.llmTopologyMode (Swarm -> 27B VLM switches cleanly)
+    const { buildLlmResponseFormat } = await import("../src/lib/llm/dispatch-llm");
+    const strictSchemaFmt = buildLlmResponseFormat("json", '{"required":["beat_name","location"]}') as {
+      type: string;
+      json_schema?: { strict: boolean; schema: { type: string; properties: Record<string, unknown>; required: string[] } };
+    };
+    assert.equal(strictSchemaFmt.type, "json_schema");
+    assert.equal(strictSchemaFmt.json_schema?.strict, true);
+    assert.deepEqual(strictSchemaFmt.json_schema?.schema.required, ["beat_name", "location"]);
+    assert.ok("beat_name" in (strictSchemaFmt.json_schema?.schema.properties || {}));
+
+    await prisma.vmInstance.updateMany({
+      where: { userId: user.id, sessionGroup: vm.sessionGroup },
+      data: {
+        bootMetadataJson: JSON.stringify({
+          runtimeMode: "llm_ready",
+          llmTopologyMode: "llm_layer_split",
+          requestedLlmTopology: "llm_layer_split",
+          disk: { totalGb: 30, usedGb: 5, freeGb: 25 },
+        }),
+      },
+    });
+    const swarmRes = await modelControl(
+      new NextRequest("http://localhost/api/vm/gpu0/model-control", {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ action: "load_llm", presetId: "qwen3.5-swarm" }),
+      }),
+      { params: Promise.resolve({ target: "gpu0" }) }
+    );
+    assert.equal(swarmRes.status, 200);
+    const swarmJson = await swarmRes.json();
+    assert.equal(JSON.parse(swarmJson.command.payloadJson).topologyMode, "llm_swarm_multi");
+
+    const vlm27Res = await modelControl(
+      new NextRequest("http://localhost/api/vm/gpu0/model-control", {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ action: "load_llm", presetId: "qwen3.8-27b-vlm" }),
+      }),
+      { params: Promise.resolve({ target: "gpu0" }) }
+    );
+    assert.equal(vlm27Res.status, 200);
+    const vlm27Json = await vlm27Res.json();
+    assert.equal(JSON.parse(vlm27Json.command.payloadJson).topologyMode, "llm_layer_split");
+    await prisma.vmCommand.deleteMany({
+      where: { id: { in: [swarmJson.command.id, vlm27Json.command.id] } },
+    });
 
     const hb1 = await heartbeat(
       new NextRequest("http://localhost/api/vm/heartbeat", {

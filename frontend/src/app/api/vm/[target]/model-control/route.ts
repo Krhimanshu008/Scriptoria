@@ -333,6 +333,7 @@ export async function POST(
           : preset?.mmprojHints || [];
       const topologyMode =
         body.topologyMode ||
+        (body.presetId ? preset?.recommendedTopology : undefined) ||
         bootMeta?.requestedLlmTopology ||
         bootMeta?.llmTopologyMode ||
         preset?.recommendedTopology ||
@@ -377,6 +378,8 @@ export async function POST(
                 runtimeMode: "loading_model",
                 activeModelName: modelName,
                 activeModelRepo: repoId,
+                llmTopologyMode: topologyMode,
+                requestedLlmTopology: topologyMode,
               }),
             },
           });
