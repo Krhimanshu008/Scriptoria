@@ -69,6 +69,20 @@ test("Generated Python worker & 0-GPU Qwen LLM dataset scripts compile cleanly w
   assert.match(llmIdlePy, /def _mmproj_matches\(/);
   assert.match(llmIdlePy, /if active_topo in \("llm_dual_replica", "llm_ab_arena", "llm_swarm_multi"\) and model_gb > 13\.0:/);
   assert.match(llmIdlePy, /if sz < pos:/);
+  assert.match(llmIdlePy, /CUDA_CACHE_PATH/);
+  assert.match(llmIdlePy, /CUDA_SCALE_LAUNCH_QUEUES/);
+  assert.match(llmIdlePy, /caps\["split_tensor"\]/);
+  assert.match(llmIdlePy, /caps\["ctx_checkpoints"\]/);
+  assert.match(llmIdlePy, /batch_sz = "1024" if is_27b_model else "512"/);
+  assert.match(llmIdlePy, /ubatch = "512" if is_27b_model else "256"/);
+  assert.match(llmIdlePy, /"--ctx-checkpoints", "4"/);
+  assert.match(llmIdlePy, /"--cache-ram", "1024"/);
+  assert.match(llmIdlePy, /_build_split_cmd\("tensor", "1,1", mtp_flags, kv_type=None\)/);
+  assert.match(llmIdlePy, /while time\.time\(\) - t_wait_hl < 240:/);
+  assert.match(llmIdlePy, /llama-server failed health check within 240s/);
+  assert.match(llmIdlePy, /Silent warmup completed in/);
+  assert.doesNotMatch(llmIdlePy, /"-bs"/);
+  assert.doesNotMatch(llmIdlePy, /still warming up beyond 75s/);
   await compilePythonCode(llmIdlePy, "llm_idle_empty");
 
   const llmAutoPy = buildUnifiedNotebookPythonCode({

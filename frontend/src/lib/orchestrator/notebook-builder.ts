@@ -1844,6 +1844,14 @@ def _get_llama_caps(bin_path):
         "no_webui": False,
         "metrics": False,
         "slots": False,
+        "split_tensor": False,
+        "ctx_checkpoints": False,
+        "cache_ram": False,
+        "spec_draft_ngl": False,
+        "ngld": False,
+        "spec_draft_kv": False,
+        "ctkd": False,
+        "reasoning_budget": False,
     }
     try:
         chk_env = os.environ.copy()
@@ -1860,6 +1868,14 @@ def _get_llama_caps(bin_path):
         caps["no_webui"] = ("--no-webui" in htxt)
         caps["metrics"] = ("--metrics" in htxt)
         caps["slots"] = ("--slots" in htxt)
+        caps["split_tensor"] = ("--split-mode" in htxt and "tensor" in htxt)
+        caps["ctx_checkpoints"] = ("--ctx-checkpoints" in htxt)
+        caps["cache_ram"] = ("--cache-ram" in htxt)
+        caps["spec_draft_ngl"] = ("--spec-draft-ngl" in htxt)
+        caps["ngld"] = ("-ngld" in htxt or "--gpu-layers-draft" in htxt)
+        caps["spec_draft_kv"] = ("--spec-draft-type-k" in htxt and "--spec-draft-type-v" in htxt)
+        caps["ctkd"] = ("-ctkd" in htxt and "-ctvd" in htxt)
+        caps["reasoning_budget"] = ("--reasoning-budget" in htxt)
         ver_str = None
         try:
             vres = subprocess.run([bin_path, "--version"], env=chk_env, capture_output=True, text=True, timeout=8)
@@ -2410,8 +2426,12 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                 log_event(f"Drive LLM backup skipped: {be}", category="RCLONE", level="WARN")
         threading.Thread(target=_bk, daemon=True).start()
 
+    os.makedirs("/tmp/cuda_cache", exist_ok=True)
     ll_env = os.environ.copy()
     ll_env["LD_LIBRARY_PATH"] = f"/tmp/llama_bin:{ll_env.get('LD_LIBRARY_PATH', '')}"
+    ll_env["CUDA_CACHE_PATH"] = "/tmp/cuda_cache"
+    ll_env["CUDA_CACHE_MAXSIZE"] = "2147483648"
+    ll_env["CUDA_SCALE_LAUNCH_QUEUES"] = "4"
 
     is_moe_35b = (PROFILE_ID == "LLM_QWEN_MOE_35B")
     is_fast_8b = (PROFILE_ID == "LLM_QWEN_FAST_8B")
@@ -2537,8 +2557,8 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
             if active_topo in ("llm_swarm_multi", "llm_ab_arena"):
                 m4_path, _, _ = _find_or_download_gguf("unsloth/Qwen3.5-4B-GGUF", ["*Q4_K_M*.gguf"], [], label="Qwen 4B Extractor")
 
-            spec_flags_used = []
-            base_split_cmd = None
+            launch_candidates = []
+            cand_idx = 0
             if active_topo == "llm_swarm_multi":
                 cpm_path, cpm_mm, _ = _find_or_download_gguf("openbmb/MiniCPM-V-4.7-1B-gguf", ["*Q4_K_M*.gguf", "*ggml-model*.gguf"], ["*mmproj*.gguf"], label="MiniCPM-V 1B")
 
@@ -2639,43 +2659,55 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                     and (caps.get("draft_dflash2") or caps.get("draft_dflash"))
                 )
                 use_mtp_spec = bool(is_27b_model and not use_dflash_spec and caps.get("draft_mtp"))
-                t_split = "52,48" if ("35b" in m_low or is_moe_35b) else ("53,47" if is_27b_model else "50,50")
+                t_split_layer = "52,48" if ("35b" in m_low or is_moe_35b) else ("53,47" if is_27b_model else "50,50")
                 ctx_size = "16384"
-                batch_sz = "2048" if is_27b_model else "512"
-                ubatch = "2048" if is_27b_model else "256"
-                base_split_cmd = [
-                    llama_bin, "-m", model_gguf, "--host", "127.0.0.1", "--port", "8190",
-                    "-ngl", "999",
-                    "-dev", "CUDA0,CUDA1",
-                    "--split-mode", "layer",
-                    "--tensor-split", t_split,
-                    "--fit", "off",
-                    "--flash-attn", "on",
-                    "--ctx-size", ctx_size,
-                    "-ctk", "q8_0", "-ctv", "q8_0",
-                    "--batch-size", batch_sz,
-                    "--ubatch-size", ubatch,
-                    "--parallel", "1",
-                    "--jinja",
-                    "--chat-template-kwargs", '{"enable_thinking":false}',
-                ]
-                if caps.get("kv_unified"):
-                    base_split_cmd.append("--kv-unified")
-                if caps.get("no_webui"):
-                    base_split_cmd.append("--no-webui")
-                if caps.get("metrics"):
-                    base_split_cmd.append("--metrics")
-                if caps.get("slots"):
-                    base_split_cmd.append("--slots")
-                if caps.get("bs"):
-                    base_split_cmd.append("-bs")
-                if mmproj_gguf:
-                    base_split_cmd.extend(["--mmproj", mmproj_gguf])
-                    if caps.get("image_tokens"):
-                        base_split_cmd.extend(["--image-min-tokens", "256", "--image-max-tokens", "1024"])
+                batch_sz = "1024" if is_27b_model else "512"
+                ubatch = "512" if is_27b_model else "256"
+
+                def _build_split_cmd(split_mode_arg, t_split_arg, extra_spec_flags, kv_type=None):
+                    cmd = [
+                        llama_bin, "-m", model_gguf, "--host", "127.0.0.1", "--port", "8190",
+                        "-ngl", "999",
+                        "-dev", "CUDA0,CUDA1",
+                        "--split-mode", split_mode_arg,
+                        "--tensor-split", t_split_arg,
+                        "--fit", "off",
+                        "--flash-attn", "on",
+                        "--ctx-size", ctx_size,
+                        "--batch-size", batch_sz,
+                        "--ubatch-size", ubatch,
+                        "--parallel", "1",
+                        "--jinja",
+                        "--chat-template-kwargs", '{"enable_thinking":false}',
+                    ]
+                    if kv_type:
+                        cmd.extend(["-ctk", kv_type, "-ctv", kv_type])
+                    if caps.get("kv_unified"):
+                        cmd.append("--kv-unified")
+                    if caps.get("no_webui"):
+                        cmd.append("--no-webui")
+                    if caps.get("metrics"):
+                        cmd.append("--metrics")
+                    if caps.get("slots"):
+                        cmd.append("--slots")
+                    if caps.get("ctx_checkpoints"):
+                        cmd.extend(["--ctx-checkpoints", "4"])
+                    if caps.get("cache_ram"):
+                        cmd.extend(["--cache-ram", "1024"])
+                    if caps.get("reasoning_budget"):
+                        cmd.extend(["--reasoning-budget", "1024"])
+                    if mmproj_gguf:
+                        cmd.extend(["--mmproj", mmproj_gguf])
+                        if caps.get("image_tokens"):
+                            cmd.extend(["--image-min-tokens", "256", "--image-max-tokens", "1024"])
+                    if extra_spec_flags:
+                        cmd.extend(extra_spec_flags)
+                    return cmd
+
+                dflash_flags = []
                 if use_dflash_spec:
                     spec_kind = "draft-dflash2" if caps.get("draft_dflash2") else "draft-dflash"
-                    spec_flags_used = [
+                    dflash_flags = [
                         "-md", dflash_gguf,
                         "--spec-type", spec_kind,
                         "--spec-draft-n-max", "7",
@@ -2686,40 +2718,91 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                         "-ctvd", "q8_0",
                     ]
                     if caps.get("p_min"):
-                        spec_flags_used.extend(["--spec-draft-p-min", "0.0"])
-                elif use_mtp_spec:
-                    spec_flags_used = [
+                        dflash_flags.extend(["--spec-draft-p-min", "0.0"])
+
+                # Note: omit --spec-draft-p-min on draft-mtp so CUDA decode graphs stay static
+                mtp_flags = []
+                mtp_flags_layer = []
+                if use_mtp_spec:
+                    mtp_flags = [
                         "--spec-type", "draft-mtp",
                         "--spec-draft-n-max", "2",
                     ]
-                globals()["MTP_ACTIVE_FLAG"] = bool(use_mtp_spec)
-                globals()["MTP_DRAFT_MAX"] = 2 if use_mtp_spec else 0
-                ll_cmd = base_split_cmd + spec_flags_used
+                    if caps.get("spec_draft_ngl"):
+                        mtp_flags.extend(["--spec-draft-ngl", "99"])
+                    elif caps.get("ngld"):
+                        mtp_flags.extend(["-ngld", "99"])
+                    mtp_flags_layer = list(mtp_flags)
+                    if caps.get("spec_draft_kv"):
+                        mtp_flags_layer.extend(["--spec-draft-type-k", "q8_0", "--spec-draft-type-v", "q8_0"])
+                    elif caps.get("ctkd"):
+                        mtp_flags_layer.extend(["-ctkd", "q8_0", "-ctvd", "q8_0"])
+
+                can_tensor = bool(caps.get("split_tensor"))
+                if use_dflash_spec:
+                    launch_candidates.append(("Dual-T4 Layer Split + DFlash2", False, _build_split_cmd("layer", t_split_layer, dflash_flags, kv_type="q8_0")))
+                    if can_tensor:
+                        launch_candidates.append(("Dual-T4 Tensor Split + DFlash2", False, _build_split_cmd("tensor", "1,1", dflash_flags, kv_type=None)))
+                    launch_candidates.append(("Dual-T4 Layer Split", False, _build_split_cmd("layer", t_split_layer, [], kv_type="q8_0")))
+                elif use_mtp_spec:
+                    if can_tensor:
+                        launch_candidates.append(("Dual-T4 Tensor Split + Native MTP", True, _build_split_cmd("tensor", "1,1", mtp_flags, kv_type=None)))
+                        launch_candidates.append(("Dual-T4 Tensor Split (MTP Off)", False, _build_split_cmd("tensor", "1,1", [], kv_type=None)))
+                    launch_candidates.append(("Dual-T4 Layer Split + Native MTP", True, _build_split_cmd("layer", t_split_layer, mtp_flags_layer, kv_type="q8_0")))
+                    launch_candidates.append(("Dual-T4 Layer Split", False, _build_split_cmd("layer", t_split_layer, [], kv_type="q8_0")))
+                else:
+                    if can_tensor:
+                        launch_candidates.append(("Dual-T4 Tensor Split", False, _build_split_cmd("tensor", "1,1", [], kv_type=None)))
+                    launch_candidates.append(("Dual-T4 Layer Split", False, _build_split_cmd("layer", t_split_layer, [], kv_type="q8_0")))
+
+                cand_idx = 0
+                init_label, init_mtp, ll_cmd = launch_candidates[0]
+                globals()["MTP_ACTIVE_FLAG"] = bool(init_mtp)
+                globals()["MTP_DRAFT_MAX"] = 2 if init_mtp else 0
                 ll_log = open("/tmp/llama_server.log", "w")
                 WORKER_PROCS["main"] = subprocess.Popen(ll_cmd, env=ll_env, stdout=ll_log, stderr=ll_log)
                 LLM_ACTIVE_ENDPOINTS.append({"port": 8190, "gpu": "GPU0+GPU1", "model": os.path.basename(model_gguf), "service": "default", "ready": True})
-                spec_tag = " + DFlash2" if use_dflash_spec else (" + Native MTP" if use_mtp_spec else "")
-                mode_label = f"Dual-T4 Split ({os.path.basename(model_gguf)}{spec_tag})"
-                log_event(f"Launched llama-server ({mode_label}, 2x T4 split) -> 127.0.0.1:8190", category="SYSTEM")
+                mode_label = f"{init_label} ({os.path.basename(model_gguf)})"
+                log_event(f"Launched llama-server ({mode_label}) -> 127.0.0.1:8190", category="SYSTEM")
 
-            # Wait up to 75s for port 8190 health so UI shows accurate llm_ready vs failure
+            # Wait up to 240s for port 8190 health + run mandatory warmup before exposing llm_ready
             t_wait_hl = time.time()
             healthy_up = False
-            fallback_retried = False
-            while time.time() - t_wait_hl < 75:
-                main_p = WORKER_PROCS.get("main") or WORKER_PROCS.get("9b") or WORKER_PROCS.get("rep0") or WORKER_PROCS.get("model_a")
-                if main_p is not None and main_p.poll() is not None:
-                    if spec_flags_used and base_split_cmd and not fallback_retried:
-                        fallback_retried = True
-                        globals()["MTP_ACTIVE_FLAG"] = False
-                        globals()["MTP_DRAFT_MAX"] = 0
-                        log_event(f"Speculative launch exited early (rc={main_p.returncode}); retrying without speculation...", category="SYSTEM", level="WARN")
-                        spec_flags_used = []
-                        ll_log = open("/tmp/llama_server.log", "w")
-                        WORKER_PROCS["main"] = subprocess.Popen(base_split_cmd, env=ll_env, stdout=ll_log, stderr=ll_log)
-                        t_wait_hl = time.time()
-                        time.sleep(1.0)
-                        continue
+            while True:
+                while time.time() - t_wait_hl < 240:
+                    main_p = WORKER_PROCS.get("main") or WORKER_PROCS.get("9b") or WORKER_PROCS.get("rep0") or WORKER_PROCS.get("model_a")
+                    if main_p is not None and main_p.poll() is not None:
+                        err_tail = ""
+                        try:
+                            with open("/tmp/llama_server.log", "r", encoding="utf-8", errors="ignore") as lf:
+                                err_tail = lf.read()[-350:]
+                        except Exception:
+                            pass
+                        if cand_idx + 1 < len(launch_candidates):
+                            cand_idx += 1
+                            next_label, next_mtp, next_cmd = launch_candidates[cand_idx]
+                            globals()["MTP_ACTIVE_FLAG"] = bool(next_mtp)
+                            globals()["MTP_DRAFT_MAX"] = 2 if next_mtp else 0
+                            mode_label = f"{next_label} ({os.path.basename(model_gguf)})"
+                            tail_hint = err_tail.strip().splitlines()[-1] if err_tail.strip() else "early exit"
+                            log_event(f"Launch variant exited early (rc={main_p.returncode}: {tail_hint[:140]}); retrying with {next_label}...", category="SYSTEM", level="WARN")
+                            ll_log = open("/tmp/llama_server.log", "w")
+                            WORKER_PROCS["main"] = subprocess.Popen(next_cmd, env=ll_env, stdout=ll_log, stderr=ll_log)
+                            t_wait_hl = time.time()
+                            time.sleep(1.0)
+                            continue
+                        stop_llm_workers(update_mode=True)
+                        raise RuntimeError(f"llama-server exited early (rc={main_p.returncode}): {err_tail}")
+                    try:
+                        with urllib.request.urlopen("http://127.0.0.1:8190/health", timeout=2) as hr:
+                            if hr.status == 200:
+                                healthy_up = True
+                                break
+                    except Exception:
+                        pass
+                    time.sleep(1.0)
+
+                if not healthy_up:
                     err_tail = ""
                     try:
                         with open("/tmp/llama_server.log", "r", encoding="utf-8", errors="ignore") as lf:
@@ -2727,17 +2810,57 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                     except Exception:
                         pass
                     stop_llm_workers(update_mode=True)
-                    raise RuntimeError(f"llama-server exited early (rc={main_p.returncode}): {err_tail}")
+                    raise RuntimeError(f"llama-server failed health check within 240s: {err_tail}")
+
+                # Mandatory silent warmup (pre-pages mmap + finishes CUDA PTX->SASS JIT + captures decode graph)
+                warm_ports = [int(ep["port"]) for ep in LLM_ACTIVE_ENDPOINTS if ep.get("port")] or [8190]
+                t_warm = time.time()
+                log_event(f"Health OK; running silent warmup on port(s) {warm_ports} (CUDA JIT + mmap + graph capture)...", category="SYSTEM")
+                warm_crashed = False
                 try:
-                    with urllib.request.urlopen("http://127.0.0.1:8190/health", timeout=2) as hr:
-                        if hr.status == 200:
-                            healthy_up = True
-                            break
-                except Exception:
-                    pass
-                time.sleep(1.0)
-            if not healthy_up:
-                log_event("llama-server still warming up beyond 75s; marking active while health check continues.", category="SYSTEM", level="WARN")
+                    for wp in warm_ports:
+                        warm_body = json.dumps({
+                            "messages": [{"role": "user", "content": "hi"}],
+                            "max_tokens": 4,
+                            "temperature": 0.0,
+                            "stream": False,
+                            "chat_template_kwargs": {"enable_thinking": False},
+                        }).encode("utf-8")
+                        w_req = urllib.request.Request(
+                            f"http://127.0.0.1:{wp}/v1/chat/completions",
+                            data=warm_body,
+                            headers={"Content-Type": "application/json"},
+                            method="POST",
+                        )
+                        with urllib.request.urlopen(w_req, timeout=220) as wr:
+                            _ = wr.read()
+                    log_event(f"Silent warmup completed in {round(time.time() - t_warm, 1)}s (kernels & CUDA graphs ready).", category="SYSTEM", level="SUCCESS")
+                except Exception as warm_err:
+                    main_p = WORKER_PROCS.get("main")
+                    if main_p is not None and main_p.poll() is not None and cand_idx + 1 < len(launch_candidates):
+                        warm_crashed = True
+                        healthy_up = False
+                        err_tail = ""
+                        try:
+                            with open("/tmp/llama_server.log", "r", encoding="utf-8", errors="ignore") as lf:
+                                err_tail = lf.read()[-350:]
+                        except Exception:
+                            pass
+                        cand_idx += 1
+                        next_label, next_mtp, next_cmd = launch_candidates[cand_idx]
+                        globals()["MTP_ACTIVE_FLAG"] = bool(next_mtp)
+                        globals()["MTP_DRAFT_MAX"] = 2 if next_mtp else 0
+                        mode_label = f"{next_label} ({os.path.basename(model_gguf)})"
+                        tail_hint = err_tail.strip().splitlines()[-1] if err_tail.strip() else str(warm_err)[:120]
+                        log_event(f"Warmup crashed variant (rc={main_p.returncode}: {tail_hint[:140]}); retrying with {next_label}...", category="SYSTEM", level="WARN")
+                        ll_log = open("/tmp/llama_server.log", "w")
+                        WORKER_PROCS["main"] = subprocess.Popen(next_cmd, env=ll_env, stdout=ll_log, stderr=ll_log)
+                        t_wait_hl = time.time()
+                        time.sleep(1.0)
+                    else:
+                        log_event(f"Silent warmup finished with warning ({warm_err}); marking model ready.", category="SYSTEM", level="WARN")
+                if not warm_crashed:
+                    break
 
             RUNTIME_MODE = "llm_ready"
             ACTIVE_MODEL_NAME = model_name or os.path.basename(model_gguf)

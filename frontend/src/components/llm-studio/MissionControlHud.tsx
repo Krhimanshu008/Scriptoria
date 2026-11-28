@@ -154,12 +154,38 @@ export function MissionControlHud({
     : health?.lastTurn?.prefillTokPerSec ?? null;
   const relayMs = useClientTurn ? clientLastTurn.relayOverheadMs : null;
 
-  const mtpPct =
-    health?.mtp?.acceptancePct ??
-    (useClientTurn ? clientLastTurn.mtpAcceptancePct : null);
-  const mtpMeanStep =
-    health?.mtp?.meanTokensPerStep ??
-    (useClientTurn ? clientLastTurn.mtpMeanTokensPerStep : null);
+  // Derive per-turn MTP accuracy from latest turn (client or worker heartbeat) instead of stale session /metrics total
+  const workerLastTurnMtpPct =
+    health?.lastTurn?.draftN &&
+    health.lastTurn.draftN > 0 &&
+    health.lastTurn.draftNAccepted !== undefined &&
+    health.lastTurn.draftNAccepted !== null
+      ? Math.round((health.lastTurn.draftNAccepted / health.lastTurn.draftN) * 1000) / 10
+      : null;
+  const workerLastTurnMeanStep =
+    health?.lastTurn?.predictedN &&
+    health?.lastTurn?.draftNAccepted !== undefined &&
+    health?.lastTurn?.draftNAccepted !== null &&
+    health.lastTurn.predictedN > health.lastTurn.draftNAccepted
+      ? Math.round(
+          (health.lastTurn.predictedN /
+            (health.lastTurn.predictedN - health.lastTurn.draftNAccepted)) *
+            100
+        ) / 100
+      : null;
+
+  const lastTurnMtpPct =
+    (useClientTurn ? clientLastTurn.mtpAcceptancePct : workerLastTurnMtpPct) ??
+    clientLastTurn?.mtpAcceptancePct ??
+    workerLastTurnMtpPct;
+  const lastTurnMtpMeanStep =
+    (useClientTurn ? clientLastTurn.mtpMeanTokensPerStep : workerLastTurnMeanStep) ??
+    clientLastTurn?.mtpMeanTokensPerStep ??
+    workerLastTurnMeanStep;
+
+  const cumulMtpPct = health?.mtp?.acceptancePct ?? null;
+  const mtpPct = lastTurnMtpPct ?? cumulMtpPct;
+  const mtpMeanStep = lastTurnMtpMeanStep ?? health?.mtp?.meanTokensPerStep ?? null;
 
   const kvUsed = health?.slot?.kvUsed ?? 0;
   const kvTotal = health?.slot?.kvTotal ?? 16384;
@@ -548,6 +574,13 @@ export function MissionControlHud({
             <div className="text-right text-[10px]">
               <div className="text-violet-300 font-semibold">
                 {mtpPct !== null ? `${mtpPct}% acc` : "--% acc"}
+                {cumulMtpPct !== null &&
+                  lastTurnMtpPct !== null &&
+                  Math.abs(cumulMtpPct - lastTurnMtpPct) >= 1 && (
+                    <span className="ml-1 text-[9px] font-normal text-zinc-500">
+                      (avg {cumulMtpPct}%)
+                    </span>
+                  )}
               </div>
               <div className="text-zinc-400">
                 {mtpMeanStep !== null ? `${mtpMeanStep} t/step` : "-- t/step"}
