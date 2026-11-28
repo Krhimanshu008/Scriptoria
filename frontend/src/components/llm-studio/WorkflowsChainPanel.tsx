@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Workflow,
@@ -14,17 +14,29 @@ import {
   CheckCircle2,
   Clock,
   Gauge,
+  Square,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import type { LlmWorkflowStep } from "@/app/api/llm-studio/workflows/route";
-import type { LlmTargetService } from "@/lib/llm/dispatch-llm";
+import type { DispatchLlmResult, LlmTargetService } from "@/lib/llm/dispatch-llm";
 import {
   type LlmTargetOption,
   type WorkflowRecordItem,
   parseTargetOption,
 } from "./types";
+import { useLlmTelemetry } from "./LlmTelemetryContext";
+import {
+  InferenceReceiptBar,
+  type InferenceReceiptData,
+  receiptFromDispatchResult,
+} from "./InferenceReceiptBar";
+import {
+  StepWaterfallBar,
+  type StepWaterfallSegments,
+  buildStepWaterfall,
+} from "./StepWaterfallBar";
 
 interface ChainStepResult {
   stepId: string;
@@ -36,6 +48,8 @@ interface ChainStepResult {
   latencyMs: number;
   tokPerSec: number | null;
   validJson: boolean | null;
+  receipt: InferenceReceiptData;
+  waterfall: StepWaterfallSegments;
 }
 
 interface ChainRunResponse {
@@ -43,6 +57,19 @@ interface ChainRunResponse {
   totalLatencyMs: number;
   finalOutput: string;
   stepResults: ChainStepResult[];
+}
+
+function interpolateTemplate(
+  template: string,
+  vars: { input: string; prevOutput: string; stepOutputs: Record<string, string> }
+): string {
+  let out = template
+    .replace(/\{\{\s*input\s*\}\}/g, vars.input)
+    .replace(/\{\{\s*prev\.output\s*\}\}/g, vars.prevOutput);
+  for (const [k, v] of Object.entries(vars.stepOutputs)) {
+    out = out.replace(new RegExp(`\\{\\{\\s*${k}\\.output\\s*\\}\\}`, "g"), v);
+  }
+  return out;
 }
 
 function makeBlankStep(index: number): LlmWorkflowStep {
@@ -59,7 +86,14 @@ function makeBlankStep(index: number): LlmWorkflowStep {
   };
 }
 
-export function WorkflowsChainPanel({ targetOptions }: { targetOptions: LlmTargetOption[] }) {
+export function WorkflowsChainPanel({
+  targetOptions,
+  globalThinkingEnabled,
+}: {
+  targetOptions: LlmTargetOption[];
+  globalThinkingEnabled: boolean;
+}) {
+  const { beginRequest, endRequest } = useLlmTelemetry();
   const { data, refetch } = useQuery<{ workflows: WorkflowRecordItem[] }>({
     queryKey: ["llm-studio-workflows"],
     queryFn: async () => {
@@ -79,7 +113,10 @@ export function WorkflowsChainPanel({ targetOptions }: { targetOptions: LlmTarge
 
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
+  const [runningStepIdx, setRunningStepIdx] = useState<number | null>(null);
   const [runResult, setRunResult] = useState<ChainRunResponse | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const cancelRequestedRef = useRef(false);
 
   const workflows = data?.workflows || [];
 
@@ -146,26 +183,115 @@ export function WorkflowsChainPanel({ targetOptions }: { targetOptions: LlmTarge
 
   async function handleRunChain() {
     if (!workflowInput.trim() || steps.length === 0 || running) return;
+    cancelRequestedRef.current = false;
     setRunning(true);
-    setRunResult(null);
+    setRunResult({ ok: true, totalLatencyMs: 0, finalOutput: "", stepResults: [] });
+
+    const compiledSteps: ChainStepResult[] = [];
+    const stepOutputs: Record<string, string> = {};
+    let prevOutput = workflowInput;
+
     try {
-      const res = await fetch("/api/v1/llm-eval", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "run_workflow",
-          steps,
-          workflowInput,
-          fallbackToVault: true,
-        }),
-      });
-      const json = (await res.json()) as ChainRunResponse & { error?: string };
-      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
-      setRunResult(json);
-      toast.success(`Chain completed ${json.stepResults.length} steps in ${json.totalLatencyMs}ms`);
+      for (let idx = 0; idx < steps.length; idx++) {
+        if (cancelRequestedRef.current) {
+          toast.info(`Stopped chain after ${compiledSteps.length} step(s).`);
+          break;
+        }
+        setRunningStepIdx(idx);
+        const s = steps[idx];
+        const compiledPrompt = interpolateTemplate(s.promptTemplate || "{{prev.output}}", {
+          input: workflowInput,
+          prevOutput,
+          stepOutputs,
+        });
+
+        const controller = new AbortController();
+        abortRef.current = controller;
+        const reqId = beginRequest({
+          label: `Chain Step ${idx + 1}/${steps.length}`,
+          isJsonMode: s.mode === "json",
+        });
+
+        try {
+          const res = await fetch("/api/llm-studio/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            signal: controller.signal,
+            body: JSON.stringify({
+              messages: [{ role: "user", content: compiledPrompt }],
+              systemPrompt: s.systemPrompt,
+              mode: s.mode || "chat",
+              jsonSchema: s.jsonSchema,
+              reasoningEffort: globalThinkingEnabled ? "high" : "none",
+              enableThinking: globalThinkingEnabled,
+              temperature: s.temperature ?? 0.2,
+              maxTokens: s.maxTokens ?? 2048,
+              targetVm: s.targetVm || "auto",
+              targetService: s.targetService || "default",
+              fallbackToVault: true,
+            }),
+          });
+          const data = (await res.json()) as DispatchLlmResult & { error?: string };
+          if (!res.ok) {
+            endRequest(reqId, null);
+            throw new Error(data.error || `Step ${idx + 1} failed (HTTP ${res.status})`);
+          }
+          endRequest(reqId, data);
+
+          prevOutput = data.answer;
+          stepOutputs[`step_${idx + 1}`] = data.answer;
+
+          const receipt = receiptFromDispatchResult(data);
+          const waterfall = buildStepWaterfall({
+            wallLatencyMs: data.latencyMs,
+            promptMs: data.timings?.prompt_ms ?? null,
+            predictedMs: data.timings?.predicted_ms ?? null,
+            visionEncodeMs: data.visionEncodeMs,
+            relayOverheadMs: data.relayOverheadMs,
+            thinkingTokens: data.thinkingTokens,
+            answerTokens: data.answerTokens,
+          });
+
+          compiledSteps.push({
+            stepId: s.id,
+            stepName: s.name,
+            targetUsed: data.target,
+            model: data.model,
+            answer: data.answer,
+            thinking: data.thinking,
+            latencyMs: data.latencyMs,
+            tokPerSec: data.rawDecodeTokPerSec ?? data.tokPerSec,
+            validJson: data.jsonValidation ? data.jsonValidation.isValidJson : null,
+            receipt,
+            waterfall,
+          });
+
+          const totalLatencyMs = compiledSteps.reduce((acc, item) => acc + item.latencyMs, 0);
+          setRunResult({
+            ok: true,
+            totalLatencyMs,
+            finalOutput: prevOutput,
+            stepResults: [...compiledSteps],
+          });
+        } catch (err) {
+          endRequest(reqId, null);
+          if (err instanceof DOMException && err.name === "AbortError") {
+            toast.info(`Aborted chain at step ${idx + 1}.`);
+            break;
+          }
+          throw err;
+        }
+      }
+
+      if (!cancelRequestedRef.current && compiledSteps.length === steps.length) {
+        const totalMs = compiledSteps.reduce((acc, x) => acc + x.latencyMs, 0);
+        toast.success(`Chain completed ${compiledSteps.length} steps in ${(totalMs / 1000).toFixed(2)}s`);
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Workflow execution failed");
     } finally {
+      abortRef.current = null;
+      setRunningStepIdx(null);
       setRunning(false);
     }
   }
@@ -398,58 +524,113 @@ export function WorkflowsChainPanel({ targetOptions }: { targetOptions: LlmTarge
                 onChange={(e) => setWorkflowInput(e.target.value)}
                 className="flex-1 rounded-lg border border-zinc-800 bg-zinc-900 p-2.5 text-xs text-zinc-100"
               />
-              <Button onClick={handleRunChain} disabled={running} className="self-end h-10 px-5">
-                {running ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
-                {running ? "Running..." : "Run Chain"}
-              </Button>
+              <div className="flex flex-col justify-end gap-1.5">
+                {running && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      cancelRequestedRef.current = true;
+                      abortRef.current?.abort();
+                    }}
+                    className="border-rose-500/40 text-rose-300 hover:bg-rose-500/15"
+                  >
+                    <Square className="mr-1 size-3" /> Stop
+                  </Button>
+                )}
+                <Button onClick={handleRunChain} disabled={running} className="h-10 px-5">
+                  {running ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
+                  {running
+                    ? runningStepIdx !== null
+                      ? `Step ${runningStepIdx + 1}/${steps.length}...`
+                      : "Running..."
+                    : "Run Chain"}
+                </Button>
+              </div>
             </div>
           </div>
         </div>
 
-        {runResult && (
-          <div className="rounded-xl border border-zinc-800 bg-zinc-950/90 p-4 space-y-3">
-            <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
-              <span className="text-xs font-semibold text-emerald-300">
-                Chain Execution Trace ({runResult.stepResults.length} steps)
-              </span>
-              <span className="flex items-center gap-1 text-xs text-zinc-400">
-                <Clock className="size-3.5" /> Total {runResult.totalLatencyMs}ms
-              </span>
-            </div>
-            <div className="space-y-2.5">
-              {runResult.stepResults.map((sr, i) => (
-                <div key={sr.stepId} className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-3 space-y-1.5">
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <span className="font-semibold text-zinc-100">
-                      {i + 1}. {sr.stepName}
+        {runResult && runResult.stepResults.length > 0 && (() => {
+          const sumTotals = runResult.stepResults.reduce(
+            (acc, s) => ({
+              relay: acc.relay + s.waterfall.relayMs,
+              prefill: acc.prefill + s.waterfall.prefillMs,
+              vision: acc.vision + s.waterfall.visionMs,
+              think: acc.think + s.waterfall.thinkingMs,
+              decode: acc.decode + s.waterfall.visibleDecodeMs,
+            }),
+            { relay: 0, prefill: 0, vision: 0, think: 0, decode: 0 }
+          );
+          const totSeg = Math.max(
+            1,
+            sumTotals.relay + sumTotals.prefill + sumTotals.vision + sumTotals.think + sumTotals.decode
+          );
+          return (
+            <div className="rounded-xl border border-zinc-800 bg-zinc-950/90 p-4 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-800 pb-2.5">
+                <span className="text-xs font-semibold text-emerald-300">
+                  Chain Execution Trace ({runResult.stepResults.length}/{steps.length} steps)
+                </span>
+                <div className="flex flex-wrap items-center gap-3 font-mono text-[10px] text-zinc-400">
+                  <span>Decode {Math.round((sumTotals.decode / totSeg) * 100)}%</span>
+                  {sumTotals.think > 0 && (
+                    <span className="text-amber-300">
+                      Think {Math.round((sumTotals.think / totSeg) * 100)}%
                     </span>
-                    <div className="flex items-center gap-2 text-[11px] text-zinc-400">
-                      <Badge variant="outline" className="text-[10px]">
-                        {sr.targetUsed || sr.model}
-                      </Badge>
-                      <span>{sr.latencyMs}ms</span>
-                      {sr.tokPerSec && (
-                        <span className="flex items-center gap-1 text-emerald-400">
-                          <Gauge className="size-3" /> {sr.tokPerSec} t/s
-                        </span>
-                      )}
-                      {sr.validJson !== null && (
-                        <CheckCircle2
-                          className={`size-3.5 ${
-                            sr.validJson ? "text-emerald-400" : "text-red-400"
-                          }`}
-                        />
-                      )}
-                    </div>
-                  </div>
-                  <pre className="whitespace-pre-wrap font-sans text-xs text-zinc-200 max-h-56 overflow-y-auto">
-                    {sr.answer}
-                  </pre>
+                  )}
+                  <span className="text-cyan-300">
+                    Prefill {Math.round((sumTotals.prefill / totSeg) * 100)}%
+                  </span>
+                  {sumTotals.vision > 0 && (
+                    <span className="text-fuchsia-300">
+                      Vision {Math.round((sumTotals.vision / totSeg) * 100)}%
+                    </span>
+                  )}
+                  <span>Relay {Math.round((sumTotals.relay / totSeg) * 100)}%</span>
+                  <span className="flex items-center gap-1 font-semibold text-zinc-200">
+                    <Clock className="size-3.5" /> {(runResult.totalLatencyMs / 1000).toFixed(2)}s
+                  </span>
                 </div>
-              ))}
+              </div>
+              <div className="space-y-3">
+                {runResult.stepResults.map((sr, i) => (
+                  <div key={`${sr.stepId}-${i}`} className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-3 space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <span className="font-semibold text-zinc-100">
+                        {i + 1}. {sr.stepName}
+                      </span>
+                      <div className="flex items-center gap-2 text-[11px] text-zinc-400 font-mono">
+                        <Badge variant="outline" className="text-[10px]">
+                          {sr.targetUsed || sr.model}
+                        </Badge>
+                        <span>{(sr.latencyMs / 1000).toFixed(2)}s</span>
+                        {sr.tokPerSec && (
+                          <span className="flex items-center gap-1 text-emerald-400">
+                            <Gauge className="size-3" /> {sr.tokPerSec} t/s
+                          </span>
+                        )}
+                        {sr.validJson !== null && (
+                          <CheckCircle2
+                            className={`size-3.5 ${
+                              sr.validJson ? "text-emerald-400" : "text-red-400"
+                            }`}
+                          />
+                        )}
+                      </div>
+                    </div>
+                    <StepWaterfallBar segments={sr.waterfall} />
+                    <pre className="whitespace-pre-wrap font-sans text-xs text-zinc-200 max-h-56 overflow-y-auto pt-1">
+                      {sr.answer}
+                    </pre>
+                    <InferenceReceiptBar receipt={sr.receipt} />
+                  </div>
+                ))}
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
       </div>
     </div>
   );

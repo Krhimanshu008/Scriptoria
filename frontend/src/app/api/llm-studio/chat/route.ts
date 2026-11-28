@@ -15,6 +15,8 @@ interface ChatRequestBody {
   mode?: LlmChatMode;
   jsonSchema?: string;
   reasoningEffort?: LlmReasoningEffort;
+  enableThinking?: boolean;
+  cachePrompt?: boolean;
   temperature?: number;
   maxTokens?: number;
   fallbackToVault?: boolean;
@@ -38,6 +40,8 @@ export async function POST(req: NextRequest) {
       mode: body.mode || "chat",
       jsonSchema: body.jsonSchema,
       reasoningEffort: body.reasoningEffort || "none",
+      enableThinking: typeof body.enableThinking === "boolean" ? body.enableThinking : undefined,
+      cachePrompt: typeof body.cachePrompt === "boolean" ? body.cachePrompt : undefined,
       temperature: body.temperature,
       maxTokens: body.maxTokens,
       fallbackToVault: Boolean(body.fallbackToVault),
@@ -49,7 +53,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(result);
   } catch (error) {
     if (error instanceof LlmDispatchError) {
-      return NextResponse.json({ error: error.message }, { status: error.status });
+      return NextResponse.json(
+        { error: error.message, ...(error.code ? { code: error.code } : {}) },
+        { status: error.status }
+      );
     }
     const message = error instanceof Error ? error.message : "LLM Studio execution failed";
     return NextResponse.json({ error: message }, { status: 500 });

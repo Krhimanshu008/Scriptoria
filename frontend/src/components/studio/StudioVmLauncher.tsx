@@ -26,6 +26,12 @@ import {
   type WorkerProfileId,
 } from "@/lib/catalog/worker-profiles";
 import {
+  CANONICAL_LLM_DATASET_NAME,
+  CANONICAL_LLM_PRESET,
+  CANONICAL_LLM_PRESET_ID,
+  CANONICAL_LLM_PROFILE_ID,
+} from "@/lib/llm/llm-model-presets";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -56,6 +62,7 @@ export interface EnrichedKaggleAccount {
   remainingSeconds: number;
   totalAllowedSeconds: number;
   activeProfile: string;
+  autoLoadOnBoot: boolean;
   kaggleDatasets: string[];
   lastError?: string | null;
   quotaError?: string | null;
@@ -137,6 +144,7 @@ export function useKaggleClusterAccounts(vms: PublicVmInstance[]) {
         remainingSeconds: remaining,
         totalAllowedSeconds: totalAllowed,
         activeProfile: slotVms[0]?.workerProfile || "BASE_COMFY",
+        autoLoadOnBoot: slotVms[0]?.bootMetadata?.autoLoadOnBoot === true,
         kaggleDatasets: slotVms[0]?.kaggleDatasets ?? [],
         lastError: slotVms.find((v) => v.lastError)?.lastError,
         quotaError: acc.quotaError || null,
@@ -228,8 +236,11 @@ export async function bootKaggleAccount(params: {
     return false;
   }
 
+  const fallbackLabel = isLlmWorkerProfile(workerProfile || currentProfile)
+    ? CANONICAL_LLM_PROFILE_ID
+    : "IMAGE_CORE";
   toast.success(
-    `Booting Kaggle worker (${workerProfile || currentProfile || "IMAGE_CORE"}) -> ${primaryTarget.toUpperCase()}!`
+    `Booting Kaggle 2×T4 (${workerProfile || currentProfile || fallbackLabel}) -> ${primaryTarget.toUpperCase()}!`
   );
   return true;
 }
@@ -254,6 +265,7 @@ interface KaggleVmLauncherDialogProps {
   onOpenChange: (open: boolean) => void;
   vms: PublicVmInstance[];
   desiredProfile?: WorkerProfileId;
+  launcherMode?: "image" | "llm";
   prewarmModels?: PrewarmModelRef[];
   onTargetSelected?: (target: string) => void;
 }
@@ -266,6 +278,7 @@ export function KaggleVmLauncherDialog({
   onOpenChange,
   vms,
   desiredProfile,
+  launcherMode,
   prewarmModels,
   onTargetSelected,
 }: KaggleVmLauncherDialogProps) {
@@ -284,8 +297,20 @@ export function KaggleVmLauncherDialog({
   const [profileOverrides, setProfileOverrides] = useState<Record<string, string>>({});
   const [datasetDrafts, setDatasetDrafts] = useState<Record<string, string>>({});
   const [savingDatasetAlias, setSavingDatasetAlias] = useState<string | null>(null);
+  const [buildingDatasetAlias, setBuildingDatasetAlias] = useState<string | null>(null);
+  const [datasetBuildUrls, setDatasetBuildUrls] = useState<Record<string, string>>({});
+  const [togglingAutoloadAlias, setTogglingAutoloadAlias] = useState<string | null>(null);
 
-  const imageProfiles = WORKER_PROFILE_LIST.filter((p) => !isLlmWorkerProfile(p.id) && p.accelerator !== "tpu");
+  const resolvedMode: "image" | "llm" =
+    launcherMode ?? (desiredProfile && isLlmWorkerProfile(desiredProfile) ? "llm" : "image");
+  const isLlmMode = resolvedMode === "llm";
+  const selectableProfiles = useMemo(
+    () =>
+      isLlmMode
+        ? WORKER_PROFILE_LIST.filter((p) => p.id === CANONICAL_LLM_PROFILE_ID)
+        : WORKER_PROFILE_LIST.filter((p) => !isLlmWorkerProfile(p.id) && p.accelerator !== "tpu"),
+    [isLlmMode]
+  );
 
   async function updateAccountDatasets(acc: EnrichedKaggleAccount, nextDatasets: string[]) {
     setSavingDatasetAlias(acc.alias);
@@ -297,28 +322,79 @@ export function KaggleVmLauncherDialog({
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
-        toast.error(body.error || "Failed updating FastBoot dataset");
+        toast.error(body.error || "Failed updating Kaggle dataset");
         return;
       }
-      toast.success(`Updated FastBoot dataset on ${acc.displayName}`);
+      toast.success(`Updated dataset on ${acc.displayName}`);
       await refreshCluster();
     } finally {
       setSavingDatasetAlias(null);
     }
   }
 
+  async function toggleAccountAutoLoad(acc: EnrichedKaggleAccount, nextAutoLoad: boolean) {
+    setTogglingAutoloadAlias(acc.alias);
+    try {
+      const res = await fetch(`/api/vm/${encodeURIComponent(acc.primaryTarget)}/profile`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ applyToGroup: true, autoLoadOnBoot: nextAutoLoad }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(body.error || "Failed updating Auto-Load on boot");
+        return;
+      }
+      toast.success(
+        nextAutoLoad
+          ? `${acc.displayName}: will auto-load Qwen3.8-27B into VRAM on boot`
+          : `${acc.displayName}: Setup-Only Boot enabled`
+      );
+      await refreshCluster();
+    } finally {
+      setTogglingAutoloadAlias(null);
+    }
+  }
+
+  async function triggerBuildLlmDataset(acc: EnrichedKaggleAccount) {
+    setBuildingDatasetAlias(acc.alias);
+    try {
+      const res = await fetch(`/api/vm/${encodeURIComponent(acc.primaryTarget)}/build-fastboot`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profileId: CANONICAL_LLM_PROFILE_ID,
+          presetId: CANONICAL_LLM_PRESET_ID,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(body.error || "Failed queueing 0-GPU Qwen dataset builder");
+        return;
+      }
+      if (typeof body.url === "string") {
+        setDatasetBuildUrls((prev) => ({ ...prev, [acc.alias]: body.url }));
+      }
+      toast.success("Queued 0-GPU Qwen3.8-27B Dataset build! Save Output -> New Dataset when finished.");
+      await refreshCluster();
+    } finally {
+      setBuildingDatasetAlias(null);
+    }
+  }
+
   async function handleBootOne(acc: EnrichedKaggleAccount) {
     setBusyAlias(acc.alias);
     try {
-      const targetProfile =
-        profileOverrides[acc.alias] ||
-        (matchWorkflowProfile && desiredProfile ? desiredProfile : acc.activeProfile);
+      const targetProfile = isLlmMode
+        ? CANONICAL_LLM_PROFILE_ID
+        : profileOverrides[acc.alias] ||
+          (matchWorkflowProfile && desiredProfile ? desiredProfile : acc.activeProfile);
       const ok = await bootKaggleAccount({
         primaryTarget: acc.primaryTarget,
         alias: acc.alias,
         workerProfile: targetProfile,
         currentProfile: acc.activeProfile,
-        prewarmModels: attachPrewarm ? prewarmModels : undefined,
+        prewarmModels: isLlmMode ? undefined : attachPrewarm ? prewarmModels : undefined,
         workerMode,
       });
       if (ok && onTargetSelected) {
@@ -351,15 +427,16 @@ export function KaggleVmLauncherDialog({
     setBusyAlias("__ALL__");
     try {
       for (const acc of offlineList) {
-        const targetProfile =
-          profileOverrides[acc.alias] ||
-          (matchWorkflowProfile && desiredProfile ? desiredProfile : acc.activeProfile);
+        const targetProfile = isLlmMode
+          ? CANONICAL_LLM_PROFILE_ID
+          : profileOverrides[acc.alias] ||
+            (matchWorkflowProfile && desiredProfile ? desiredProfile : acc.activeProfile);
         await bootKaggleAccount({
           primaryTarget: acc.primaryTarget,
           alias: acc.alias,
           workerProfile: targetProfile,
           currentProfile: acc.activeProfile,
-          prewarmModels: attachPrewarm ? prewarmModels : undefined,
+          prewarmModels: isLlmMode ? undefined : attachPrewarm ? prewarmModels : undefined,
           workerMode,
         });
       }
@@ -377,47 +454,69 @@ export function KaggleVmLauncherDialog({
       <DialogContent className="glass-popover max-w-2xl border-white/15 text-zinc-100">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base">
-            <Cpu className="h-4 w-4 text-cyan-400" />
-            Studio Kaggle Dual-T4 VM Launcher ({configuredAccounts.length} Accounts Linked)
+            <Cpu className={`h-4 w-4 ${isLlmMode ? "text-violet-400" : "text-cyan-400"}`} />
+            {isLlmMode
+              ? `Kaggle Dual-T4 LLM Launcher — Qwen3.8-27B VLM + MTP (${configuredAccounts.length} Accounts)`
+              : `Studio Kaggle Dual-T4 VM Launcher (${configuredAccounts.length} Accounts Linked)`}
           </DialogTitle>
           <DialogDescription className="text-xs text-zinc-400">
-            Boot any attached Kaggle Dual-T4 account directly from Studio, auto-matching your active workflow profile &amp; pre-warming needed checkpoints.
+            {isLlmMode
+              ? `Boot a Kaggle 2× Tesla T4 session (53:47 split) for ${CANONICAL_LLM_PRESET.shortLabel} (~16.56 GB Q4 + mmproj-F16 + Native MTP). Attach <username>/${CANONICAL_LLM_DATASET_NAME} for ~15s mount instead of downloading from HuggingFace.`
+              : "Boot any attached Kaggle Dual-T4 account directly from Studio, auto-matching your active workflow profile & pre-warming needed checkpoints."}
           </DialogDescription>
         </DialogHeader>
 
         {/* Top Match & Batch Boot Strip */}
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-zinc-800 bg-zinc-950/80 p-3 text-xs">
           <div className="space-y-1 text-zinc-300">
-            {desiredProfile && (
-              <label className="flex cursor-pointer items-center gap-2 text-zinc-200">
-                <input
-                  type="checkbox"
-                  checked={matchWorkflowProfile}
-                  onChange={(e) => setMatchWorkflowProfile(e.target.checked)}
-                />
-                <span>
-                  Auto-set profile to{" "}
-                  <strong className="font-mono text-indigo-300">{desiredProfile}</strong> (
-                  {getWorkerProfile(desiredProfile).shortTag})
-                </span>
-              </label>
-            )}
-            {prewarmModels && prewarmModels.length > 0 && (
-              <label className="flex cursor-pointer items-center gap-2 text-zinc-300">
-                <input
-                  type="checkbox"
-                  checked={attachPrewarm}
-                  onChange={(e) => setAttachPrewarm(e.target.checked)}
-                />
-                <span>
-                  Pre-warm {Math.min(3, prewarmModels.length)} workflow model(s) into `/tmp/models` on boot
-                </span>
-              </label>
-            )}
-            {!desiredProfile && (!prewarmModels || prewarmModels.length === 0) && (
-              <span className="text-[11px] text-zinc-400">
-                Choose a Kaggle account below or click <strong>Boot Best</strong> to start a Dual-T4 VM.
-              </span>
+            {isLlmMode ? (
+              <div className="space-y-0.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded border border-violet-500/40 bg-violet-950/40 px-2 py-0.5 font-mono text-[10px] font-semibold text-violet-200">
+                    LOCKED SINGLE STACK · LLM_QWEN_VLM
+                  </span>
+                  <span className="font-mono text-[11px] text-zinc-300">
+                    Qwen3.8-27B-UD-Q4_K_M + mmproj-F16 + draft-mtp
+                  </span>
+                </div>
+                <p className="text-[11px] text-zinc-400">
+                  Boots 2× T4 cleanly into Safe Headless Relay (`:8190`) with Native MTP enabled.
+                </p>
+              </div>
+            ) : (
+              <>
+                {desiredProfile && (
+                  <label className="flex cursor-pointer items-center gap-2 text-zinc-200">
+                    <input
+                      type="checkbox"
+                      checked={matchWorkflowProfile}
+                      onChange={(e) => setMatchWorkflowProfile(e.target.checked)}
+                    />
+                    <span>
+                      Auto-set profile to{" "}
+                      <strong className="font-mono text-indigo-300">{desiredProfile}</strong> (
+                      {getWorkerProfile(desiredProfile).shortTag})
+                    </span>
+                  </label>
+                )}
+                {prewarmModels && prewarmModels.length > 0 && (
+                  <label className="flex cursor-pointer items-center gap-2 text-zinc-300">
+                    <input
+                      type="checkbox"
+                      checked={attachPrewarm}
+                      onChange={(e) => setAttachPrewarm(e.target.checked)}
+                    />
+                    <span>
+                      Pre-warm {Math.min(3, prewarmModels.length)} workflow model(s) into `/tmp/models` on boot
+                    </span>
+                  </label>
+                )}
+                {!desiredProfile && (!prewarmModels || prewarmModels.length === 0) && (
+                  <span className="text-[11px] text-zinc-400">
+                    Choose a Kaggle account below or click <strong>Boot Best</strong> to start a Dual-T4 VM.
+                  </span>
+                )}
+              </>
             )}
           </div>
 
@@ -494,15 +593,19 @@ export function KaggleVmLauncherDialog({
             </div>
           ) : (
             configuredAccounts.map((acc) => {
-              const effectiveProfile =
-                profileOverrides[acc.alias] ||
-                (matchWorkflowProfile && desiredProfile && !acc.isOnline && !acc.isStarting
-                  ? desiredProfile
-                  : acc.activeProfile);
+              const effectiveProfile = isLlmMode
+                ? CANONICAL_LLM_PROFILE_ID
+                : profileOverrides[acc.alias] ||
+                  (matchWorkflowProfile && desiredProfile && !acc.isOnline && !acc.isStarting
+                    ? desiredProfile
+                    : acc.activeProfile);
               const pct = Math.min(
                 100,
                 Math.round((acc.remainingSeconds / Math.max(1, acc.totalAllowedSeconds)) * 100)
               );
+              const hasQwenDataset = acc.kaggleDatasets.some((d) => /qwen|llm/i.test(d));
+              const suggestedQwenSlug = acc.username ? `${acc.username}/${CANONICAL_LLM_DATASET_NAME}` : null;
+              const buildUrl = datasetBuildUrls[acc.alias];
 
               return (
                 <div
@@ -534,10 +637,32 @@ export function KaggleVmLauncherDialog({
                           AUTH ERROR (401/403)
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 font-mono text-[10px] text-zinc-400">
-                          <Clock className="h-3 w-3 text-zinc-500" />
-                          {formatQuotaHrs(acc.remainingSeconds)} ({pct}%)
-                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <div className="hidden h-1.5 w-16 overflow-hidden rounded-full bg-zinc-800 sm:block">
+                            <div
+                              className={`h-full ${
+                                pct < 15
+                                  ? "bg-rose-500"
+                                  : pct < 35
+                                  ? "bg-amber-500"
+                                  : "bg-emerald-400"
+                              }`}
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                          <span
+                            className={`inline-flex items-center gap-1 font-mono text-[10px] ${
+                              pct < 15
+                                ? "text-rose-300"
+                                : pct < 35
+                                ? "text-amber-300"
+                                : "text-zinc-300"
+                            }`}
+                          >
+                            <Clock className="h-3 w-3 text-zinc-500" />
+                            {formatQuotaHrs(acc.remainingSeconds)} / 30h ({pct}%)
+                          </span>
+                        </div>
                       )}
                       <span
                         className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${
@@ -589,20 +714,40 @@ export function KaggleVmLauncherDialog({
                   )}
 
                   <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
-                    <select
-                      disabled={acc.isOnline || acc.isStarting}
-                      value={effectiveProfile}
-                      onChange={(e) =>
-                        setProfileOverrides((prev) => ({ ...prev, [acc.alias]: e.target.value }))
-                      }
-                      className="glass-input h-8 min-w-0 w-full flex-1 rounded-md px-2 font-mono text-[11px] text-zinc-200 disabled:opacity-60 sm:min-w-[260px]"
-                    >
-                      {imageProfiles.map((p) => (
-                        <option key={p.id} value={p.id} className="bg-zinc-900">
-                          {p.shortTag} · {p.label}
-                        </option>
-                      ))}
-                    </select>
+                    {isLlmMode ? (
+                      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                        <span className="inline-flex h-8 items-center rounded-md border border-violet-500/35 bg-violet-950/30 px-2.5 font-mono text-[11px] text-violet-100">
+                          QWEN-LLM · Qwen3.8-27B Vision + Native MTP (2× T4 53:47)
+                        </span>
+                        <label
+                          className="inline-flex cursor-pointer items-center gap-1.5 rounded border border-zinc-800 bg-zinc-900/70 px-2 py-1 text-[10px] text-zinc-300"
+                          title="Automatically download/mount Qwen3.8-27B into VRAM immediately upon boot"
+                        >
+                          <input
+                            type="checkbox"
+                            disabled={acc.isOnline || acc.isStarting || togglingAutoloadAlias === acc.alias}
+                            checked={acc.autoLoadOnBoot}
+                            onChange={(e) => toggleAccountAutoLoad(acc, e.target.checked)}
+                          />
+                          <span>Auto-load 27B on boot</span>
+                        </label>
+                      </div>
+                    ) : (
+                      <select
+                        disabled={acc.isOnline || acc.isStarting}
+                        value={effectiveProfile}
+                        onChange={(e) =>
+                          setProfileOverrides((prev) => ({ ...prev, [acc.alias]: e.target.value }))
+                        }
+                        className="glass-input h-8 min-w-0 w-full flex-1 rounded-md px-2 font-mono text-[11px] text-zinc-200 disabled:opacity-60 sm:min-w-[260px]"
+                      >
+                        {selectableProfiles.map((p) => (
+                          <option key={p.id} value={p.id} className="bg-zinc-900">
+                            {p.shortTag} · {p.label}
+                          </option>
+                        ))}
+                      </select>
+                    )}
 
                     <div className="flex items-center gap-1.5">
                       {onTargetSelected && acc.isOnline && (
@@ -656,71 +801,127 @@ export function KaggleVmLauncherDialog({
                     </div>
                   </div>
 
-                  {/* Compact FastBoot Dataset Bar */}
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/5 pt-2 text-[10px]">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <Database className="h-3 w-3 text-cyan-400" />
-                      <span className="text-zinc-500">FastBoot:</span>
-                      {acc.kaggleDatasets.length === 0 ? (
-                        <span className="text-zinc-600">None (Cold Boot)</span>
-                      ) : (
-                        acc.kaggleDatasets.map((ds) => (
-                          <span
-                            key={ds}
-                            className="inline-flex items-center gap-1 rounded border border-cyan-500/35 bg-cyan-500/10 px-1.5 py-0.5 font-mono text-cyan-200"
-                          >
-                            {ds}
-                            {!acc.isOnline && !acc.isStarting && (
-                              <button
-                                type="button"
-                                disabled={savingDatasetAlias === acc.alias}
-                                onClick={() =>
-                                  updateAccountDatasets(
-                                    acc,
-                                    acc.kaggleDatasets.filter((d) => d !== ds)
-                                  )
-                                }
-                                className="text-cyan-400/80 hover:text-white"
-                              >
-                                <X className="h-2.5 w-2.5" />
-                              </button>
-                            )}
+                  {/* Compact FastBoot / Qwen LLM Dataset Bar */}
+                  <div className="space-y-1.5 border-t border-white/5 pt-2 text-[10px]">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <Database className="h-3 w-3 text-cyan-400" />
+                        <span className="text-zinc-500">
+                          {isLlmMode ? "Qwen Dataset:" : "FastBoot:"}
+                        </span>
+                        {acc.kaggleDatasets.length === 0 ? (
+                          <span className={isLlmMode ? "text-amber-300/90" : "text-zinc-600"}>
+                            {isLlmMode ? "No Dataset · On-Demand /tmp Download" : "None (Cold Boot)"}
                           </span>
-                        ))
+                        ) : (
+                          acc.kaggleDatasets.map((ds) => (
+                            <span
+                              key={ds}
+                              className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono ${
+                                isLlmMode && hasQwenDataset
+                                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
+                                  : "border-cyan-500/35 bg-cyan-500/10 text-cyan-200"
+                              }`}
+                            >
+                              {isLlmMode && /qwen|llm/i.test(ds) ? `${ds} (~15s Mount)` : ds}
+                              {!acc.isOnline && !acc.isStarting && (
+                                <button
+                                  type="button"
+                                  disabled={savingDatasetAlias === acc.alias}
+                                  onClick={() =>
+                                    updateAccountDatasets(
+                                      acc,
+                                      acc.kaggleDatasets.filter((d) => d !== ds)
+                                    )
+                                  }
+                                  className="text-cyan-400/80 hover:text-white"
+                                >
+                                  <X className="h-2.5 w-2.5" />
+                                </button>
+                              )}
+                            </span>
+                          ))
+                        )}
+                      </div>
+
+                      {!acc.isOnline && !acc.isStarting && (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {isLlmMode && suggestedQwenSlug && !acc.kaggleDatasets.includes(suggestedQwenSlug) && (
+                            <button
+                              type="button"
+                              disabled={savingDatasetAlias === acc.alias}
+                              onClick={() =>
+                                updateAccountDatasets(acc, [...acc.kaggleDatasets, suggestedQwenSlug].slice(0, 6))
+                              }
+                              className="h-6 rounded border border-cyan-500/35 bg-cyan-500/10 px-2 font-mono text-[10px] text-cyan-200 hover:bg-cyan-500/20"
+                            >
+                              + {suggestedQwenSlug}
+                            </button>
+                          )}
+                          {isLlmMode && (
+                            <button
+                              type="button"
+                              disabled={buildingDatasetAlias === acc.alias}
+                              onClick={() => triggerBuildLlmDataset(acc)}
+                              className="inline-flex h-6 items-center gap-1 rounded border border-indigo-500/35 bg-indigo-500/15 px-2 font-mono text-[10px] text-indigo-200 hover:bg-indigo-500/25 disabled:opacity-45"
+                              title="Run 0-GPU CPU Kaggle notebook to bundle Qwen3.8-27B GGUF + mmproj-F16"
+                            >
+                              {buildingDatasetAlias === acc.alias ? (
+                                <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                              ) : (
+                                <Zap className="h-2.5 w-2.5" />
+                              )}
+                              + Build 0-GPU Dataset
+                            </button>
+                          )}
+                          <form
+                            onSubmit={(e) => {
+                              e.preventDefault();
+                              const val = (datasetDrafts[acc.alias] || "").trim();
+                              if (!val.includes("/")) {
+                                toast.error("Use format 'owner/dataset-slug'");
+                                return;
+                              }
+                              if (!acc.kaggleDatasets.includes(val)) {
+                                updateAccountDatasets(acc, [...acc.kaggleDatasets, val].slice(0, 6));
+                              }
+                              setDatasetDrafts((prev) => ({ ...prev, [acc.alias]: "" }));
+                            }}
+                            className="flex items-center gap-1"
+                          >
+                            <input
+                              value={datasetDrafts[acc.alias] || ""}
+                              onChange={(e) =>
+                                setDatasetDrafts((prev) => ({ ...prev, [acc.alias]: e.target.value }))
+                              }
+                              placeholder="owner/dataset-slug"
+                              className="h-6 w-36 rounded border border-zinc-800 bg-zinc-900 px-1.5 font-mono text-[10px] text-zinc-200 placeholder:text-zinc-600"
+                            />
+                            <button
+                              type="submit"
+                              disabled={savingDatasetAlias === acc.alias || !(datasetDrafts[acc.alias] || "").trim()}
+                              className="h-6 rounded border border-zinc-700 bg-zinc-800 px-2 font-medium text-zinc-200 hover:bg-zinc-700 disabled:opacity-40"
+                            >
+                              Attach
+                            </button>
+                          </form>
+                        </div>
                       )}
                     </div>
-                    {!acc.isOnline && !acc.isStarting && (
-                      <form
-                        onSubmit={(e) => {
-                          e.preventDefault();
-                          const val = (datasetDrafts[acc.alias] || "").trim();
-                          if (!val.includes("/")) {
-                            toast.error("Use format 'owner/dataset-slug'");
-                            return;
-                          }
-                          if (!acc.kaggleDatasets.includes(val)) {
-                            updateAccountDatasets(acc, [...acc.kaggleDatasets, val].slice(0, 6));
-                          }
-                          setDatasetDrafts((prev) => ({ ...prev, [acc.alias]: "" }));
-                        }}
-                        className="flex items-center gap-1"
-                      >
-                        <input
-                          value={datasetDrafts[acc.alias] || ""}
-                          onChange={(e) =>
-                            setDatasetDrafts((prev) => ({ ...prev, [acc.alias]: e.target.value }))
-                          }
-                          placeholder="owner/dataset-slug"
-                          className="h-6 w-40 rounded border border-zinc-800 bg-zinc-900 px-1.5 font-mono text-[10px] text-zinc-200 placeholder:text-zinc-600"
-                        />
-                        <button
-                          type="submit"
-                          disabled={savingDatasetAlias === acc.alias || !(datasetDrafts[acc.alias] || "").trim()}
-                          className="h-6 rounded border border-zinc-700 bg-zinc-800 px-2 font-medium text-zinc-200 hover:bg-zinc-700 disabled:opacity-40"
+
+                    {buildUrl && (
+                      <div className="flex items-center justify-between rounded border border-indigo-500/30 bg-indigo-500/10 px-2 py-1 text-[10px] text-indigo-200">
+                        <span>0-GPU Qwen Dataset build queued. Save Output → New Dataset:</span>
+                        <a
+                          href={buildUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 font-mono font-semibold text-cyan-300 underline hover:text-white"
                         >
-                          Attach
-                        </button>
-                      </form>
+                          <ExternalLink className="h-2.5 w-2.5" />
+                          Open Builder
+                        </a>
+                      </div>
                     )}
                   </div>
                 </div>

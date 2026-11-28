@@ -1,6 +1,9 @@
 "use client";
 
-import { LLM_MODEL_PRESETS, getDefaultPresetForLlmProfile } from "@/lib/llm/llm-model-presets";
+import {
+  CANONICAL_LLM_PRESET,
+  getDefaultPresetForLlmProfile,
+} from "@/lib/llm/llm-model-presets";
 import { getImagePacksForProfile } from "@/lib/catalog/image-model-packs";
 
 import React, { useState } from "react";
@@ -157,15 +160,19 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
   const [fastbootBuildUrl, setFastbootBuildUrl] = useState<string | null>(null);
   const isLlmProfile = isLlmWorkerProfile(activeProfile.id);
   const defaultLlmPreset = getDefaultPresetForLlmProfile(activeProfile.id);
-  const [selectedLlmPresetId, setSelectedLlmPresetId] = useState<string>(defaultLlmPreset.id);
   const [selectedPackId, setSelectedPackId] = useState<string>("");
   const [selectedImageSlug, setSelectedImageSlug] = useState<string>("");
   const [showSingleFilePicker, setShowSingleFilePicker] = useState(false);
   const [showDiskFiles, setShowDiskFiles] = useState(false);
   const [modelControlLoading, setModelControlLoading] = useState<string | null>(null);
-  const effectiveLlmPresetId = LLM_MODEL_PRESETS.some((p) => p.id === selectedLlmPresetId)
-    ? selectedLlmPresetId
-    : defaultLlmPreset.id;
+  const effectiveLlmPreset =
+    activeProfile.id === "LLM_QWEN_VLM" ? CANONICAL_LLM_PRESET : defaultLlmPreset;
+  const effectiveLlmPresetId = effectiveLlmPreset.id;
+  const selectableProfiles = WORKER_PROFILE_LIST.filter(
+    (p) =>
+      p.accelerator !== "tpu" &&
+      (!isLlmWorkerProfile(p.id) || p.id === CANONICAL_LLM_PRESET.profileId || p.id === activeProfile.id)
+  );
   const profilePacks = getImagePacksForProfile(activeProfile.id);
   const effectivePackId = profilePacks.some((p) => p.id === selectedPackId)
     ? selectedPackId
@@ -325,6 +332,7 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
       | "stage_llm"
       | "load_llm"
       | "unload_llm"
+      | "keep_alive"
       | "free_vram"
       | "stage_image_model"
       | "stage_image_pack",
@@ -348,11 +356,13 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
         return;
       }
       if (action === "stage_llm") {
-        toast.success(`Staged model disk transfer on ${primaryTarget.toUpperCase()} (executes via heartbeat ~5-10s).`);
+        toast.success(`Staged ${effectiveLlmPreset.shortLabel} disk transfer on ${primaryTarget.toUpperCase()} (~5-10s).`);
       } else if (action === "load_llm") {
-        toast.success(`Queued VRAM model load on ${primaryTarget.toUpperCase()} (~15-45s depending on source).`);
+        toast.success(`Queued VRAM load for ${effectiveLlmPreset.shortLabel} on ${primaryTarget.toUpperCase()}.`);
       } else if (action === "unload_llm") {
         toast.success(`Unloaded LLM from VRAM -> Idle Empty Compute.`);
+      } else if (action === "keep_alive") {
+        toast.success(`Sent Watchdog +Keep Alive ping to ${primaryTarget.toUpperCase()}.`);
       } else if (action === "free_vram") {
         toast.success(`Cleared ComfyUI model cache & VRAM on ${primaryTarget.toUpperCase()}.`);
       } else if (action === "stage_image_model") {
@@ -722,12 +732,13 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
 
         {/* Per-GPU Dense Slot Table Rows */}
         <div className="divide-y divide-zinc-800/80 overflow-hidden rounded-md border border-zinc-800 bg-zinc-950/60">
-          {vms.map((v) => {
+          {vms.map((v, gpuIdx) => {
             const total = v.vramTotalGb || 16;
             const used = v.vramUsedGb || 0;
             const pct = Math.min(100, Math.round((used / total) * 100));
             const gpuOnline = v.status === "ONLINE" || v.status === "BUSY";
             const isEditingName = editingTargetName === v.target;
+            const gpuDetail = primaryVm?.bootMetadata?.gpus?.[gpuIdx];
 
             return (
               <div
@@ -777,6 +788,20 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
                 </div>
 
                 <div className="flex items-center gap-2.5">
+                  {gpuOnline && gpuDetail && (gpuDetail.tempC !== null || gpuDetail.powerW !== null) && (
+                    <span
+                      className={`hidden md:inline font-mono text-[10px] tabular-nums ${
+                        (gpuDetail.tempC ?? 0) >= 82
+                          ? "text-rose-300"
+                          : (gpuDetail.tempC ?? 0) >= 75 || (gpuDetail.powerW ?? 0) >= 66
+                          ? "text-amber-300"
+                          : "text-zinc-400"
+                      }`}
+                    >
+                      {gpuDetail.tempC !== null ? `${gpuDetail.tempC}°C` : "--"}
+                      {gpuDetail.powerW !== null ? ` · ${gpuDetail.powerW}W` : ""}
+                    </span>
+                  )}
                   <div className="hidden items-center gap-1.5 sm:flex">
                     <div className="h-1 w-16 overflow-hidden rounded-full bg-zinc-800">
                       <div
@@ -829,7 +854,7 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
               }
               className="h-8 w-full rounded-md border border-zinc-800 bg-zinc-950 px-2 font-mono text-[11px] text-zinc-200 disabled:opacity-50"
             >
-              {WORKER_PROFILE_LIST.map((p) => (
+              {selectableProfiles.map((p) => (
                 <option key={p.id} value={p.id} className="bg-zinc-900">
                   {p.shortTag} · {p.label}
                 </option>
@@ -985,19 +1010,12 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
               </div>
               <div className="flex items-center gap-1.5">
                 {isLlmProfile && (
-                  <select
-                    value={effectiveLlmPresetId}
-                    disabled={buildingFastboot || savingConfig}
-                    onChange={(e) => setSelectedLlmPresetId(e.target.value)}
-                    className="h-6 max-w-[165px] rounded border border-zinc-800 bg-zinc-900 px-1.5 font-mono text-[10px] text-zinc-300"
-                    title="Select which Qwen model pack to bundle into Kaggle Dataset (<19.5 GiB)"
+                  <span
+                    className="inline-flex h-6 items-center rounded border border-violet-500/30 bg-violet-950/30 px-2 font-mono text-[10px] text-violet-200"
+                    title="Canonical single-model Qwen3.8-27B GGUF + mmproj-F16 dataset bundle (<19.5 GiB)"
                   >
-                    {LLM_MODEL_PRESETS.map((p) => (
-                      <option key={p.id} value={p.id} className="bg-zinc-900">
-                        {p.shortLabel} (~{p.approxDiskGb}G)
-                      </option>
-                    ))}
-                  </select>
+                    {effectiveLlmPreset.shortLabel} (~{effectiveLlmPreset.approxDiskGb}G)
+                  </span>
                 )}
                 <button
                   type="button"
@@ -1194,18 +1212,12 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
 
             {isLlmProfile ? (
               <div className="flex flex-wrap items-center gap-1.5">
-                <select
-                  value={effectiveLlmPresetId}
-                  disabled={Boolean(modelControlLoading)}
-                  onChange={(e) => setSelectedLlmPresetId(e.target.value)}
-                  className="h-7 min-w-0 flex-1 rounded border border-zinc-800 bg-zinc-900 px-2 font-mono text-[10px] text-zinc-200"
+                <span
+                  className="inline-flex h-7 min-w-0 flex-1 items-center rounded border border-violet-500/35 bg-violet-950/25 px-2 font-mono text-[10px] text-violet-100"
+                  title={effectiveLlmPreset.notes}
                 >
-                  {LLM_MODEL_PRESETS.map((p) => (
-                    <option key={p.id} value={p.id} className="bg-zinc-900">
-                      {p.shortLabel} (~{p.approxDiskGb}G disk · {p.approxVramGb}G VRAM)
-                    </option>
-                  ))}
-                </select>
+                  {effectiveLlmPreset.shortLabel} (~{effectiveLlmPreset.approxDiskGb}G disk · {effectiveLlmPreset.approxVramGb}G VRAM · 53:47 split)
+                </span>
                 <button
                   type="button"
                   disabled={Boolean(modelControlLoading)}
@@ -1235,6 +1247,16 @@ export const VmClusterCard: React.FC<VmClusterCardProps> = ({
                 >
                   {modelControlLoading === "unload_llm" && <Loader2 className="h-2.5 w-2.5 animate-spin" />}
                   Unload
+                </button>
+                <button
+                  type="button"
+                  disabled={Boolean(modelControlLoading)}
+                  onClick={() => handleModelControl("keep_alive")}
+                  className="inline-flex h-7 items-center gap-1 rounded border border-emerald-500/35 bg-emerald-500/10 px-2 text-[10px] font-medium text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-40"
+                  title="Reset idle watchdog timer without interrupting inference"
+                >
+                  {modelControlLoading === "keep_alive" && <Loader2 className="h-2.5 w-2.5 animate-spin" />}
+                  +Keep Alive
                 </button>
               </div>
             ) : (

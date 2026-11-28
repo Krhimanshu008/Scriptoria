@@ -27,6 +27,85 @@ export interface LlmEndpointTelemetry {
   ready?: boolean;
 }
 
+export interface GpuHardwareTelemetry {
+  index: number;
+  name: string;
+  role: string;
+  vramTotalGb: number;
+  vramUsedGb: number;
+  vramFreeGb: number;
+  tempC: number | null;
+  utilPct: number | null;
+  powerW: number | null;
+  powerLimitW: number | null;
+}
+
+export type LlmSlotPhase = "idle" | "prefill" | "decoding" | "vision";
+
+export interface LlmSlotTelemetry {
+  state: LlmSlotPhase;
+  isProcessing: boolean;
+  kvUsed: number;
+  kvTotal: number;
+  cacheN: number;
+  cacheHitPct: number;
+  nDecoded: number;
+  nPromptTokens: number;
+  activeTaskId?: number | null;
+}
+
+export interface LlmMtpTelemetry {
+  enabled: boolean;
+  draftMax: number;
+  draftsAttempted: number;
+  draftsAccepted: number;
+  acceptancePct: number | null;
+  meanTokensPerStep: number | null;
+  verifSteps: number;
+}
+
+export interface LlmLastTurnTelemetry {
+  rawDecodeTokPerSec: number | null;
+  prefillTokPerSec: number | null;
+  promptMs: number | null;
+  predictedMs: number | null;
+  cacheN: number;
+  promptN: number;
+  predictedN: number;
+  draftN: number;
+  draftNAccepted: number;
+  visionEncodeMs: number | null;
+  visionTokens: number | null;
+  visionBypassed: boolean;
+  timestampMs: number;
+}
+
+export interface LlmBinaryInfo {
+  version: string | null;
+  hasDraftMtp: boolean;
+  hasMetrics: boolean;
+  isV2Ready: boolean;
+}
+
+export interface LlmAncillaryTelemetry {
+  weightsPresent: boolean;
+  weightsFile: string | null;
+  weightsGb: number | null;
+  weightsSource: "dataset" | "tmp" | "missing";
+  mmprojPresent: boolean;
+  mmprojFile: string | null;
+  mmprojSource: "dataset" | "tmp" | "missing";
+  mmprojLoaded: boolean;
+  mtpActive: boolean;
+  datasetPaths: string[];
+}
+
+export interface LlmWatchdogTelemetry {
+  idleRemainingSec: number | null;
+  idleTimeoutSec: number;
+  lastActiveEpoch: number;
+}
+
 export interface BootMetadata {
   modelFetch?: boolean;
   draftMode?: boolean;
@@ -54,11 +133,21 @@ export interface BootMetadata {
     speedMbps?: number;
     bytesDone?: number;
     totalBytes?: number;
+    etaSeconds?: number | null;
     queueCount?: number;
     source?: string;
   } | null;
   recentLog?: string | null;
+  recentLogs?: string[];
+  driveHealthy?: boolean;
   driveNeedsReconnect?: boolean;
+  gpus?: GpuHardwareTelemetry[];
+  binaryInfo?: LlmBinaryInfo | null;
+  slotTelemetry?: LlmSlotTelemetry | null;
+  mtpTelemetry?: LlmMtpTelemetry | null;
+  lastTurnTelemetry?: LlmLastTurnTelemetry | null;
+  watchdog?: LlmWatchdogTelemetry | null;
+  ancillary?: LlmAncillaryTelemetry | null;
 }
 
 export function parseBootMetadata(jsonStr: string | null | undefined): BootMetadata | null {
@@ -101,8 +190,17 @@ export function mergeBootMetadata(
         rawTelem.storageFiles ||
         rawTelem.disk ||
         rawTelem.hotModels ||
+        rawTelem.gpus ||
+        rawTelem.binaryInfo !== undefined ||
+        rawTelem.slotTelemetry !== undefined ||
+        rawTelem.mtpTelemetry !== undefined ||
+        rawTelem.lastTurnTelemetry !== undefined ||
+        rawTelem.watchdog !== undefined ||
+        rawTelem.ancillary !== undefined ||
         rawTelem.activeTransfer !== undefined ||
         rawTelem.recentLog !== undefined ||
+        rawTelem.recentLogs !== undefined ||
+        rawTelem.driveHealthy !== undefined ||
         rawTelem.driveNeedsReconnect !== undefined
     ) ||
     Boolean(Object.keys(prev).length > 0);
@@ -171,10 +269,42 @@ export function mergeBootMetadata(
         : typeof rawTelem.recentLog === "string"
         ? rawTelem.recentLog
         : prev.recentLog,
+    recentLogs: Array.isArray(rawTelem.recentLogs)
+      ? (rawTelem.recentLogs as string[]).slice(-30)
+      : prev.recentLogs,
+    driveHealthy:
+      typeof rawTelem.driveHealthy === "boolean" ? rawTelem.driveHealthy : prev.driveHealthy,
     driveNeedsReconnect:
       typeof rawTelem.driveNeedsReconnect === "boolean"
         ? rawTelem.driveNeedsReconnect
         : prev.driveNeedsReconnect,
+    gpus: Array.isArray(rawTelem.gpus)
+      ? (rawTelem.gpus as GpuHardwareTelemetry[])
+      : prev.gpus,
+    binaryInfo:
+      rawTelem.binaryInfo && typeof rawTelem.binaryInfo === "object"
+        ? (rawTelem.binaryInfo as LlmBinaryInfo)
+        : prev.binaryInfo,
+    slotTelemetry:
+      rawTelem.slotTelemetry && typeof rawTelem.slotTelemetry === "object"
+        ? (rawTelem.slotTelemetry as LlmSlotTelemetry)
+        : prev.slotTelemetry,
+    mtpTelemetry:
+      rawTelem.mtpTelemetry && typeof rawTelem.mtpTelemetry === "object"
+        ? (rawTelem.mtpTelemetry as LlmMtpTelemetry)
+        : prev.mtpTelemetry,
+    lastTurnTelemetry:
+      rawTelem.lastTurnTelemetry && typeof rawTelem.lastTurnTelemetry === "object"
+        ? (rawTelem.lastTurnTelemetry as LlmLastTurnTelemetry)
+        : prev.lastTurnTelemetry,
+    watchdog:
+      rawTelem.watchdog && typeof rawTelem.watchdog === "object"
+        ? (rawTelem.watchdog as LlmWatchdogTelemetry)
+        : prev.watchdog,
+    ancillary:
+      rawTelem.ancillary && typeof rawTelem.ancillary === "object"
+        ? (rawTelem.ancillary as LlmAncillaryTelemetry)
+        : prev.ancillary,
   };
 }
 
@@ -190,8 +320,13 @@ export function markBootMetadataOffline(
     activeModelRepo: null,
     llmEndpoints: [],
     hotModels: undefined,
+    gpus: [],
+    slotTelemetry: null,
+    mtpTelemetry: null,
+    watchdog: null,
     activeTransfer: null,
     recentLog: null,
+    recentLogs: [],
     driveNeedsReconnect: false,
   });
 }

@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db/prisma";
 
-export type VmCommandAction = "STAGE_LLM" | "LOAD_LLM" | "UNLOAD_LLM" | "FREE_VRAM";
+export type VmCommandAction = "STAGE_LLM" | "LOAD_LLM" | "UNLOAD_LLM" | "FREE_VRAM" | "KEEP_ALIVE";
 export type VmCommandStatus = "PENDING" | "DISPATCHED" | "COMPLETED" | "FAILED";
 
 export interface VmCommandPayload {

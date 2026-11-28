@@ -27,12 +27,19 @@ import type {
   LlmReasoningEffort,
 } from "@/lib/llm/dispatch-llm";
 import {
+  type AttachedImageWithEstimate,
   GENERAL_PLAYGROUND_PRESETS,
   type LlmTargetOption,
   type PlaygroundPreset,
-  downscaleImageToDataUrl,
+  downscaleImageWithMetrics,
   parseTargetOption,
 } from "./types";
+import { useLlmTelemetry } from "./LlmTelemetryContext";
+import {
+  InferenceReceiptBar,
+  type InferenceReceiptData,
+  receiptFromDispatchResult,
+} from "./InferenceReceiptBar";
 
 interface ChatTurn {
   id: string;
@@ -49,10 +56,13 @@ interface ChatTurn {
     tokPerSec: number | null;
     completionTokens?: number;
     jsonValidation?: DispatchLlmResult["jsonValidation"];
+    receipt?: InferenceReceiptData;
     repeatRuns?: Array<{
       runIndex: number;
       latencyMs: number;
       tokPerSec: number | null;
+      rawDecodeTokPerSec: number | null;
+      mtpPct: number | null;
       validJson: boolean | null;
       preview: string;
     }>;
@@ -71,7 +81,14 @@ interface SavedThread {
 
 const STORAGE_KEY = "scriptoria_llm_playground_threads_v2";
 
-export function PlaygroundPanel({ targetOptions }: { targetOptions: LlmTargetOption[] }) {
+export function PlaygroundPanel({
+  targetOptions,
+  globalThinkingEnabled,
+}: {
+  targetOptions: LlmTargetOption[];
+  globalThinkingEnabled: boolean;
+}) {
+  const { beginRequest, endRequest } = useLlmTelemetry();
   const [threads, setThreads] = useState<SavedThread[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string>("thread-default");
 
@@ -88,7 +105,7 @@ export function PlaygroundPanel({ targetOptions }: { targetOptions: LlmTargetOpt
   const [jsonSchema, setJsonSchema] = useState<string>("");
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [promptInput, setPromptInput] = useState<string>("");
-  const [attachedImages, setAttachedImages] = useState<string[]>([]);
+  const [attachedImages, setAttachedImages] = useState<AttachedImageWithEstimate[]>([]);
   const [showPromptsConfig, setShowPromptsConfig] = useState<boolean>(false);
   const [sending, setSending] = useState<boolean>(false);
   const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
@@ -181,8 +198,8 @@ export function PlaygroundPanel({ targetOptions }: { targetOptions: LlmTargetOpt
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
     try {
-      const urls = await Promise.all(files.slice(0, 3).map((f) => downscaleImageToDataUrl(f)));
-      setAttachedImages((prev) => [...prev, ...urls].slice(0, 4));
+      const imgs = await Promise.all(files.slice(0, 3).map((f) => downscaleImageWithMetrics(f)));
+      setAttachedImages((prev) => [...prev, ...imgs].slice(0, 4));
       if (mode !== "vision_qa") setMode("vision_qa");
     } catch {
       toast.error("Could not decode image attachment");
@@ -195,11 +212,13 @@ export function PlaygroundPanel({ targetOptions }: { targetOptions: LlmTargetOpt
     const text = promptInput.trim();
     if ((!text && attachedImages.length === 0) || sending) return;
 
+    const imageDataUrls = attachedImages.map((i) => i.dataUrl);
+    const hasImgs = imageDataUrls.length > 0;
     const userTurn: ChatTurn = {
       id: `u-${Date.now()}`,
       role: "user",
       content: text || "Inspect attached image(s).",
-      imageDataUrls: attachedImages.length > 0 ? [...attachedImages] : undefined,
+      imageDataUrls: hasImgs ? imageDataUrls : undefined,
     };
 
     const nextHistory = [...turns, userTurn];
@@ -216,31 +235,43 @@ export function PlaygroundPanel({ targetOptions }: { targetOptions: LlmTargetOpt
     }));
 
     try {
-      const dispatchOne = async () => {
-        const res = await fetch("/api/llm-studio/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            messages: apiMessages,
-            systemPrompt,
-            mode,
-            jsonSchema: jsonSchema.trim() || undefined,
-            reasoningEffort,
-            temperature,
-            maxTokens,
-            fallbackToVault,
-            targetVm,
-            targetService,
-          }),
+      const dispatchOne = async (runIdx: number) => {
+        const reqId = beginRequest({
+          label: repeatCount > 1 ? `Playground ${runIdx + 1}/${repeatCount}` : hasImgs ? "Vision QA" : "Playground",
+          hasImages: hasImgs,
+          isJsonMode: mode === "json" || mode === "vision_qa",
         });
-        const data = (await res.json()) as DispatchLlmResult & { error?: string };
-        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-        return data;
+        try {
+          const res = await fetch("/api/llm-studio/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              messages: apiMessages,
+              systemPrompt,
+              mode,
+              jsonSchema: jsonSchema.trim() || undefined,
+              reasoningEffort,
+              enableThinking: globalThinkingEnabled,
+              temperature,
+              maxTokens,
+              fallbackToVault,
+              targetVm,
+              targetService,
+            }),
+          });
+          const data = (await res.json()) as DispatchLlmResult & { error?: string };
+          if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+          endRequest(reqId, data);
+          return data;
+        } catch (err) {
+          endRequest(reqId, null);
+          throw err;
+        }
       };
 
       const runs: DispatchLlmResult[] = [];
       for (let i = 0; i < repeatCount; i++) {
-        runs.push(await dispatchOne());
+        runs.push(await dispatchOne(i));
       }
 
       const primary = runs[0];
@@ -258,12 +289,15 @@ export function PlaygroundPanel({ targetOptions }: { targetOptions: LlmTargetOpt
           tokPerSec: primary.tokPerSec,
           completionTokens: primary.usage?.completion_tokens,
           jsonValidation: primary.jsonValidation,
+          receipt: receiptFromDispatchResult(primary),
           repeatRuns:
             repeatCount > 1
               ? runs.map((r, idx) => ({
                   runIndex: idx + 1,
                   latencyMs: r.latencyMs,
                   tokPerSec: r.tokPerSec,
+                  rawDecodeTokPerSec: r.rawDecodeTokPerSec,
+                  mtpPct: r.mtpStats?.acceptancePct ?? null,
                   validJson: r.jsonValidation ? r.jsonValidation.isValidJson : null,
                   preview: r.answer.slice(0, 140),
                 }))
@@ -391,16 +425,27 @@ export function PlaygroundPanel({ targetOptions }: { targetOptions: LlmTargetOpt
             </div>
 
             <div>
-              <label className="mb-1 block text-[11px] font-medium text-zinc-400">Reasoning</label>
+              <label className="mb-1 flex items-center justify-between text-[11px] font-medium text-zinc-400">
+                <span>Prompt Style</span>
+                <span
+                  className={`rounded px-1.5 font-mono text-[9px] ${
+                    globalThinkingEnabled
+                      ? "bg-amber-500/20 text-amber-300"
+                      : "bg-emerald-500/20 text-emerald-300"
+                  }`}
+                >
+                  &lt;think&gt; {globalThinkingEnabled ? "ON" : "OFF"}
+                </span>
+              </label>
               <select
                 value={reasoningEffort}
                 onChange={(e) => setReasoningEffort(e.target.value as LlmReasoningEffort)}
                 className="h-8 w-full rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 text-xs text-zinc-100 outline-none focus:border-violet-500"
               >
-                <option value="none">Off (Direct Answer)</option>
-                <option value="low">Low</option>
-                <option value="medium">Medium</option>
-                <option value="high">High (&lt;think&gt; trace)</option>
+                <option value="none">Direct Answer</option>
+                <option value="low">Balanced</option>
+                <option value="medium">Detailed</option>
+                <option value="high">Exhaustive</option>
               </select>
             </div>
 
@@ -512,8 +557,8 @@ export function PlaygroundPanel({ targetOptions }: { targetOptions: LlmTargetOpt
                 LLM Playground & Prompt Test Bench
               </p>
               <p className="max-w-md text-xs text-zinc-500">
-                Test single-model generation, strict JSON schema adherence, multimodal Vision QA,
-                or 3x consistency runs across Kaggle Dual-T4, TPU v5e-8, or Vault APIs.
+                Test single-model Qwen3.8-27B generation, strict JSON schema adherence, multimodal Vision QA,
+                or 3x consistency runs across Kaggle Dual-T4 or Vault Cloud fallback.
               </p>
             </div>
           ) : (
@@ -631,6 +676,8 @@ export function PlaygroundPanel({ targetOptions }: { targetOptions: LlmTargetOpt
                   {turn.content}
                 </pre>
 
+                {turn.meta?.receipt && <InferenceReceiptBar receipt={turn.meta.receipt} />}
+
                 {turn.meta?.repeatRuns && (
                   <div className="mt-3 border-t border-zinc-800 pt-2.5 space-y-1.5">
                     <div className="text-[11px] font-semibold text-violet-300">
@@ -644,9 +691,10 @@ export function PlaygroundPanel({ targetOptions }: { targetOptions: LlmTargetOpt
                         >
                           <div className="flex items-center justify-between font-medium text-zinc-300">
                             <span>Run #{r.runIndex}</span>
-                            <span>
+                            <span className="font-mono text-[10px]">
                               {r.latencyMs}ms
-                              {r.tokPerSec ? ` · ${r.tokPerSec} t/s` : ""}
+                              {(r.rawDecodeTokPerSec ?? r.tokPerSec) ? ` · ${r.rawDecodeTokPerSec ?? r.tokPerSec} t/s` : ""}
+                              {r.mtpPct != null ? ` · MTP ${r.mtpPct}%` : ""}
                             </span>
                           </div>
                           {r.validJson !== null && (
@@ -672,15 +720,18 @@ export function PlaygroundPanel({ targetOptions }: { targetOptions: LlmTargetOpt
         {/* Composer */}
         <div className="rounded-xl border border-zinc-800 bg-zinc-950/90 p-3 space-y-2.5">
           {attachedImages.length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              {attachedImages.map((src, i) => (
+            <div className="flex flex-wrap items-center gap-2.5">
+              {attachedImages.map((img, i) => (
                 <div key={i} className="relative">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
-                    src={src}
+                    src={img.dataUrl}
                     alt={`Attached ${i + 1}`}
                     className="h-14 w-14 rounded-lg border border-zinc-700 object-cover"
                   />
+                  <span className="mt-0.5 block font-mono text-[9px] text-fuchsia-300">
+                    ~{img.estimatedVisionTokens}t · {img.width}×{img.height}
+                  </span>
                   <button
                     type="button"
                     onClick={() =>
@@ -692,6 +743,9 @@ export function PlaygroundPanel({ targetOptions }: { targetOptions: LlmTargetOpt
                   </button>
                 </div>
               ))}
+              <span className="rounded border border-fuchsia-500/35 bg-fuchsia-950/30 px-2 py-0.5 font-mono text-[10px] text-fuchsia-300">
+                Est. Vision: ~{attachedImages.reduce((s, x) => s + x.estimatedVisionTokens, 0)} tok
+              </span>
             </div>
           )}
 

@@ -23,6 +23,32 @@ export interface IncomingLlmMessage {
   imageDataUrls?: string[];
 }
 
+export type LlmExecutionRoute =
+  | "dual_t4_local_relay"
+  | "dual_t4_direct_tunnel"
+  | "vault_cloud_fallback";
+
+export interface LlmRawTimings {
+  prompt_n?: number;
+  prompt_ms?: number;
+  prompt_per_token_ms?: number;
+  prompt_per_second?: number;
+  predicted_n?: number;
+  predicted_ms?: number;
+  predicted_per_token_ms?: number;
+  predicted_per_second?: number;
+  cache_n?: number;
+  draft_n?: number;
+  draft_n_accepted?: number;
+}
+
+export interface LlmMtpTurnStats {
+  draftN: number;
+  draftNAccepted: number;
+  acceptancePct: number | null;
+  meanTokensPerStep: number | null;
+}
+
 export interface DispatchLlmParams {
   userId: string;
   messages: IncomingLlmMessage[];
@@ -30,6 +56,8 @@ export interface DispatchLlmParams {
   mode?: LlmChatMode;
   jsonSchema?: string;
   reasoningEffort?: LlmReasoningEffort;
+  enableThinking?: boolean;
+  cachePrompt?: boolean;
   temperature?: number;
   maxTokens?: number;
   fallbackToVault?: boolean;
@@ -41,18 +69,36 @@ export interface DispatchLlmParams {
 
 export interface DispatchLlmResult {
   source: string;
+  executionRoute: LlmExecutionRoute;
   target: string | null;
   model: string;
   answer: string;
   thinking: string | null;
   latencyMs: number;
+  workerLatencyMs: number | null;
   ttftMs: number | null;
   usage: {
     prompt_tokens?: number;
     completion_tokens?: number;
     total_tokens?: number;
+    completion_tokens_details?: { reasoning_tokens?: number };
+    prompt_tokens_details?: { cached_tokens?: number };
   } | null;
+  timings: LlmRawTimings | null;
   tokPerSec: number | null;
+  rawDecodeTokPerSec: number | null;
+  prefillTokPerSec: number | null;
+  effectiveTokPerSec: number | null;
+  relayOverheadMs: number | null;
+  cacheN: number | null;
+  promptTokens: number | null;
+  thinkingTokens: number;
+  answerTokens: number;
+  tokenSplitEstimated: boolean;
+  visionEncodeMs: number | null;
+  visionTokens: number | null;
+  visionBypassed: boolean;
+  mtpStats: LlmMtpTurnStats | null;
   jsonValidation: {
     isValidJson: boolean;
     missingKeys: string[];
@@ -151,10 +197,109 @@ export function buildLlmResponseFormat(
 
 export class LlmDispatchError extends Error {
   status: number;
-  constructor(message: string, status = 500) {
+  code?: string;
+  constructor(message: string, status = 500, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
+}
+
+const CF_SAFE_RELAY_TIMEOUT_MS = 92_000;
+
+export function computeTurnTelemetry(opts: {
+  answer: string;
+  thinking: string | null;
+  hasImages: boolean;
+  wallLatencyMs: number;
+  workerLatencyMs: number | null;
+  usage: DispatchLlmResult["usage"];
+  timings: LlmRawTimings | null;
+  visionMeta?: { bypassed?: boolean; encodeMs?: number | null; visionTokens?: number | null } | null;
+}) {
+  const { answer, thinking, hasImages, wallLatencyMs, workerLatencyMs, usage, timings, visionMeta } = opts;
+
+  const predictedN = timings?.predicted_n ?? usage?.completion_tokens ?? null;
+  const rawDecodeTokPerSec =
+    typeof timings?.predicted_per_second === "number" && timings.predicted_per_second > 0
+      ? Number(timings.predicted_per_second.toFixed(1))
+      : null;
+  const prefillTokPerSec =
+    typeof timings?.prompt_per_second === "number" && timings.prompt_per_second > 0
+      ? Number(timings.prompt_per_second.toFixed(1))
+      : null;
+  const effectiveTokPerSec =
+    predictedN && wallLatencyMs > 0
+      ? Number(((predictedN / wallLatencyMs) * 1000).toFixed(1))
+      : null;
+
+  const modelComputeMs =
+    typeof timings?.prompt_ms === "number" && typeof timings?.predicted_ms === "number"
+      ? timings.prompt_ms + timings.predicted_ms
+      : workerLatencyMs;
+  const relayOverheadMs =
+    modelComputeMs !== null ? Math.max(0, Math.round(wallLatencyMs - modelComputeMs)) : null;
+
+  let thinkingTokens = 0;
+  let answerTokens = 0;
+  let tokenSplitEstimated = false;
+  const reportedReasoning = usage?.completion_tokens_details?.reasoning_tokens;
+  if (typeof reportedReasoning === "number" && typeof predictedN === "number") {
+    thinkingTokens = Math.min(predictedN, Math.max(0, reportedReasoning));
+    answerTokens = Math.max(0, predictedN - thinkingTokens);
+  } else if (thinking && thinking.length > 0) {
+    tokenSplitEstimated = true;
+    const totalChars = Math.max(1, thinking.length + answer.length);
+    if (typeof predictedN === "number" && predictedN > 0) {
+      thinkingTokens = Math.round((thinking.length / totalChars) * predictedN);
+      answerTokens = Math.max(0, predictedN - thinkingTokens);
+    } else {
+      thinkingTokens = Math.ceil(thinking.length / 3.8);
+      answerTokens = Math.ceil(answer.length / 3.8);
+    }
+  } else {
+    answerTokens = typeof predictedN === "number" ? predictedN : Math.ceil(answer.length / 3.8);
+    tokenSplitEstimated = typeof predictedN !== "number";
+  }
+
+  let mtpStats: LlmMtpTurnStats | null = null;
+  if (typeof timings?.draft_n === "number" && timings.draft_n > 0) {
+    const draftN = timings.draft_n;
+    const draftNAccepted = timings.draft_n_accepted ?? 0;
+    const acceptancePct = Number(((draftNAccepted / draftN) * 100).toFixed(1));
+    const verifSteps = Math.max(1, (predictedN ?? draftNAccepted + 1) - draftNAccepted);
+    const meanTokensPerStep = predictedN
+      ? Number(Math.max(1, predictedN / verifSteps).toFixed(2))
+      : null;
+    mtpStats = { draftN, draftNAccepted, acceptancePct, meanTokensPerStep };
+  }
+
+  const cacheN =
+    typeof timings?.cache_n === "number"
+      ? timings.cache_n
+      : usage?.prompt_tokens_details?.cached_tokens ?? null;
+  const promptTokens =
+    typeof timings?.prompt_n === "number"
+      ? timings.prompt_n + (cacheN ?? 0)
+      : usage?.prompt_tokens ?? null;
+
+  return {
+    timings,
+    tokPerSec: rawDecodeTokPerSec ?? effectiveTokPerSec,
+    rawDecodeTokPerSec,
+    prefillTokPerSec,
+    effectiveTokPerSec,
+    relayOverheadMs,
+    cacheN,
+    promptTokens,
+    thinkingTokens,
+    answerTokens,
+    tokenSplitEstimated,
+    visionEncodeMs: hasImages ? (visionMeta?.encodeMs ?? null) : 0,
+    visionTokens: hasImages ? (visionMeta?.visionTokens ?? null) : 0,
+    visionBypassed: visionMeta?.bypassed ?? !hasImages,
+    mtpStats,
+  };
 }
 
 export async function dispatchLlmChat(params: DispatchLlmParams): Promise<DispatchLlmResult> {
@@ -166,6 +311,8 @@ export async function dispatchLlmChat(params: DispatchLlmParams): Promise<Dispat
     mode = "chat",
     jsonSchema,
     reasoningEffort = "none",
+    enableThinking,
+    cachePrompt = true,
     temperature = 0.25,
     maxTokens = 2048,
     fallbackToVault = true,
@@ -179,8 +326,13 @@ export async function dispatchLlmChat(params: DispatchLlmParams): Promise<Dispat
     throw new LlmDispatchError("At least one message is required.", 400);
   }
 
+  const effectiveEnableThinking =
+    typeof enableThinking === "boolean"
+      ? enableThinking
+      : reasoningEffort === "medium" || reasoningEffort === "high";
+
   let systemPrompt = (params.systemPrompt || "You are a precise, helpful AI engineering and reasoning assistant.").trim();
-  if (reasoningEffort === "none") {
+  if (!effectiveEnableThinking) {
     systemPrompt += "\nDo NOT output internal thought or <think> tags. Answer directly and concisely.";
   }
   if (mode === "json" || mode === "vision_qa") {
@@ -191,6 +343,7 @@ export async function dispatchLlmChat(params: DispatchLlmParams): Promise<Dispat
   }
 
   const clampedMaxTokens = Math.min(8192, Math.max(64, maxTokens));
+  const hasImages = messages.some((m) => m.imageDataUrls && m.imageDataUrls.length > 0);
   const useExplicitVault = targetVm === "vault" || targetVm.startsWith("vault:") || Boolean(vaultProvider);
   const explicitProviderName = targetVm.startsWith("vault:")
     ? targetVm.slice("vault:".length)
@@ -263,9 +416,9 @@ export async function dispatchLlmChat(params: DispatchLlmParams): Promise<Dispat
         max_tokens: clampedMaxTokens,
         stream: true,
         stream_options: { include_usage: true },
-        cache_prompt: true,
+        cache_prompt: cachePrompt,
         chat_template_kwargs: {
-          enable_thinking: reasoningEffort !== "none" && reasoningEffort !== "low",
+          enable_thinking: effectiveEnableThinking,
         },
       };
       const respFormat = buildLlmResponseFormat(mode, jsonSchema);
@@ -308,6 +461,7 @@ export async function dispatchLlmChat(params: DispatchLlmParams): Promise<Dispat
         let streamReasoning = "";
         let respModel = modelOverride || onlineVm.workerProfile;
         let usage: DispatchLlmResult["usage"] = null;
+        let timings: LlmRawTimings | null = null;
 
         if (res.body) {
           const reader = res.body.getReader();
@@ -331,9 +485,11 @@ export async function dispatchLlmChat(params: DispatchLlmParams): Promise<Dispat
                     delta?: { content?: string; reasoning_content?: string };
                   }>;
                   usage?: DispatchLlmResult["usage"];
+                  timings?: LlmRawTimings;
                 };
                 if (chunk.model) respModel = chunk.model;
                 if (chunk.usage) usage = chunk.usage;
+                if (chunk.timings) timings = chunk.timings;
                 const delta = chunk.choices?.[0]?.delta;
                 if (delta?.content || delta?.reasoning_content) {
                   if (ttftMs === null) ttftMs = Date.now() - t0;
@@ -347,26 +503,32 @@ export async function dispatchLlmChat(params: DispatchLlmParams): Promise<Dispat
           }
         }
 
-        const latencyMs = Date.now() - t0;
+        const wallLatencyMs = Date.now() - t0;
         const split = splitThinkBlock(rawContent);
         const answer = split.answer || rawContent;
         const thinking = streamReasoning.trim() || split.thinking;
-        const completionTokens = usage?.completion_tokens ?? null;
-        const tokPerSec =
-          completionTokens && latencyMs > 0
-            ? Number(((completionTokens / latencyMs) * 1000).toFixed(1))
-            : null;
+        const telemetry = computeTurnTelemetry({
+          answer,
+          thinking,
+          hasImages,
+          wallLatencyMs,
+          workerLatencyMs: wallLatencyMs,
+          usage,
+          timings,
+        });
 
         return {
           source: `${onlineVm.accountAlias.toUpperCase()} (${onlineVm.workerProfile}${targetService !== "default" ? `:${targetService}` : ""})`,
+          executionRoute: "dual_t4_direct_tunnel",
           target: onlineVm.target,
           model: respModel,
           answer,
           thinking,
-          latencyMs,
+          latencyMs: wallLatencyMs,
+          workerLatencyMs: wallLatencyMs,
           ttftMs,
           usage,
-          tokPerSec,
+          ...telemetry,
           jsonValidation: mode === "json" || mode === "vision_qa" ? validateJsonAgainstSchema(answer, jsonSchema) : null,
         };
       }
@@ -386,7 +548,7 @@ export async function dispatchLlmChat(params: DispatchLlmParams): Promise<Dispat
       });
 
       const startedAt = Date.now();
-      while (Date.now() - startedAt < 120_000) {
+      while (Date.now() - startedAt < CF_SAFE_RELAY_TIMEOUT_MS) {
         await new Promise((r) => setTimeout(r, 250));
         const row = await prisma.llmRelayRequest.findUnique({ where: { id: relay.id } });
         if (!row) break;
@@ -399,50 +561,62 @@ export async function dispatchLlmChat(params: DispatchLlmParams): Promise<Dispat
           throw new LlmDispatchError(errMsg, errStatus);
         }
         if (row.status === "COMPLETED") {
-          const latencyMs = row.latencyMs ?? Date.now() - startedAt;
-          const resp = row.responseJson ? (JSON.parse(row.responseJson) as {
-            model?: string;
-            choices?: Array<{ message?: { content?: string; reasoning_content?: string } }>;
-            usage?: DispatchLlmResult["usage"];
-          }) : {};
+          const wallLatencyMs = Date.now() - startedAt;
+          const workerLatencyMs = row.latencyMs ?? null;
+          const resp = row.responseJson
+            ? (JSON.parse(row.responseJson) as {
+                model?: string;
+                choices?: Array<{ message?: { content?: string; reasoning_content?: string } }>;
+                usage?: DispatchLlmResult["usage"];
+                timings?: LlmRawTimings;
+                scriptoria_vision?: { bypassed?: boolean; encodeMs?: number | null; visionTokens?: number | null };
+              })
+            : {};
           const rawMsg = resp.choices?.[0]?.message?.content || "";
           const split = splitThinkBlock(rawMsg);
           const answer = split.answer || rawMsg;
           const thinking = resp.choices?.[0]?.message?.reasoning_content?.trim() || split.thinking;
-          const completionTokens = resp.usage?.completion_tokens ?? null;
-          const tokPerSec =
-            completionTokens && latencyMs > 0
-              ? Number(((completionTokens / latencyMs) * 1000).toFixed(1))
-              : null;
+          const telemetry = computeTurnTelemetry({
+            answer,
+            thinking,
+            hasImages,
+            wallLatencyMs,
+            workerLatencyMs,
+            usage: resp.usage ?? null,
+            timings: resp.timings ?? null,
+            visionMeta: resp.scriptoria_vision ?? null,
+          });
 
           return {
             source: `${onlineVm.accountAlias.toUpperCase()} Safe-Relay (${onlineVm.workerProfile}${targetService !== "default" ? `:${targetService}` : ""})`,
+            executionRoute: "dual_t4_local_relay",
             target: row.assignedTarget || onlineVm.target,
             model: resp.model || modelOverride || onlineVm.workerProfile,
             answer,
             thinking,
-            latencyMs,
+            latencyMs: wallLatencyMs,
+            workerLatencyMs,
             ttftMs: null,
             usage: resp.usage ?? null,
-            tokPerSec,
+            ...telemetry,
             jsonValidation: mode === "json" || mode === "vision_qa" ? validateJsonAgainstSchema(answer, jsonSchema) : null,
           };
         }
       }
       throw new LlmDispatchError(
-        `Timed out waiting for Safe Headless worker '${onlineVm.target}' to execute LLM relay.`,
-        504
+        `Safe Headless relay exceeded ${Math.round(CF_SAFE_RELAY_TIMEOUT_MS / 1000)}s (stopped cleanly before Cloudflare 100s timeout). Try Thinking OFF or lower max_tokens.`,
+        504,
+        "relay_timeout_cf_guard"
       );
     }
   }
 
   // Path C: Configured Vault Cloud / External API Provider
-  const hasImages = messages.some((m) => m.imageDataUrls && m.imageDataUrls.length > 0);
   if (!useExplicitVault && (!fallbackToVault || hasImages)) {
     throw new LlmDispatchError(
       hasImages
-        ? "No online Vision LLM GPU/TPU worker found. Boot a Vision LLM profile (or enable Vault text mode)."
-        : "No online GPU/TPU LLM worker found. Boot an LLM worker or enable Vault API fallback.",
+        ? "No online Vision LLM GPU worker found. Boot Qwen3.8-27B VLM (or enable Vault text mode)."
+        : "No online GPU LLM worker found. Boot Qwen3.8-27B VLM or enable Vault API fallback.",
       503
     );
   }
@@ -466,20 +640,31 @@ export async function dispatchLlmChat(params: DispatchLlmParams): Promise<Dispat
     messages: messages.map((m) => ({ role: m.role, content: m.content })),
     temperature,
   });
-  const latencyMs = Date.now() - t0;
+  const wallLatencyMs = Date.now() - t0;
   const split = splitThinkBlock(res.text);
   const answer = split.answer || res.text;
+  const telemetry = computeTurnTelemetry({
+    answer,
+    thinking: split.thinking,
+    hasImages,
+    wallLatencyMs,
+    workerLatencyMs: null,
+    usage: null,
+    timings: null,
+  });
 
   return {
     source: `Vault (${res.provider})`,
+    executionRoute: "vault_cloud_fallback",
     target: `vault:${res.provider}`,
     model: res.model,
     answer,
     thinking: split.thinking,
-    latencyMs,
+    latencyMs: wallLatencyMs,
+    workerLatencyMs: null,
     ttftMs: null,
     usage: null,
-    tokPerSec: null,
+    ...telemetry,
     jsonValidation: mode === "json" || mode === "vision_qa" ? validateJsonAgainstSchema(answer, jsonSchema) : null,
   };
 }

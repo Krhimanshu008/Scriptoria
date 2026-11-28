@@ -5,6 +5,7 @@ import { appendSystemLog } from "@/lib/logs/logger";
 import { isLlmWorkerProfile } from "@/lib/catalog/worker-profiles";
 import { parseBootMetadata, sanitizeVmForClient, sortVmsByCanonicalTarget } from "@/lib/orchestrator/vm-helpers";
 import {
+  CANONICAL_LLM_PRESET,
   getDefaultPresetForLlmProfile,
   resolveLlmPresetById,
 } from "@/lib/llm/llm-model-presets";
@@ -280,10 +281,37 @@ export async function POST(
       });
     }
 
+    if (action === "keep_alive") {
+      if (vm.publicUrl) {
+        const { VmGateway } = await import("@/lib/orchestrator/vm-gateway");
+        await VmGateway.callJson(vm, "/health", {
+          method: "GET",
+          targetPort: 9999,
+          timeoutMs: 5000,
+        }).catch(() => null);
+      }
+      const cmd = await enqueueVmCommand({
+        vmInstanceId: vm.id,
+        userId: user.userId,
+        sessionGroup: vm.sessionGroup,
+        target: vm.target,
+        action: "KEEP_ALIVE",
+      });
+      return NextResponse.json({
+        ok: true,
+        command: cmd,
+        pingedAt: new Date().toISOString(),
+      });
+    }
+
     if (action === "stage_llm" || action === "load_llm") {
       const preset =
         resolveLlmPresetById(body.presetId) ||
-        (body.repoId ? null : getDefaultPresetForLlmProfile(vm.workerProfile));
+        (body.repoId
+          ? null
+          : isLlmWorkerProfile(vm.workerProfile)
+          ? getDefaultPresetForLlmProfile(vm.workerProfile)
+          : CANONICAL_LLM_PRESET);
       const repoId = String(body.repoId || preset?.repoId || "").trim();
       const modelName = String(body.modelName || preset?.shortLabel || repoId).trim();
 

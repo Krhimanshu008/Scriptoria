@@ -497,6 +497,32 @@ NEEDS_GDRIVE_SYNC = False
 GDRIVE_AUTH_BROKEN = False
 ACTIVE_LLM_TRANSFER = None
 RECENT_LOG_LINE = None
+RECENT_LOG_LINES = deque(maxlen=30)
+VISION_EVENT_STATE = {
+    "last_encode_ms": None,
+    "last_tokens": None,
+    "last_event_ts": 0.0,
+    "in_vision_encode": False,
+}
+MTP_LOG_STATE = {
+    "last_acceptance_pct": None,
+    "last_mean_len": None,
+    "last_accepted": 0,
+    "last_generated": 0,
+}
+LAST_TURN_TELEMETRY = None
+BINARY_INFO = {
+    "version": None,
+    "hasDraftMtp": False,
+    "hasMetrics": False,
+    "isV2Ready": False,
+}
+LAST_GPU_TELEMETRY = []
+LAST_SLOT_TELEMETRY = None
+LAST_MTP_TELEMETRY = None
+LAST_ANCILLARY_STATE = None
+MTP_ACTIVE_FLAG = False
+MTP_DRAFT_MAX = 2
 TUNNEL_URL = None
 CURRENT_STEP = 1
 T_BOOT_START = time.time()
@@ -527,8 +553,9 @@ except Exception:
 
 def log_event(msg, category="SYSTEM", level="INFO"):
     global RECENT_LOG_LINE
-    clean_one_line = (" ".join(str(msg).split()))[:140]
+    clean_one_line = (" ".join(str(msg).split()))[:160]
     RECENT_LOG_LINE = f"[{category}] {clean_one_line}"
+    RECENT_LOG_LINES.append(RECENT_LOG_LINE)
     line = f"[{category}] {msg}"
     try:
         with open("/tmp/scriptoria_worker.log", "a", encoding="utf-8") as _wl:
@@ -696,9 +723,26 @@ def post_heartbeat(step, status="STARTING", telemetry=None):
     telem["hotModels"] = {str(k): list(v) for k, v in HOT_MODELS_BY_PORT.items()}
     telem["activeTransfer"] = _get_active_transfer()
     telem["recentLog"] = RECENT_LOG_LINE
+    telem["recentLogs"] = list(RECENT_LOG_LINES)[-25:]
+    telem["watchdog"] = {
+        "idleRemainingSec": max(0, int(IDLE_TIMEOUT_SEC - (now - LAST_ACTIVE))) if IDLE_TIMEOUT_SEC > 0 else None,
+        "idleTimeoutSec": int(IDLE_TIMEOUT_SEC),
+        "lastActiveEpoch": int(LAST_ACTIVE),
+    }
     if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LLM_QWEN_FAST_8B", "LLM_LIGHTWEIGHT_SWARM"):
         telem["llmTopologyMode"] = LLM_TOPO_MODE
         telem["llmEndpoints"] = list(LLM_ACTIVE_ENDPOINTS)
+        telem["binaryInfo"] = dict(BINARY_INFO)
+        if LAST_GPU_TELEMETRY:
+            telem["gpus"] = list(LAST_GPU_TELEMETRY)
+        if LAST_SLOT_TELEMETRY is not None:
+            telem["slotTelemetry"] = dict(LAST_SLOT_TELEMETRY)
+        if LAST_MTP_TELEMETRY is not None:
+            telem["mtpTelemetry"] = dict(LAST_MTP_TELEMETRY)
+        if LAST_TURN_TELEMETRY is not None:
+            telem["lastTurnTelemetry"] = dict(LAST_TURN_TELEMETRY)
+        if LAST_ANCILLARY_STATE is not None:
+            telem["ancillary"] = dict(LAST_ANCILLARY_STATE)
     try:
         scan_data, scan_hash = _scan_local_models_cached()
         if scan_data.get("disk"):
@@ -799,6 +843,13 @@ def _execute_vm_command(cmd):
     cmd_id = str(cmd.get("id") or "")
     action = str(cmd.get("action") or "").upper()
     try:
+        if action == "KEEP_ALIVE":
+            globals()["LAST_ACTIVE"] = time.time()
+            rem = max(0, int(IDLE_TIMEOUT_SEC - (time.time() - LAST_ACTIVE))) if IDLE_TIMEOUT_SEC > 0 else None
+            log_event(f"Watchdog reset via Keep-Alive ping ({rem}s remaining).", category="SYSTEM", level="INFO")
+            _record_cmd_ack(cmd_id, "COMPLETED", f"Watchdog reset ({rem}s)")
+            post_heartbeat(CURRENT_STEP, "ONLINE" if CURRENT_STEP >= 5 else "STARTING")
+            return
         if action == "FREE_VRAM":
             freed = []
             for port in PORTS:
@@ -1791,6 +1842,8 @@ def _get_llama_caps(bin_path):
         "bs": False,
         "kv_unified": False,
         "no_webui": False,
+        "metrics": False,
+        "slots": False,
     }
     try:
         chk_env = os.environ.copy()
@@ -1805,6 +1858,21 @@ def _get_llama_caps(bin_path):
         caps["bs"] = (" -bs," in htxt or " -bs " in htxt or "--batch-sampling" in htxt)
         caps["kv_unified"] = ("--kv-unified" in htxt)
         caps["no_webui"] = ("--no-webui" in htxt)
+        caps["metrics"] = ("--metrics" in htxt)
+        caps["slots"] = ("--slots" in htxt)
+        ver_str = None
+        try:
+            vres = subprocess.run([bin_path, "--version"], env=chk_env, capture_output=True, text=True, timeout=8)
+            v_lines = [l.strip() for l in ((vres.stdout or "") + "\\n" + (vres.stderr or "")).splitlines() if l.strip()]
+            ver_str = next((l for l in v_lines if "version:" in l.lower()), v_lines[0] if v_lines else None)
+        except Exception:
+            pass
+        BINARY_INFO.update({
+            "version": ver_str[:90] if ver_str else None,
+            "hasDraftMtp": bool(caps["draft_mtp"]),
+            "hasMetrics": bool(caps["metrics"]),
+            "isV2Ready": bool(caps["draft_mtp"] and caps["metrics"]),
+        })
     except Exception:
         pass
     _LLAMA_CAPS_CACHE[bin_path] = caps
@@ -1976,6 +2044,7 @@ def _fast_download_hf(repo_id, filename, dst_dir="/tmp/models/llm/qwen3_vl_8b", 
         spd = sz / max(0.1, now - t0)
         spd_mb = round(spd / (1024 * 1024), 1)
         pct = min(99, round((sz / total_bytes) * 100)) if total_bytes > 0 else 0
+        eta_sec = int((total_bytes - sz) / spd) if (total_bytes > sz and spd > 0) else None
         ACTIVE_LLM_TRANSFER = {
             "filename": base_fn,
             "category": "llm",
@@ -1983,6 +2052,7 @@ def _fast_download_hf(repo_id, filename, dst_dir="/tmp/models/llm/qwen3_vl_8b", 
             "speedMbps": spd_mb,
             "bytesDone": sz,
             "totalBytes": total_bytes,
+            "etaSeconds": eta_sec,
             "queueCount": 1,
             "source": "huggingface",
         }
@@ -2289,6 +2359,7 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
         raise RuntimeError(f"Failed to resolve Qwen weights for {LLM_MODEL_REPO} from Kaggle dataset, Google Drive, or Hugging Face.")
 
     llama_bin = _resolve_llama_bin()
+    _get_llama_caps(llama_bin)
     post_heartbeat(3, "STARTING")
 
     model_gguf = None
@@ -2390,12 +2461,14 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
         log_event("Worker processes evicted & GPU VRAM cleared.", category="SYSTEM", level="WARN")
 
     def stop_llm_workers(update_mode=True):
-        global RUNTIME_MODE, ACTIVE_MODEL_NAME, ACTIVE_MODEL_REPO, ACTIVE_MODEL_HINTS, LLM_ACTIVE_ENDPOINTS, model_gguf, mmproj_gguf, mode_label
+        global RUNTIME_MODE, ACTIVE_MODEL_NAME, ACTIVE_MODEL_REPO, ACTIVE_MODEL_HINTS, LLM_ACTIVE_ENDPOINTS, model_gguf, mmproj_gguf, mode_label, MTP_ACTIVE_FLAG, MTP_DRAFT_MAX
         with WORKER_LOCK:
             _stop_llm_workers_unlocked()
             LLM_ACTIVE_ENDPOINTS = []
             model_gguf = None
             mmproj_gguf = None
+            MTP_ACTIVE_FLAG = False
+            MTP_DRAFT_MAX = 0
             if update_mode:
                 RUNTIME_MODE = "idle_empty"
                 ACTIVE_MODEL_NAME = None
@@ -2590,6 +2663,10 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                     base_split_cmd.append("--kv-unified")
                 if caps.get("no_webui"):
                     base_split_cmd.append("--no-webui")
+                if caps.get("metrics"):
+                    base_split_cmd.append("--metrics")
+                if caps.get("slots"):
+                    base_split_cmd.append("--slots")
                 if caps.get("bs"):
                     base_split_cmd.append("-bs")
                 if mmproj_gguf:
@@ -2615,6 +2692,8 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                         "--spec-type", "draft-mtp",
                         "--spec-draft-n-max", "2",
                     ]
+                globals()["MTP_ACTIVE_FLAG"] = bool(use_mtp_spec)
+                globals()["MTP_DRAFT_MAX"] = 2 if use_mtp_spec else 0
                 ll_cmd = base_split_cmd + spec_flags_used
                 ll_log = open("/tmp/llama_server.log", "w")
                 WORKER_PROCS["main"] = subprocess.Popen(ll_cmd, env=ll_env, stdout=ll_log, stderr=ll_log)
@@ -2632,6 +2711,8 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                 if main_p is not None and main_p.poll() is not None:
                     if spec_flags_used and base_split_cmd and not fallback_retried:
                         fallback_retried = True
+                        globals()["MTP_ACTIVE_FLAG"] = False
+                        globals()["MTP_DRAFT_MAX"] = 0
                         log_event(f"Speculative launch exited early (rc={main_p.returncode}); retrying without speculation...", category="SYSTEM", level="WARN")
                         spec_flags_used = []
                         ll_log = open("/tmp/llama_server.log", "w")
@@ -2722,6 +2803,135 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
         ACTIVE_MODEL_REPO = None
         log_event("Setup-Only Boot ready (0 models downloaded or loaded in VRAM). Use Model & VRAM Loader to Stage or Load a model when needed.", category="SYSTEM", level="SUCCESS")
 
+    import re as _re
+
+    def _safe_float(val, default=None):
+        try:
+            s = str(val).strip()
+            if not s or s.lower() in ("n/a", "[n/a]", "nan", "none"):
+                return default
+            return float(s)
+        except Exception:
+            return default
+
+    def _payload_has_images(req_payload):
+        try:
+            msgs = req_payload.get("messages") or []
+            for m in msgs:
+                c = m.get("content") if isinstance(m, dict) else None
+                if isinstance(c, list):
+                    for part in c:
+                        if isinstance(part, dict) and part.get("type") == "image_url":
+                            return True
+        except Exception:
+            pass
+        return False
+
+    def _parse_prometheus_metrics(txt):
+        out = {}
+        if not txt:
+            return out
+        for raw_ln in txt.splitlines():
+            ln = raw_ln.strip()
+            if not ln or ln.startswith("#"):
+                continue
+            parts = ln.split()
+            if len(parts) < 2:
+                continue
+            metric_key = parts[0].split("{", 1)[0].strip()
+            val = _safe_float(parts[-1])
+            if val is not None:
+                out[metric_key] = val
+        return out
+
+    def _parse_llama_log_line(stripped):
+        low = stripped.lower()
+        if "encoding image slice" in low or ("mtmd" in low and "encoding" in low):
+            VISION_EVENT_STATE["in_vision_encode"] = True
+            VISION_EVENT_STATE["last_event_ts"] = time.time()
+        m_img = _re.search(r"image (?:slice encoded|processed) in ([0-9.]+)\\s*ms", low)
+        if m_img:
+            VISION_EVENT_STATE["last_encode_ms"] = _safe_float(m_img.group(1))
+            VISION_EVENT_STATE["last_event_ts"] = time.time()
+            VISION_EVENT_STATE["in_vision_encode"] = False
+        m_tok = _re.search(r"n_tokens(?:_batch)?\\s*=\\s*([0-9]+)", low)
+        if m_tok and ("image" in low or "mtmd" in low):
+            VISION_EVENT_STATE["last_tokens"] = int(m_tok.group(1))
+            VISION_EVENT_STATE["last_event_ts"] = time.time()
+        if "draft acceptance" in low or "n_draft" in low:
+            m_pct = _re.search(r"([0-9.]+)\\s*%", low)
+            m_acc = _re.search(r"([0-9]+)\\s*accepted\\s*/\\s*([0-9]+)\\s*(?:generated|drafted)", low)
+            m_len = _re.search(r"mean(?:\\s+len)?\\s*=\\s*([0-9.]+)", low)
+            if m_pct:
+                MTP_LOG_STATE["last_acceptance_pct"] = _safe_float(m_pct.group(1))
+            if m_acc:
+                MTP_LOG_STATE["last_accepted"] = int(m_acc.group(1))
+                MTP_LOG_STATE["last_generated"] = int(m_acc.group(2))
+            if m_len:
+                MTP_LOG_STATE["last_mean_len"] = _safe_float(m_len.group(1))
+
+    def _scan_llm_ancillary_state(curr_model_gguf, curr_mmproj_gguf, runtime_mode, mtp_active):
+        dataset_paths = []
+        if os.path.exists("/kaggle/input"):
+            try:
+                for entry in sorted(os.listdir("/kaggle/input")):
+                    full_d = os.path.join("/kaggle/input", entry)
+                    if os.path.isdir(full_d):
+                        dataset_paths.append(entry)
+            except Exception:
+                pass
+        weights_file = os.path.basename(curr_model_gguf) if curr_model_gguf else None
+        weights_gb = None
+        weights_src = "missing"
+        mmproj_file = os.path.basename(curr_mmproj_gguf) if curr_mmproj_gguf else None
+        mmproj_src = "missing"
+
+        if curr_model_gguf and os.path.exists(curr_model_gguf):
+            try:
+                weights_gb = round(os.path.getsize(curr_model_gguf) / (1024**3), 2)
+            except Exception:
+                pass
+            weights_src = "dataset" if str(curr_model_gguf).startswith("/kaggle/input") else "tmp"
+        if curr_mmproj_gguf and os.path.exists(curr_mmproj_gguf):
+            mmproj_src = "dataset" if str(curr_mmproj_gguf).startswith("/kaggle/input") else "tmp"
+
+        if weights_src == "missing" or mmproj_src == "missing":
+            for scan_root, src_tag in (("/kaggle/input", "dataset"), ("/tmp/models/llm", "tmp")):
+                if not os.path.exists(scan_root):
+                    continue
+                for r_dir, _, fnames in os.walk(scan_root):
+                    for fn in sorted(fnames):
+                        fl = fn.lower()
+                        if not fl.endswith(".gguf"):
+                            continue
+                        fp = os.path.join(r_dir, fn)
+                        try:
+                            sz_gb = round(os.path.getsize(fp) / (1024**3), 2)
+                        except Exception:
+                            sz_gb = 0.0
+                        if "mmproj" in fl:
+                            if mmproj_src == "missing":
+                                mmproj_file = fn
+                                mmproj_src = src_tag
+                        elif "dflash" not in fl and sz_gb >= 1.0:
+                            if weights_src == "missing" or ("27b" in fl and (not weights_file or "27b" not in weights_file.lower())):
+                                weights_file = fn
+                                weights_gb = sz_gb
+                                weights_src = src_tag
+
+        return {
+            "weightsPresent": weights_src != "missing",
+            "weightsFile": weights_file,
+            "weightsGb": weights_gb,
+            "weightsSource": weights_src,
+            "mmprojPresent": mmproj_src != "missing",
+            "mmprojFile": mmproj_file,
+            "mmprojSource": mmproj_src,
+            "mmprojLoaded": bool(runtime_mode == "llm_ready" and curr_mmproj_gguf),
+            "mtpActive": bool(mtp_active),
+            "datasetPaths": dataset_paths,
+        }
+
     def _tail_llama_log(log_path, label):
         pos = 0
         while True:
@@ -2738,8 +2948,12 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                         lf.seek(pos)
                         for line in lf:
                             stripped = line.strip()
-                            if stripped and any(k in stripped.lower() for k in ["error", "fail", "listening", "loaded", "eval time", "tokens", "http", "draft", "mtp", "spec"]):
-                                log_event(f"[{label}] {stripped[:120]}", category="LLAMA", level="INFO")
+                            if not stripped:
+                                continue
+                            _parse_llama_log_line(stripped)
+                            low = stripped.lower()
+                            if any(k in low for k in ["error", "fail", "listening", "loaded", "eval time", "print_timing", "draft", "mtp", "spec", "image processed", "image slice", "oom", "tokens", "http"]):
+                                log_event(f"[{label}] {stripped[:160]}", category="LLAMA", level="INFO")
                         pos = lf.tell()
             except Exception:
                 pass
@@ -2751,20 +2965,166 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
     threading.Thread(target=_tail_llama_log, args=("/tmp/llama_4b.log", "LLM4B"), daemon=True).start()
     threading.Thread(target=_tail_llama_log, args=("/tmp/llama_cpm.log", "CPM"), daemon=True).start()
 
-    def _query_nvidia_smi():
+    def _query_nvidia_smi_detailed(model_name_hint=None, has_mmproj=False):
+        gpus = []
+        devs = []
         try:
-            out = subprocess.check_output(["nvidia-smi", "--query-gpu=name,memory.total,memory.used", "--format=csv,noheader,nounits"], text=True, timeout=3)
-            devs = []
-            for ln in out.strip().splitlines():
+            out = subprocess.check_output(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=index,name,memory.total,memory.used,temperature.gpu,utilization.gpu,power.draw,power.limit",
+                    "--format=csv,noheader,nounits",
+                ],
+                text=True,
+                timeout=3,
+            )
+            model_tag = model_name_hint or ACTIVE_MODEL_NAME or "Idle Empty"
+            for row_idx, ln in enumerate(out.strip().splitlines()):
                 parts = [p.strip() for p in ln.split(",")]
-                if len(parts) >= 3:
-                    tot_b = int(float(parts[1]) * 1024 * 1024)
-                    used_b = int(float(parts[2]) * 1024 * 1024)
-                    model_tag = ACTIVE_MODEL_NAME or "Idle Empty"
-                    devs.append({"name": f"{parts[0]} ({model_tag})", "vram_total": tot_b, "vram_free": max(0, tot_b - used_b)})
-            return devs
+                if len(parts) < 4:
+                    continue
+                gpu_idx = int(_safe_float(parts[0], row_idx))
+                g_name = parts[1]
+                tot_mib = _safe_float(parts[2], 15360.0)
+                used_mib = _safe_float(parts[3], 0.0)
+                tot_gb = round(tot_mib / 1024.0, 2)
+                used_gb = round(used_mib / 1024.0, 2)
+                free_gb = round(max(0.0, tot_gb - used_gb), 2)
+                temp_c = _safe_float(parts[4]) if len(parts) > 4 else None
+                util_pct = _safe_float(parts[5]) if len(parts) > 5 else None
+                power_w = _safe_float(parts[6]) if len(parts) > 6 else None
+                power_limit = _safe_float(parts[7], 70.0) if len(parts) > 7 else 70.0
+                role = "53% + mmproj" if (gpu_idx == 0 and has_mmproj) else ("53% Weights" if gpu_idx == 0 else "47% + KV Cache")
+                gpus.append({
+                    "index": gpu_idx,
+                    "name": g_name,
+                    "role": role,
+                    "vramTotalGb": tot_gb,
+                    "vramUsedGb": used_gb,
+                    "vramFreeGb": free_gb,
+                    "tempC": round(temp_c, 0) if temp_c is not None else None,
+                    "utilPct": round(util_pct, 0) if util_pct is not None else None,
+                    "powerW": round(power_w, 1) if power_w is not None else None,
+                    "powerLimitW": round(power_limit, 0) if power_limit is not None else 70,
+                })
+                tot_b = int(tot_mib * 1024 * 1024)
+                used_b = int(used_mib * 1024 * 1024)
+                devs.append({"name": f"{g_name} ({model_tag})", "vram_total": tot_b, "vram_free": max(0, tot_b - used_b)})
         except Exception:
-            return []
+            pass
+        return gpus, devs
+
+    def _query_nvidia_smi():
+        _, devs = _query_nvidia_smi_detailed(ACTIVE_MODEL_NAME, bool(mmproj_gguf))
+        return devs
+
+    def _probe_llama_runtime_telemetry(runtime_mode, mtp_enabled, mtp_draft_max, default_ctx=16384):
+        if runtime_mode != "llm_ready":
+            return None, {
+                "enabled": bool(mtp_enabled),
+                "draftMax": int(mtp_draft_max or 0),
+                "draftsAttempted": 0,
+                "draftsAccepted": 0,
+                "acceptancePct": None,
+                "meanTokensPerStep": None,
+                "verifSteps": 0,
+            }, False
+
+        slot_data = None
+        is_busy = False
+        kv_used = 0
+        kv_total = default_ctx
+        cache_n = 0
+        n_decoded = 0
+        n_prompt = 0
+        task_id = None
+
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:8190/slots", timeout=0.9) as sr:
+                slots = json.loads(sr.read().decode("utf-8") or "[]")
+            if isinstance(slots, list) and slots:
+                s0 = slots[0] if isinstance(slots[0], dict) else {}
+                is_busy = bool(s0.get("is_processing") or s0.get("state", 0) != 0)
+                kv_total = int(s0.get("n_ctx") or default_ctx)
+                task_id = s0.get("id_task")
+                nt = s0.get("next_token")
+                if isinstance(nt, list) and nt and isinstance(nt[0], dict):
+                    n_decoded = int(nt[0].get("n_decoded") or 0)
+                    kv_used = int(nt[0].get("n_remain") or 0)
+                n_past = _safe_float(s0.get("n_past"))
+                if n_past is not None:
+                    kv_used = int(n_past)
+                elif isinstance(s0.get("n_decoded"), int):
+                    n_decoded = int(s0.get("n_decoded") or 0)
+                    kv_used = max(kv_used, n_decoded)
+        except Exception:
+            pass
+
+        metrics_map = {}
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:8190/metrics", timeout=0.9) as mr:
+                metrics_map = _parse_prometheus_metrics(mr.read().decode("utf-8", errors="ignore"))
+        except Exception:
+            pass
+
+        kv_ratio = metrics_map.get("llamacpp:kv_cache_usage_ratio")
+        if kv_ratio is not None and kv_used == 0 and kv_ratio > 0:
+            kv_used = int(round(kv_ratio * kv_total))
+        if (metrics_map.get("llamacpp:requests_processing") or 0) > 0:
+            is_busy = True
+
+        lt = LAST_TURN_TELEMETRY or {}
+        if lt:
+            cache_n = int(lt.get("cacheN") or 0)
+            n_prompt = int(lt.get("promptN") or 0)
+            if not is_busy:
+                kv_used = max(kv_used, int((lt.get("promptN") or 0) + (lt.get("predictedN") or 0) + cache_n))
+
+        in_vis = bool(VISION_EVENT_STATE.get("in_vision_encode") and (time.time() - float(VISION_EVENT_STATE.get("last_event_ts") or 0) < 15.0))
+        if is_busy:
+            phase = "vision" if in_vis else ("decoding" if n_decoded > 0 else "prefill")
+        else:
+            phase = "idle"
+
+        total_prompt = n_prompt + cache_n
+        cache_hit_pct = round((cache_n / total_prompt) * 100, 1) if total_prompt > 0 else 0.0
+
+        slot_data = {
+            "state": phase,
+            "isProcessing": is_busy,
+            "kvUsed": kv_used,
+            "kvTotal": kv_total,
+            "cacheN": cache_n,
+            "cacheHitPct": cache_hit_pct,
+            "nDecoded": n_decoded,
+            "nPromptTokens": n_prompt,
+            "activeTaskId": task_id,
+        }
+
+        d_att = int(lt.get("draftN") or MTP_LOG_STATE.get("last_generated") or 0)
+        d_acc = int(lt.get("draftNAccepted") or MTP_LOG_STATE.get("last_accepted") or 0)
+        pred_n = int(lt.get("predictedN") or 0)
+        for mk, mv in metrics_map.items():
+            mkl = mk.lower()
+            if ("spec" in mkl or "draft" in mkl) and ("attempt" in mkl or "total" in mkl) and mv > 0:
+                d_att = max(d_att, int(mv))
+            elif ("spec" in mkl or "draft" in mkl) and "accept" in mkl and mv >= 0:
+                d_acc = max(d_acc, int(mv))
+
+        acc_pct = round((d_acc / d_att) * 100, 1) if d_att > 0 else MTP_LOG_STATE.get("last_acceptance_pct")
+        verif_steps = max(1, (pred_n - d_acc) if pred_n > d_acc else (d_acc + 1)) if (pred_n > 0 or d_acc > 0) else 0
+        mean_tps = round(max(1.0, pred_n / max(1, verif_steps)), 2) if (pred_n > 0 and verif_steps > 0) else MTP_LOG_STATE.get("last_mean_len")
+
+        mtp_data = {
+            "enabled": bool(mtp_enabled),
+            "draftMax": int(mtp_draft_max or 0),
+            "draftsAttempted": d_att,
+            "draftsAccepted": d_acc,
+            "acceptancePct": acc_pct,
+            "meanTokensPerStep": mean_tps,
+            "verifSteps": verif_steps,
+        }
+        return slot_data, mtp_data, is_busy
 
     class _LlmBridgeHandler(_BHRH):
         def _proxy(self, method):
@@ -2927,6 +3287,7 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
         return 8190
 
     def _llm_outbound_relay_loop(lane_id):
+        global LAST_TURN_TELEMETRY
         while True:
             try:
                 poll_res = _worker_api_post("/api/v1/workers/llm-poll", {"workerId": TARGETS[0]}, timeout=20)
@@ -2945,16 +3306,44 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                     }, timeout=15)
                     continue
                 svc_port = _resolve_svc_port(req_obj.get("targetService"))
+                req_payload = req_obj.get("requestPayload") or {}
+                has_imgs = _payload_has_images(req_payload)
                 t0_req = time.time()
                 try:
                     c_req = urllib.request.Request(
                         f"http://127.0.0.1:{svc_port}/v1/chat/completions",
-                        data=json.dumps(req_obj["requestPayload"]).encode("utf-8"),
+                        data=json.dumps(req_payload).encode("utf-8"),
                         headers={"Content-Type": "application/json"},
                         method="POST",
                     )
                     with urllib.request.urlopen(c_req, timeout=180) as cr:
                         c_res = json.loads(cr.read().decode("utf-8") or "{}")
+                    VISION_EVENT_STATE["in_vision_encode"] = False
+                    if has_imgs:
+                        vis_recent = VISION_EVENT_STATE["last_event_ts"] >= (t0_req - 0.25)
+                        c_res["scriptoria_vision"] = {
+                            "bypassed": False,
+                            "encodeMs": VISION_EVENT_STATE["last_encode_ms"] if vis_recent else None,
+                            "visionTokens": VISION_EVENT_STATE["last_tokens"] if vis_recent else None,
+                        }
+                    else:
+                        c_res["scriptoria_vision"] = {"bypassed": True, "encodeMs": 0, "visionTokens": 0}
+                    _t = c_res.get("timings") or {}
+                    LAST_TURN_TELEMETRY = {
+                        "rawDecodeTokPerSec": round(float(_t.get("predicted_per_second") or 0), 2) or None,
+                        "prefillTokPerSec": round(float(_t.get("prompt_per_second") or 0), 2) or None,
+                        "promptMs": round(float(_t.get("prompt_ms") or 0), 1) or None,
+                        "predictedMs": round(float(_t.get("predicted_ms") or 0), 1) or None,
+                        "cacheN": int(_t.get("cache_n") or 0),
+                        "promptN": int(_t.get("prompt_n") or 0),
+                        "predictedN": int(_t.get("predicted_n") or 0),
+                        "draftN": int(_t.get("draft_n") or 0),
+                        "draftNAccepted": int(_t.get("draft_n_accepted") or 0),
+                        "visionEncodeMs": c_res["scriptoria_vision"]["encodeMs"],
+                        "visionTokens": c_res["scriptoria_vision"]["visionTokens"],
+                        "visionBypassed": c_res["scriptoria_vision"]["bypassed"],
+                        "timestampMs": int(time.time() * 1000),
+                    }
                     _worker_api_post("/api/v1/workers/llm-complete", {
                         "requestId": rid,
                         "workerId": TARGETS[0],
@@ -2962,6 +3351,7 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                         "latencyMs": int((time.time() - t0_req) * 1000),
                     }, timeout=20)
                 except Exception as llm_err:
+                    VISION_EVENT_STATE["in_vision_encode"] = False
                     _worker_api_post("/api/v1/workers/llm-complete", {
                         "requestId": rid,
                         "workerId": TARGETS[0],
@@ -2976,7 +3366,8 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                 time.sleep(2)
 
     if HEADLESS_MODE:
-        for _lane in range(2 if len(TARGETS) >= 2 else 1):
+        _relay_lanes = 1 if LLM_TOPO_MODE == "llm_layer_split" else (2 if len(TARGETS) >= 2 else 1)
+        for _lane in range(_relay_lanes):
             threading.Thread(target=_llm_outbound_relay_loop, args=(_lane,), daemon=True).start()
 
     _llm_last_step = -1
@@ -2984,7 +3375,6 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
     while True:
         llm_ok = False
         if RUNTIME_MODE in ("idle_empty", "loading_model") or not LLM_ACTIVE_ENDPOINTS:
-            # Pure compute container is healthy and ready to accept STAGE_LLM / LOAD_LLM commands
             llm_ok = True
         else:
             try:
@@ -2999,7 +3389,16 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                 llm_ok = False
 
         llm_tunnel_ok = True if HEADLESS_MODE else (bool(TUNNEL_URL) and is_caddy_ready())
-        devs = _query_nvidia_smi()
+        gpus_detail, devs = _query_nvidia_smi_detailed(ACTIVE_MODEL_NAME, bool(mmproj_gguf))
+        if gpus_detail:
+            LAST_GPU_TELEMETRY = gpus_detail
+        slot_data, mtp_data, slot_busy = _probe_llama_runtime_telemetry(RUNTIME_MODE, MTP_ACTIVE_FLAG, MTP_DRAFT_MAX, 16384)
+        LAST_SLOT_TELEMETRY = slot_data
+        LAST_MTP_TELEMETRY = mtp_data
+        if slot_busy:
+            LAST_ACTIVE = time.time()
+        LAST_ANCILLARY_STATE = _scan_llm_ancillary_state(model_gguf, mmproj_gguf, RUNTIME_MODE, MTP_ACTIVE_FLAG)
+
         telem = {}
         for idx_t, t_name in enumerate(TARGETS):
             d = devs[min(idx_t, len(devs) - 1)] if devs else {}
@@ -3035,27 +3434,18 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
         if RCLONE_READY:
             refresh_gdrive_oauth_in_vm(force=False)
         _active_tx = _get_active_transfer()
-        hb_int = 3 if _active_tx else (10 if all_ready else 5)
+        hb_int = 2.5 if (_active_tx is not None or slot_busy or RUNTIME_MODE == "loading_model") else (5 if all_ready else 3)
         if next_step != _llm_last_step or has_pending_logs() or _active_tx is not None or (time.time() - LAST_HB_SENT) >= hb_int:
             post_heartbeat(next_step, next_status, telem)
             _llm_last_step = next_step
 
         if not EVER_CONNECTED and (time.time() - _llm_t0) > 90 and HEARTBEAT_FAIL_STREAK >= 3:
             break
-        if IDLE_TIMEOUT_SEC > 0:
-            try:
-                if RUNTIME_MODE == "llm_ready":
-                    with urllib.request.urlopen("http://127.0.0.1:8190/slots", timeout=1.5) as sr:
-                        slots = json.loads(sr.read().decode("utf-8"))
-                        if isinstance(slots, list) and any(s.get("is_processing") or s.get("state", 0) != 0 for s in slots if isinstance(s, dict)):
-                            LAST_ACTIVE = time.time()
-            except Exception:
-                pass
         if IDLE_TIMEOUT_SEC > 0 and (time.time() - LAST_ACTIVE > IDLE_TIMEOUT_SEC):
             log_event("LLM idle timeout reached. Stopping to preserve Kaggle quota.", category="ACTION", level="WARN")
             post_heartbeat(0, "OFFLINE", {})
             break
-        time.sleep(2 if (_active_tx is not None or not all_ready) else 5)
+        time.sleep(2.5 if (_active_tx is not None or slot_busy or not all_ready or RUNTIME_MODE == "loading_model") else 5.0)
 
     stop_llm_workers()
     sys.exit(0)

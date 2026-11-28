@@ -58,6 +58,13 @@ test("Generated Python worker & 0-GPU Qwen LLM dataset scripts compile cleanly w
   assert.match(llmIdlePy, /llama_server_t4_v2\.tar\.gz/);
   assert.match(llmIdlePy, /def _get_llama_caps\(/);
   assert.match(llmIdlePy, /"--spec-type", "draft-mtp"/);
+  assert.match(llmIdlePy, /"--metrics"/);
+  assert.match(llmIdlePy, /def _query_nvidia_smi_detailed\(/);
+  assert.match(llmIdlePy, /def _probe_llama_runtime_telemetry\(/);
+  assert.match(llmIdlePy, /def _parse_llama_log_line\(/);
+  assert.match(llmIdlePy, /def _scan_llm_ancillary_state\(/);
+  assert.match(llmIdlePy, /if action == "KEEP_ALIVE":/);
+  assert.match(llmIdlePy, /_relay_lanes = 1 if LLM_TOPO_MODE == "llm_layer_split"/);
   assert.match(llmIdlePy, /def _repo_identity_tokens\(/);
   assert.match(llmIdlePy, /def _mmproj_matches\(/);
   assert.match(llmIdlePy, /if active_topo in \("llm_dual_replica", "llm_ab_arena", "llm_swarm_multi"\) and model_gb > 13\.0:/);
@@ -734,4 +741,103 @@ test("Google Drive OAuth resolves reverse-proxy origins without 0.0.0.0 leakage 
     process.env.GDRIVE_CLIENT_SECRET = prevEnvSecret;
     process.env.JWT_SECRET = prevJwt;
   }
+});
+
+test("Mission-Control telemetry math, BootMetadata merge/offline cleanup, and canonical preset invariants hold", async () => {
+  const { computeTurnTelemetry } = await import("../src/lib/llm/dispatch-llm");
+  const {
+    CANONICAL_LLM_PRESET,
+    PRIMARY_LLM_MODEL_PRESETS,
+    resolveLlmPresetById,
+  } = await import("../src/lib/llm/llm-model-presets");
+  const { mergeBootMetadata, markBootMetadataOffline } = await import(
+    "../src/lib/orchestrator/vm-helpers"
+  );
+
+  // 1. Canonical preset priority & legacy test preset preservation
+  assert.equal(PRIMARY_LLM_MODEL_PRESETS.length, 1);
+  assert.equal(CANONICAL_LLM_PRESET.preferredFilenames[0], "*UD-Q4_K_M*.gguf");
+  assert.equal(resolveLlmPresetById("qwen3.5-swarm")?.recommendedTopology, "llm_swarm_multi");
+
+  // 2. computeTurnTelemetry metrics: raw decode, prefill, relay overhead, MTP, vision, thinking split
+  const metrics = computeTurnTelemetry({
+    answer: '{"ok":true}',
+    thinking: "step 1 step 2 step 3",
+    hasImages: true,
+    wallLatencyMs: 5400,
+    workerLatencyMs: 4200,
+    usage: {
+      prompt_tokens: 1500,
+      completion_tokens: 120,
+      completion_tokens_details: { reasoning_tokens: 40 },
+    },
+    timings: {
+      prompt_n: 500,
+      prompt_ms: 1200,
+      prompt_per_second: 416.67,
+      predicted_n: 120,
+      predicted_ms: 3000,
+      predicted_per_second: 40.0,
+      cache_n: 1000,
+      draft_n: 100,
+      draft_n_accepted: 80,
+    },
+    visionMeta: { bypassed: false, encodeMs: 850, visionTokens: 576 },
+  });
+  assert.equal(metrics.rawDecodeTokPerSec, 40);
+  assert.equal(metrics.prefillTokPerSec, 416.7);
+  assert.equal(metrics.relayOverheadMs, 1200);
+  assert.equal(metrics.thinkingTokens, 40);
+  assert.equal(metrics.answerTokens, 80);
+  assert.equal(metrics.cacheN, 1000);
+  assert.equal(metrics.promptTokens, 1500);
+  assert.equal(metrics.visionEncodeMs, 850);
+  assert.equal(metrics.visionTokens, 576);
+  assert.equal(metrics.visionBypassed, false);
+  assert.equal(metrics.mtpStats?.acceptancePct, 80);
+  assert.equal(metrics.mtpStats?.meanTokensPerStep, 3);
+
+  const textBypass = computeTurnTelemetry({
+    answer: "hello",
+    thinking: null,
+    hasImages: false,
+    wallLatencyMs: 1000,
+    workerLatencyMs: 800,
+    usage: null,
+    timings: null,
+  });
+  assert.equal(textBypass.visionBypassed, true);
+  assert.equal(textBypass.visionEncodeMs, 0);
+  assert.equal(textBypass.visionTokens, 0);
+
+  // 3. mergeBootMetadata & markBootMetadataOffline cleanup
+  const merged = mergeBootMetadata(JSON.stringify({ autoLoadOnBoot: true }), {
+    runtimeMode: "llm_ready",
+    gpus: [
+      {
+        index: 0,
+        name: "Tesla T4",
+        role: "53% + mmproj",
+        vramTotalGb: 15,
+        vramUsedGb: 10.1,
+        vramFreeGb: 4.9,
+        tempC: 68,
+        utilPct: 92,
+        powerW: 64.5,
+        powerLimitW: 70,
+      },
+    ],
+    watchdog: { idleRemainingSec: 1200, idleTimeoutSec: 1800, lastActiveEpoch: 1700000000 },
+    recentLogs: ["[LLM0] draft acceptance = 80.00%"],
+  });
+  assert.equal(merged?.autoLoadOnBoot, true);
+  assert.equal(merged?.gpus?.[0]?.tempC, 68);
+  assert.equal(merged?.watchdog?.idleRemainingSec, 1200);
+
+  const offJson = markBootMetadataOffline(JSON.stringify(merged));
+  const offParsed = JSON.parse(offJson!);
+  assert.equal(offParsed.autoLoadOnBoot, true);
+  assert.deepEqual(offParsed.gpus, []);
+  assert.equal(offParsed.watchdog, null);
+  assert.equal(offParsed.slotTelemetry, null);
 });

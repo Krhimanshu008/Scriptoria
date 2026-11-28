@@ -84,6 +84,8 @@ export async function POST(req: NextRequest) {
       systemPrompt?: string;
       jsonSchema?: string;
       reasoningEffort?: LlmReasoningEffort;
+      enableThinking?: boolean;
+      cachePrompt?: boolean;
       temperature?: number;
       maxTokens?: number;
       fallbackToVault?: boolean;
@@ -133,6 +135,8 @@ export async function POST(req: NextRequest) {
           systemPrompt: s.systemPrompt,
           mode: s.mode || "chat",
           jsonSchema: s.jsonSchema,
+          enableThinking: typeof body.enableThinking === "boolean" ? body.enableThinking : undefined,
+          cachePrompt: typeof body.cachePrompt === "boolean" ? body.cachePrompt : undefined,
           temperature: s.temperature ?? 0.2,
           maxTokens: s.maxTokens ?? 2048,
           targetVm: s.targetVm || body.targetVm || "auto",
@@ -193,6 +197,19 @@ export async function POST(req: NextRequest) {
       failureReasons: string[];
       latencyMs: number;
       tokPerSec: number | null;
+      rawDecodeTokPerSec: number | null;
+      prefillTokPerSec: number | null;
+      relayOverheadMs: number | null;
+      thinkingTokens: number;
+      answerTokens: number;
+      cacheN: number | null;
+      mtpStats: {
+        draftN: number;
+        draftNAccepted: number;
+        acceptancePct: number | null;
+        meanTokensPerStep: number | null;
+      } | null;
+      executionRoute: string;
       target: string | null;
       model: string;
       error?: string;
@@ -220,6 +237,8 @@ export async function POST(req: NextRequest) {
               mode,
               jsonSchema: body.jsonSchema,
               reasoningEffort: body.reasoningEffort || "none",
+              enableThinking: typeof body.enableThinking === "boolean" ? body.enableThinking : undefined,
+              cachePrompt: typeof body.cachePrompt === "boolean" ? body.cachePrompt : undefined,
               temperature: body.temperature ?? 0.2,
               maxTokens: body.maxTokens ?? 1024,
               fallbackToVault: body.fallbackToVault !== false,
@@ -241,6 +260,14 @@ export async function POST(req: NextRequest) {
               failureReasons: assertion.reasons,
               latencyMs: res.latencyMs,
               tokPerSec: res.tokPerSec,
+              rawDecodeTokPerSec: res.rawDecodeTokPerSec,
+              prefillTokPerSec: res.prefillTokPerSec,
+              relayOverheadMs: res.relayOverheadMs,
+              thinkingTokens: res.thinkingTokens,
+              answerTokens: res.answerTokens,
+              cacheN: res.cacheN,
+              mtpStats: res.mtpStats,
+              executionRoute: res.executionRoute,
               target: res.target,
               model: res.model,
             };
@@ -253,6 +280,14 @@ export async function POST(req: NextRequest) {
               failureReasons: [err instanceof Error ? err.message : "Failed"],
               latencyMs: 0,
               tokPerSec: null,
+              rawDecodeTokPerSec: null,
+              prefillTokPerSec: null,
+              relayOverheadMs: null,
+              thinkingTokens: 0,
+              answerTokens: 0,
+              cacheN: null,
+              mtpStats: null,
+              executionRoute: "error",
               target: null,
               model: "error",
               error: err instanceof Error ? err.message : "Failed",

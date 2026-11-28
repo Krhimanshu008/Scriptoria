@@ -19,17 +19,55 @@ export interface LlmModelPresetSpec {
   preferredFilenames: string[];
   mmprojHints: string[];
   approxDiskGb: number;
+  approxWeightsGb?: number;
+  approxMmprojGb?: number;
   approxVramGb: number;
   visionCapable: boolean;
   recommendedTopology: LlmTopologyMode;
+  isCanonical?: boolean;
+  legacy?: boolean;
   notes: string;
   companionRepos?: LlmModelCompanionSpec[];
 }
 
+export const CANONICAL_LLM_PROFILE_ID: WorkerProfileId = "LLM_QWEN_VLM";
+export const CANONICAL_LLM_PRESET_ID = "qwen3.8-27b-vlm";
+export const CANONICAL_LLM_DATASET_NAME = "scriptoria-qwen-llm";
+
+export const CANONICAL_LLM_PRESET: LlmModelPresetSpec = {
+  id: CANONICAL_LLM_PRESET_ID,
+  label: "Qwen 3.8 27B Vision + Native MTP (Dual-T4 53:47 · ~17.8 GB)",
+  shortLabel: "Qwen3.8-27B VLM + MTP",
+  profileId: CANONICAL_LLM_PROFILE_ID,
+  repoId: "unsloth/Qwen3.8-27B-GGUF",
+  quantHint: "UD-Q4_K_M",
+  preferredFilenames: [
+    "*UD-Q4_K_M*.gguf",
+    "*Q4_K_M*.gguf",
+    "*IQ4_XS*.gguf",
+    "*Q3_K_M*.gguf",
+  ],
+  mmprojHints: ["*mmproj-F16*.gguf", "*mmproj-BF16*.gguf", "*mmproj*.gguf"],
+  approxDiskGb: 17.8,
+  approxWeightsGb: 16.56,
+  approxMmprojGb: 1.24,
+  approxVramGb: 19.2,
+  visionCapable: true,
+  recommendedTopology: "llm_layer_split",
+  isCanonical: true,
+  notes:
+    "Canonical single-model production stack: Qwen3.8-27B-UD-Q4_K_M (~16.56 GB) + mmproj-F16 (~1.2 GB) split 53:47 across 2× Tesla T4 (~19.2 GB VRAM) with q8_0 16K KV cache and embedded Native MTP (draft-mtp).",
+};
+
+/** Strictly the single-model UI list exposed inside the refactored LLM Studio & VM loader. */
+export const PRIMARY_LLM_MODEL_PRESETS: LlmModelPresetSpec[] = [CANONICAL_LLM_PRESET];
+
+/** Full backwards-compatible preset table (legacy entries retained for older API callers & test suites). */
 export const LLM_MODEL_PRESETS: LlmModelPresetSpec[] = [
+  CANONICAL_LLM_PRESET,
   {
     id: "qwen3-vl-8b",
-    label: "Qwen3-VL 8B Instruct (Vision + Fast Text · ~6.2 GB)",
+    label: "Qwen3-VL 8B Instruct (Legacy · ~6.2 GB)",
     shortLabel: "Qwen3-VL 8B",
     profileId: "LLM_QWEN_FAST_8B",
     repoId: "unsloth/Qwen3-VL-8B-Instruct-GGUF",
@@ -40,11 +78,12 @@ export const LLM_MODEL_PRESETS: LlmModelPresetSpec[] = [
     approxVramGb: 6.8,
     visionCapable: true,
     recommendedTopology: "llm_dual_replica",
-    notes: "Lightweight multimodal model. Fits on 1 T4 (~6.8 GB VRAM) or 2x parallel replicas across Dual-T4 (~30-35 tok/s per replica, ~61 tok/s combined).",
+    legacy: true,
+    notes: "Legacy lightweight multimodal preset.",
   },
   {
     id: "qwen3.5-9b",
-    label: "Qwen3.5 9B (Text / Arena / QC · ~5.6 GB)",
+    label: "Qwen3.5 9B (Legacy · ~5.6 GB)",
     shortLabel: "Qwen3.5 9B",
     profileId: "LLM_QWEN_TEXT_TURBO",
     repoId: "unsloth/Qwen3.5-9B-GGUF",
@@ -55,11 +94,12 @@ export const LLM_MODEL_PRESETS: LlmModelPresetSpec[] = [
     approxVramGb: 6.4,
     visionCapable: false,
     recommendedTopology: "llm_ab_arena",
-    notes: "Fast 9B reasoning model (~45-70 tok/s). Pairs cleanly with Qwen3-VL 8B for A/B Arena.",
+    legacy: true,
+    notes: "Legacy 9B text preset.",
   },
   {
     id: "qwen3.5-swarm",
-    label: "Qwen Light Trio / Swarm (9B + 4B + MiniCPM-V · ~9.4 GB)",
+    label: "Qwen Light Trio / Swarm (Legacy · ~9.4 GB)",
     shortLabel: "Qwen Light Swarm",
     profileId: "LLM_LIGHTWEIGHT_SWARM",
     repoId: "unsloth/Qwen3.5-9B-GGUF",
@@ -70,7 +110,8 @@ export const LLM_MODEL_PRESETS: LlmModelPresetSpec[] = [
     approxVramGb: 11.5,
     visionCapable: true,
     recommendedTopology: "llm_swarm_multi",
-    notes: "Bundles Qwen3.5-9B + Qwen3.5-4B + MiniCPM-V-1B in one dataset (<10 GB) for 4-service swarm mode.",
+    legacy: true,
+    notes: "Legacy swarm preset retained for API backwards compatibility.",
     companionRepos: [
       {
         role: "extract",
@@ -89,38 +130,24 @@ export const LLM_MODEL_PRESETS: LlmModelPresetSpec[] = [
     ],
   },
   {
-    id: "qwen3.8-27b-vlm",
-    label: "Qwen3.8 27B Vision + LLM (Dual-T4 Split · ~17.8 GB)",
-    shortLabel: "Qwen3.8 27B VLM",
-    profileId: "LLM_QWEN_VLM",
-    repoId: "unsloth/Qwen3.8-27B-GGUF",
-    quantHint: "Q4_K_M",
-    preferredFilenames: ["*Q4_K_M*.gguf", "*IQ4_XS*.gguf", "*Q3_K_M*.gguf"],
-    mmprojHints: ["*mmproj-F16*.gguf", "*mmproj-BF16*.gguf", "*mmproj*.gguf"],
-    approxDiskGb: 17.8,
-    approxVramGb: 19.2,
-    visionCapable: true,
-    recommendedTopology: "llm_layer_split",
-    notes: "Flagship 27B multimodal model split 53:47 across Dual-T4 (~19.2 GB VRAM) with F16 projector and embedded Native MTP (draft-mtp) for both Vision QA and strict JSON.",
-  },
-  {
     id: "qwen3.8-27b-text",
-    label: "Qwen3.8 27B Text Only (Dual-T4 Split · ~16.6 GB)",
+    label: "Qwen3.8 27B Text Only (Legacy · ~16.6 GB)",
     shortLabel: "Qwen3.8 27B Text",
     profileId: "LLM_QWEN_TEXT_TURBO",
     repoId: "unsloth/Qwen3.8-27B-GGUF",
-    quantHint: "Q4_K_M",
-    preferredFilenames: ["*Q4_K_M*.gguf", "*IQ4_XS*.gguf", "*Q3_K_M*.gguf"],
+    quantHint: "UD-Q4_K_M",
+    preferredFilenames: ["*UD-Q4_K_M*.gguf", "*Q4_K_M*.gguf", "*IQ4_XS*.gguf", "*Q3_K_M*.gguf"],
     mmprojHints: [],
     approxDiskGb: 16.6,
     approxVramGb: 18.0,
     visionCapable: false,
     recommendedTopology: "llm_layer_split",
-    notes: "27B text-only across Dual-T4 with Native MTP (or optional text-only DFlash2) and zero projector overhead.",
+    legacy: true,
+    notes: "27B text-only variant without mmproj projector.",
   },
   {
     id: "qwen3.6-35b-a3b",
-    label: "Qwen3.6 35B-A3B Sparse MoE (Vision · ~17.7 GB IQ4_XS)",
+    label: "Qwen3.6 35B-A3B Sparse MoE (Legacy · ~17.7 GB)",
     shortLabel: "Qwen3.6 35B-A3B MoE",
     profileId: "LLM_QWEN_MOE_35B",
     repoId: "unsloth/Qwen3.6-35B-A3B-GGUF",
@@ -131,7 +158,8 @@ export const LLM_MODEL_PRESETS: LlmModelPresetSpec[] = [
     approxVramGb: 18.7,
     visionCapable: true,
     recommendedTopology: "llm_layer_split",
-    notes: "35B Sparse MoE with 3B active parameters (~45-51 tok/s on Dual-T4). Uses IQ4_XS so the dataset fits Kaggle's 19.5 GiB Output limit.",
+    legacy: true,
+    notes: "Legacy 35B-A3B Sparse MoE preset.",
   },
 ];
 
@@ -143,16 +171,15 @@ export function resolveLlmPresetById(presetId?: string | null): LlmModelPresetSp
 export function getDefaultPresetForLlmProfile(profileId?: string | null): LlmModelPresetSpec {
   switch (profileId) {
     case "LLM_QWEN_FAST_8B":
-      return LLM_MODEL_PRESETS[0];
+      return resolveLlmPresetById("qwen3-vl-8b") || CANONICAL_LLM_PRESET;
     case "LLM_QWEN_TEXT_TURBO":
-      return LLM_MODEL_PRESETS[1];
+      return resolveLlmPresetById("qwen3.8-27b-text") || CANONICAL_LLM_PRESET;
     case "LLM_LIGHTWEIGHT_SWARM":
-      return LLM_MODEL_PRESETS[2];
-    case "LLM_QWEN_VLM":
-      return LLM_MODEL_PRESETS[3];
+      return resolveLlmPresetById("qwen3.5-swarm") || CANONICAL_LLM_PRESET;
     case "LLM_QWEN_MOE_35B":
-      return LLM_MODEL_PRESETS[5];
+      return resolveLlmPresetById("qwen3.6-35b-a3b") || CANONICAL_LLM_PRESET;
+    case "LLM_QWEN_VLM":
     default:
-      return LLM_MODEL_PRESETS[0];
+      return CANONICAL_LLM_PRESET;
   }
 }

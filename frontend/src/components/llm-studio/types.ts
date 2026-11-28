@@ -1,14 +1,66 @@
 import type {
+  DispatchLlmResult,
   LlmChatMode,
   LlmReasoningEffort,
   LlmTargetService,
 } from "@/lib/llm/dispatch-llm";
-import type { LlmEndpointTelemetry, LlmTopologyMode } from "@/lib/orchestrator/vm-helpers";
+import type {
+  BootMetadata,
+  GpuHardwareTelemetry,
+  LlmEndpointTelemetry,
+  LlmLastTurnTelemetry,
+  LlmMtpTelemetry,
+  LlmSlotTelemetry,
+  LlmTopologyMode,
+  LlmWatchdogTelemetry,
+} from "@/lib/orchestrator/vm-helpers";
 import type { LlmWorkflowStep } from "@/app/api/llm-studio/workflows/route";
 import type { WorkerProfileId } from "@/lib/catalog/worker-profiles";
 
+export interface LlmAncillaryReadiness {
+  engine: {
+    status: "ready" | "partial" | "outdated" | "offline";
+    label: string;
+    version: string | null;
+    hasDraftMtp: boolean;
+    hasMetrics: boolean;
+  };
+  weights: {
+    status: "loaded" | "cached" | "staging" | "missing" | "offline";
+    file: string;
+    sizeGb: number;
+    source: "dataset" | "tmp" | "missing";
+  };
+  vision: {
+    status: "loaded" | "cached" | "missing" | "offline";
+    file: string;
+    loaded: boolean;
+    bypassedOnLastTurn: boolean;
+    lastEncodeMs: number | null;
+  };
+  dataset: {
+    status: "attached" | "on_demand";
+    slug: string | null;
+    attachedSlugs: string[];
+  };
+  storage: {
+    freeGb: number | null;
+    usedGb: number | null;
+    totalGb: number | null;
+    status: "healthy" | "warn" | "critical" | "unknown";
+  };
+  syncFailover: {
+    driveHealthy: boolean;
+    driveNeedsReconnect: boolean;
+    vaultFallbackCount: number;
+    vaultProviders: string[];
+  };
+}
+
 export interface HealthOnlineVm {
   target: string;
+  peerTargets?: string[];
+  sessionGroup?: string;
   accountAlias: string;
   workerProfile: string;
   profileLabel: string;
@@ -31,12 +83,15 @@ export interface HealthOnlineVm {
 export interface LlmHealthResponse {
   vmStatus: string;
   target: string | null;
+  peerTargets?: string[];
   accountAlias: string;
   endpointPreview: string | null;
   reachable: boolean;
   loadedModel: string | null;
   runtimeMode?: string | null;
   activeModelName?: string | null;
+  bootStep?: number;
+  uptimeSeconds?: number;
   probeLatencyMs: number | null;
   probeError: string | null;
   gpuName: string | null;
@@ -45,7 +100,17 @@ export interface LlmHealthResponse {
   vaultFallbackCount: number;
   vaultProviders: Array<{ provider: string; model: string; label: string }>;
   onlineVms: HealthOnlineVm[];
+  gpus: GpuHardwareTelemetry[];
+  slot: LlmSlotTelemetry | null;
+  mtp: LlmMtpTelemetry | null;
+  lastTurn: LlmLastTurnTelemetry | null;
+  watchdog: LlmWatchdogTelemetry | null;
+  ancillary: LlmAncillaryReadiness;
+  activeTransfer: BootMetadata["activeTransfer"] | null;
+  recentLogs: string[];
 }
+
+export type { DispatchLlmResult };
 
 export interface LlmTargetOption {
   value: string; // e.g. "auto", "gpu0::default", "gpu0::replica0", "vault:gemini"
@@ -120,7 +185,7 @@ export const GENERAL_PLAYGROUND_PRESETS: PlaygroundPreset[] = [
     label: "JSON Schema Extractor",
     mode: "json",
     reasoningEffort: "none",
-    targetService: "extract",
+    targetService: "default",
     systemPrompt:
       "You are a deterministic structured data extraction engine. Extract only explicitly stated facts into strict JSON matching the requested schema.",
     jsonSchema: JSON.stringify(
@@ -242,11 +307,27 @@ export const STARTER_BATCH_SUITES: StarterBatchSuite[] = [
   },
 ];
 
+export interface AttachedImageWithEstimate {
+  dataUrl: string;
+  width: number;
+  height: number;
+  estimatedVisionTokens: number;
+}
+
+/**
+ * Estimates Qwen VLM visual tokens matching llama-server's
+ * --image-min-tokens 256 --image-max-tokens 1024.
+ */
+export function estimateQwenVisionTokens(width: number, height: number): number {
+  const raw = Math.ceil(Math.max(1, width) / 28) * Math.ceil(Math.max(1, height) / 28);
+  return Math.min(1024, Math.max(256, raw));
+}
+
 export function buildTargetOptions(health?: LlmHealthResponse): LlmTargetOption[] {
   const opts: LlmTargetOption[] = [
     {
       value: "auto::default",
-      label: "Auto Route (Active LLM VM -> Vault Fallback)",
+      label: "Auto Route (2× T4 Qwen3.8-27B -> Vault Fallback)",
       targetVm: "auto",
       targetService: "default",
       badge: "AUTO",
@@ -256,35 +337,16 @@ export function buildTargetOptions(health?: LlmHealthResponse): LlmTargetOption[
   const seen = new Set<string>(["auto::default"]);
 
   for (const vm of health?.onlineVms || []) {
-    const baseLabel = `${vm.target.toUpperCase()} · ${vm.loadedModel || vm.profileLabel}${vm.headless ? " (Relay)" : ""}`;
     const defVal = `${vm.target}::default`;
     if (!seen.has(defVal)) {
       seen.add(defVal);
       opts.push({
         value: defVal,
-        label: baseLabel,
+        label: `2× T4 Local (${vm.accountAlias.toUpperCase()} · ${vm.loadedModel || "Qwen3.8-27B VLM"}${vm.headless ? " Relay" : ""})`,
         targetVm: vm.target,
         targetService: "default",
-        badge: vm.reachable ? "ONLINE" : "STALE",
+        badge: vm.reachable ? "2×T4" : "STALE",
       });
-    }
-
-    if (vm.llmTopologyMode === "llm_dual_replica") {
-      opts.push(
-        { value: `${vm.target}::replica0`, label: `${vm.target.toUpperCase()} GPU0 Replica (:8190)`, targetVm: vm.target, targetService: "replica0", badge: "T4-0" },
-        { value: `${vm.target}::replica1`, label: `${vm.target.toUpperCase()} GPU1 Replica (:8191)`, targetVm: vm.target, targetService: "replica1", badge: "T4-1" }
-      );
-    } else if (vm.llmTopologyMode === "llm_ab_arena") {
-      opts.push(
-        { value: `${vm.target}::model_a`, label: `${vm.target.toUpperCase()} GPU0 Model A (Reasoning :8190)`, targetVm: vm.target, targetService: "model_a", badge: "MOD-A" },
-        { value: `${vm.target}::model_b`, label: `${vm.target.toUpperCase()} GPU1 Model B (Vision :8191)`, targetVm: vm.target, targetService: "model_b", badge: "MOD-B" }
-      );
-    } else if (vm.llmTopologyMode === "llm_swarm_multi" || vm.workerProfile === "LLM_LIGHTWEIGHT_SWARM") {
-      opts.push(
-        { value: `${vm.target}::extract`, label: `${vm.target.toUpperCase()} Swarm · Extract (:8191)`, targetVm: vm.target, targetService: "extract", badge: "4B" },
-        { value: `${vm.target}::tag`, label: `${vm.target.toUpperCase()} Swarm · Vision Tag/QC (:8192)`, targetVm: vm.target, targetService: "tag", badge: "VLM" },
-        { value: `${vm.target}::rag`, label: `${vm.target.toUpperCase()} Swarm · RAG Embed (:8193)`, targetVm: vm.target, targetService: "rag", badge: "RAG" }
-      );
     }
   }
 
@@ -294,7 +356,7 @@ export function buildTargetOptions(health?: LlmHealthResponse): LlmTargetOption[
       seen.add(vKey);
       opts.push({
         value: vKey,
-        label: `Vault API · ${vp.label}`,
+        label: `Vault Cloud · ${vp.label}`,
         targetVm: `vault:${vp.provider}`,
         targetService: "default",
         badge: "CLOUD",
@@ -313,7 +375,10 @@ export function parseTargetOption(combined: string): { targetVm: string; targetS
   };
 }
 
-export async function downscaleImageToDataUrl(file: File, maxDim = 1024): Promise<string> {
+export async function downscaleImageWithMetrics(
+  file: File,
+  maxDim = 1024
+): Promise<AttachedImageWithEstimate> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error("Failed to read image"));
@@ -322,20 +387,30 @@ export async function downscaleImageToDataUrl(file: File, maxDim = 1024): Promis
       img.onerror = () => reject(new Error("Invalid image file"));
       img.onload = () => {
         const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
-        const w = Math.max(1, Math.round(img.width * scale));
-        const h = Math.max(1, Math.round(img.height * scale));
+        const width = Math.max(1, Math.round(img.width * scale));
+        const height = Math.max(1, Math.round(img.height * scale));
         const canvas = document.createElement("canvas");
-        canvas.width = w;
-        canvas.height = h;
+        canvas.width = width;
+        canvas.height = height;
         const ctx = canvas.getContext("2d");
         if (!ctx) return reject(new Error("Canvas unavailable"));
-        ctx.drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL("image/jpeg", 0.86));
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve({
+          dataUrl: canvas.toDataURL("image/jpeg", 0.86),
+          width,
+          height,
+          estimatedVisionTokens: estimateQwenVisionTokens(width, height),
+        });
       };
       img.src = String(reader.result);
     };
     reader.readAsDataURL(file);
   });
+}
+
+export async function downscaleImageToDataUrl(file: File, maxDim = 1024): Promise<string> {
+  const res = await downscaleImageWithMetrics(file, maxDim);
+  return res.dataUrl;
 }
 
 export interface WorkflowRecordItem {

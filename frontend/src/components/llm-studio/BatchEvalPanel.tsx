@@ -20,11 +20,32 @@ import {
   type LlmTargetOption,
   parseTargetOption,
 } from "./types";
+import { useLlmTelemetry } from "./LlmTelemetryContext";
 
 interface EvalCaseRow {
   prompt: string;
   expectedContains?: string;
   requiredKeys?: string[];
+}
+
+interface BatchEvalResultRow {
+  index: number;
+  prompt: string;
+  answer: string;
+  passed: boolean;
+  failureReasons: string[];
+  latencyMs: number;
+  tokPerSec: number | null;
+  rawDecodeTokPerSec?: number | null;
+  prefillTokPerSec?: number | null;
+  relayOverheadMs?: number | null;
+  thinkingTokens?: number;
+  answerTokens?: number;
+  cacheN?: number | null;
+  executionRoute?: string;
+  target: string | null;
+  model: string;
+  error?: string;
 }
 
 interface BatchEvalResponse {
@@ -36,19 +57,11 @@ interface BatchEvalResponse {
   passRatePct: number;
   avgLatencyMs: number;
   avgTokPerSec: number | null;
+  avgRawDecodeTokPerSec: number | null;
+  avgRelayOverheadMs: number | null;
+  thinkBurnPct: number | null;
   dualReplicaParallelized: boolean;
-  results: Array<{
-    index: number;
-    prompt: string;
-    answer: string;
-    passed: boolean;
-    failureReasons: string[];
-    latencyMs: number;
-    tokPerSec: number | null;
-    target: string | null;
-    model: string;
-    error?: string;
-  }>;
+  results: BatchEvalResultRow[];
 }
 
 function parseDatasetInput(raw: string): EvalCaseRow[] {
@@ -109,17 +122,19 @@ function csvCell(v: unknown): string {
 
 export function BatchEvalPanel({
   targetOptions,
-  isDualReplicaActive,
+  globalThinkingEnabled,
 }: {
   targetOptions: LlmTargetOption[];
-  isDualReplicaActive: boolean;
+  globalThinkingEnabled: boolean;
 }) {
+  const { activeRequest, beginRequest, endRequest, recordJsonOutcome } = useLlmTelemetry();
   const [title, setTitle] = useState("LLM Dataset Benchmark");
   const [selectedTarget, setSelectedTarget] = useState("auto::default");
   const [mode, setMode] = useState<LlmChatMode>(STARTER_BATCH_SUITES[0].mode);
   const [systemPrompt, setSystemPrompt] = useState(STARTER_BATCH_SUITES[0].systemPrompt);
   const [jsonSchema, setJsonSchema] = useState(STARTER_BATCH_SUITES[0].jsonSchema);
   const [datasetText, setDatasetText] = useState(STARTER_BATCH_SUITES[0].casesText);
+  const [maxTokens, setMaxTokens] = useState(1024);
   const [fallbackToVault, setFallbackToVault] = useState(true);
 
   const [running, setRunning] = useState(false);
@@ -152,38 +167,55 @@ export function BatchEvalPanel({
     setEvalRes(null);
 
     const { targetVm, targetService } = parseTargetOption(selectedTarget);
-    const chunkSize = isDualReplicaActive ? 4 : 3;
+    const chunkSize = globalThinkingEnabled || maxTokens > 1024 ? 1 : 2;
+    const totalChunks = Math.ceil(cases.length / chunkSize);
     const accumulated: BatchEvalResponse["results"] = [];
     let dualReplicaParallelized = false;
 
     try {
       for (let offset = 0; offset < cases.length; offset += chunkSize) {
+        const chunkIdx = Math.floor(offset / chunkSize) + 1;
         const slice = cases.slice(offset, offset + chunkSize);
-        setProgressText(`Evaluating ${Math.min(offset + slice.length, cases.length)}/${cases.length}...`);
-        const res = await fetch("/api/v1/llm-eval", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "run_batch_eval",
-            title,
-            targetVm,
-            targetService,
-            mode,
-            systemPrompt,
-            jsonSchema: jsonSchema.trim() || undefined,
-            reasoningEffort: "none",
-            temperature: 0.15,
-            maxTokens: 1024,
-            fallbackToVault,
-            cases: slice,
-          }),
+        setProgressText(
+          `Chunk ${chunkIdx}/${totalChunks} · Cases ${offset + 1}-${Math.min(offset + slice.length, cases.length)}/${cases.length}`
+        );
+        const reqId = beginRequest({
+          label: `Batch Chunk ${chunkIdx}/${totalChunks}`,
+          isJsonMode: mode === "json",
         });
-        const json = (await res.json()) as BatchEvalResponse & { error?: string };
-        if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+        let json: BatchEvalResponse & { error?: string };
+        try {
+          const res = await fetch("/api/v1/llm-eval", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "run_batch_eval",
+              title,
+              targetVm,
+              targetService,
+              mode,
+              systemPrompt,
+              jsonSchema: jsonSchema.trim() || undefined,
+              reasoningEffort: globalThinkingEnabled ? "high" : "none",
+              enableThinking: globalThinkingEnabled,
+              temperature: 0.15,
+              maxTokens,
+              fallbackToVault,
+              cases: slice,
+            }),
+          });
+          json = (await res.json()) as BatchEvalResponse & { error?: string };
+          if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+        } finally {
+          endRequest(reqId, null);
+        }
 
         dualReplicaParallelized = dualReplicaParallelized || json.dualReplicaParallelized;
         for (const r of json.results) {
           accumulated.push({ ...r, index: offset + r.index });
+          if (mode === "json") {
+            recordJsonOutcome(r.passed);
+          }
         }
 
         const passedCount = accumulated.filter((r) => r.passed).length;
@@ -191,6 +223,17 @@ export function BatchEvalPanel({
         const validTps = accumulated
           .filter((r) => typeof r.tokPerSec === "number")
           .map((r) => r.tokPerSec as number);
+        const validRaw = accumulated
+          .filter((r) => typeof r.rawDecodeTokPerSec === "number")
+          .map((r) => r.rawDecodeTokPerSec as number);
+        const validRelay = accumulated
+          .filter((r) => typeof r.relayOverheadMs === "number")
+          .map((r) => r.relayOverheadMs as number);
+        const totalThinkTok = accumulated.reduce((s, r) => s + (r.thinkingTokens ?? 0), 0);
+        const totalOutTok = accumulated.reduce(
+          (s, r) => s + (r.thinkingTokens ?? 0) + (r.answerTokens ?? 0),
+          0
+        );
 
         setEvalRes({
           ok: true,
@@ -205,6 +248,14 @@ export function BatchEvalPanel({
           avgTokPerSec: validTps.length
             ? Number((validTps.reduce((a, b) => a + b, 0) / validTps.length).toFixed(1))
             : null,
+          avgRawDecodeTokPerSec: validRaw.length
+            ? Number((validRaw.reduce((a, b) => a + b, 0) / validRaw.length).toFixed(1))
+            : null,
+          avgRelayOverheadMs: validRelay.length
+            ? Math.round(validRelay.reduce((a, b) => a + b, 0) / validRelay.length)
+            : null,
+          thinkBurnPct:
+            totalOutTok > 0 ? Math.round((totalThinkTok / totalOutTok) * 100) : null,
           dualReplicaParallelized,
           results: [...accumulated],
         });
@@ -229,13 +280,18 @@ export function BatchEvalPanel({
       content = JSON.stringify(evalRes, null, 2);
     } else {
       mime = "text/csv";
-      const header = "index,passed,latencyMs,tokPerSec,target,model,failureReasons,prompt,answer";
+      const header = "index,passed,latencyMs,rawDecodeTokPerSec,tokPerSec,relayOverheadMs,thinkingTokens,answerTokens,executionRoute,target,model,failureReasons,prompt,answer";
       const lines = evalRes.results.map((r) =>
         [
           r.index + 1,
           r.passed,
           r.latencyMs,
+          r.rawDecodeTokPerSec ?? "",
           r.tokPerSec ?? "",
+          r.relayOverheadMs ?? "",
+          r.thinkingTokens ?? 0,
+          r.answerTokens ?? 0,
+          csvCell(r.executionRoute),
           csvCell(r.target),
           csvCell(r.model),
           csvCell(r.failureReasons.join("; ")),
@@ -325,11 +381,10 @@ export function BatchEvalPanel({
               LOTM Ch. 214 (8 Beats)
             </Button>
           </div>
-          {isDualReplicaActive && (
-            <Badge className="bg-emerald-500/15 text-emerald-300 border-emerald-500/40">
-              <Zap className="mr-1 size-3" /> Dual-T4 2x Parallel Lanes Active
-            </Badge>
-          )}
+          <Badge className="bg-zinc-900 text-zinc-300 border-zinc-700 font-mono text-[10px]">
+            <Zap className="mr-1 size-3 text-emerald-400" />
+            CF-Safe Chunk: {globalThinkingEnabled || maxTokens > 1024 ? "1 case/POST" : "2 cases/POST"}
+          </Badge>
         </div>
 
         <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
@@ -359,13 +414,25 @@ export function BatchEvalPanel({
             </select>
           </div>
           <div className="flex items-end gap-2">
+            <label className="flex items-center gap-1.5 text-xs text-zinc-400 pb-1.5">
+              MaxTok
+              <input
+                type="number"
+                min={128}
+                max={4096}
+                step={128}
+                value={maxTokens}
+                onChange={(e) => setMaxTokens(Number(e.target.value))}
+                className="h-7 w-16 rounded border border-zinc-800 bg-zinc-900 px-1.5 text-xs text-zinc-100"
+              />
+            </label>
             <label className="flex items-center gap-1.5 text-xs text-zinc-400 pb-1.5 cursor-pointer">
               <input
                 type="checkbox"
                 checked={fallbackToVault}
                 onChange={(e) => setFallbackToVault(e.target.checked)}
               />
-              Vault Fallback
+              Vault
             </label>
             <label className="ml-auto inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 text-xs text-zinc-200 hover:bg-zinc-800">
               <Upload className="size-3.5" /> Import File
@@ -408,8 +475,38 @@ export function BatchEvalPanel({
             </div>
             <Button onClick={handleRunEval} disabled={running} className="w-full">
               {running ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
-              {running ? (progressText || "Evaluating Dataset (max 50 rows)...") : "Run Batch Eval"}
+              {running ? (progressText || "Evaluating Dataset...") : "Run Batch Eval"}
             </Button>
+            {running && activeRequest && (
+              <div className="space-y-1 rounded border border-zinc-800 bg-zinc-900/70 p-2 font-mono text-[10px]">
+                <div className="flex justify-between text-zinc-300">
+                  <span>{activeRequest.label}</span>
+                  <span
+                    className={
+                      activeRequest.elapsedMs >= 85_000
+                        ? "text-rose-300 font-bold"
+                        : activeRequest.elapsedMs >= 65_000
+                        ? "text-amber-300"
+                        : "text-emerald-300"
+                    }
+                  >
+                    {(activeRequest.elapsedMs / 1000).toFixed(1)}s / 100s CF
+                  </span>
+                </div>
+                <div className="h-1 w-full overflow-hidden rounded-full bg-zinc-800">
+                  <div
+                    className={`h-full transition-all duration-100 ${
+                      activeRequest.elapsedMs >= 85_000
+                        ? "bg-rose-500"
+                        : activeRequest.elapsedMs >= 65_000
+                        ? "bg-amber-400"
+                        : "bg-emerald-400"
+                    }`}
+                    style={{ width: `${Math.min(100, (activeRequest.elapsedMs / 100_000) * 100)}%` }}
+                  />
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -418,23 +515,37 @@ export function BatchEvalPanel({
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <div className="rounded-xl border border-zinc-800 bg-zinc-950/80 p-3">
-              <div className="text-[11px] text-zinc-400">Pass Rate</div>
-              <div className="mt-1 text-xl font-bold text-emerald-400">{evalRes.passRatePct}%</div>
-            </div>
-            <div className="rounded-xl border border-zinc-800 bg-zinc-950/80 p-3">
-              <div className="text-[11px] text-zinc-400">Passed / Total</div>
-              <div className="mt-1 text-xl font-bold text-zinc-100">
-                {evalRes.passedCount} / {evalRes.totalCases}
+              <div className="text-[11px] text-zinc-400">GBNF / Pass Rate</div>
+              <div className="mt-1 text-xl font-bold text-emerald-400 tabular-nums">
+                {evalRes.passRatePct}%{" "}
+                <span className="text-xs font-normal text-zinc-400">
+                  ({evalRes.passedCount}/{evalRes.totalCases})
+                </span>
               </div>
             </div>
             <div className="rounded-xl border border-zinc-800 bg-zinc-950/80 p-3">
-              <div className="text-[11px] text-zinc-400">Avg Latency</div>
-              <div className="mt-1 text-xl font-bold text-cyan-300">{evalRes.avgLatencyMs}ms</div>
+              <div className="text-[11px] text-zinc-400">Avg Raw Decode</div>
+              <div className="mt-1 text-xl font-bold text-violet-300 tabular-nums">
+                {evalRes.avgRawDecodeTokPerSec ?? evalRes.avgTokPerSec
+                  ? `${evalRes.avgRawDecodeTokPerSec ?? evalRes.avgTokPerSec} tok/s`
+                  : "—"}
+              </div>
             </div>
             <div className="rounded-xl border border-zinc-800 bg-zinc-950/80 p-3">
-              <div className="text-[11px] text-zinc-400">Avg Throughput</div>
-              <div className="mt-1 text-xl font-bold text-violet-300">
-                {evalRes.avgTokPerSec ? `${evalRes.avgTokPerSec} tok/s` : "—"}
+              <div className="text-[11px] text-zinc-400">Avg Wall &amp; Relay</div>
+              <div className="mt-1 text-xl font-bold text-cyan-300 tabular-nums">
+                {(evalRes.avgLatencyMs / 1000).toFixed(2)}s
+                {evalRes.avgRelayOverheadMs !== null && (
+                  <span className="ml-1.5 text-xs font-normal text-zinc-400">
+                    ({evalRes.avgRelayOverheadMs}ms relay)
+                  </span>
+                )}
+              </div>
+            </div>
+            <div className="rounded-xl border border-zinc-800 bg-zinc-950/80 p-3">
+              <div className="text-[11px] text-zinc-400">Thinking Token Burn</div>
+              <div className="mt-1 text-xl font-bold text-amber-300 tabular-nums">
+                {evalRes.thinkBurnPct !== null ? `${evalRes.thinkBurnPct}%` : "0%"}
               </div>
             </div>
           </div>
@@ -484,12 +595,21 @@ export function BatchEvalPanel({
                         #{row.index + 1}: {row.prompt}
                       </span>
                     </button>
-                    <div className="flex items-center gap-2 text-[11px] text-zinc-400">
+                    <div className="flex flex-wrap items-center gap-2 font-mono text-[10px] text-zinc-400">
                       <Badge variant="outline" className="text-[10px]">
-                        {row.target || row.model}
+                        {row.executionRoute === "vault_cloud_fallback"
+                          ? "Cloud"
+                          : row.target || row.model}
                       </Badge>
                       <span>{row.latencyMs}ms</span>
-                      {row.tokPerSec && <span className="text-emerald-400">{row.tokPerSec} t/s</span>}
+                      {(row.rawDecodeTokPerSec ?? row.tokPerSec) !== null && (
+                        <span className="text-emerald-400">
+                          {row.rawDecodeTokPerSec ?? row.tokPerSec} t/s
+                        </span>
+                      )}
+                      {(row.thinkingTokens ?? 0) > 0 && (
+                        <span className="text-amber-300">Think {row.thinkingTokens}t</span>
+                      )}
                     </div>
                   </div>
                   {row.failureReasons.length > 0 && (
