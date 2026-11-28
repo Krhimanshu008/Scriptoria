@@ -444,7 +444,7 @@ export function buildUnifiedNotebookPythonCode(cfg: NotebookBuildConfig): string
       : "";
   const fastbootCacheKey = nodesHash ? `${effectiveCacheProfile}_cn${nodesHash}` : effectiveCacheProfile;
 
-  return `import os, sys, re, time, json, uuid, hashlib, shutil, zipfile, tarfile, sysconfig, subprocess, threading, urllib.request, urllib.parse, urllib.error
+  return `import os, sys, re, time, json, uuid, hashlib, shutil, zipfile, tarfile, sysconfig, subprocess, threading, http.client, urllib.request, urllib.parse, urllib.error
 from collections import deque
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
@@ -516,7 +516,11 @@ BINARY_INFO = {
     "hasDraftMtp": False,
     "hasMetrics": False,
     "isV2Ready": False,
+    "isNativeSm75": False,
+    "sm75BuildRunning": False,
 }
+ACTIVE_SPLIT_MODE = "layer"
+SM75_BUILD_LOCK = threading.Lock()
 LAST_GPU_TELEMETRY = []
 LAST_SLOT_TELEMETRY = None
 LAST_MTP_TELEMETRY = None
@@ -903,15 +907,53 @@ def _worker_auth_headers(extra=None):
         hdrs.update(extra)
     return hdrs
 
+_API_HTTP_LOCAL = threading.local()
+
+def _close_app_http_conn():
+    c = getattr(_API_HTTP_LOCAL, "conn", None)
+    _API_HTTP_LOCAL.conn = None
+    if c is not None:
+        try:
+            c.close()
+        except Exception:
+            pass
+
 def _worker_api_post(path, body_dict, timeout=20):
-    req = urllib.request.Request(
-        f"{APP_URL}{path}",
-        data=json.dumps(body_dict).encode("utf-8"),
-        headers=_worker_auth_headers({"Content-Type": "application/json"}),
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8") or "{}")
+    parsed = urllib.parse.urlsplit(f"{APP_URL}{path}")
+    req_path = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+    raw_bytes = json.dumps(body_dict).encode("utf-8")
+    hdrs = _worker_auth_headers({
+        "Content-Type": "application/json",
+        "Connection": "keep-alive",
+    })
+    for attempt in range(2):
+        try:
+            conn = getattr(_API_HTTP_LOCAL, "conn", None)
+            key = (parsed.scheme, parsed.netloc)
+            if conn is None or getattr(_API_HTTP_LOCAL, "key", None) != key:
+                _close_app_http_conn()
+                if parsed.scheme == "https":
+                    conn = http.client.HTTPSConnection(parsed.hostname, parsed.port or 443, timeout=timeout)
+                else:
+                    conn = http.client.HTTPConnection(parsed.hostname, parsed.port or 80, timeout=timeout)
+                _API_HTTP_LOCAL.conn = conn
+                _API_HTTP_LOCAL.key = key
+            else:
+                conn.timeout = timeout
+                if getattr(conn, "sock", None) is not None:
+                    conn.sock.settimeout(timeout)
+            conn.request("POST", req_path, body=raw_bytes, headers=hdrs)
+            resp = conn.getresponse()
+            resp_bytes = resp.read()
+            if resp.status >= 400:
+                raise urllib.error.HTTPError(f"{APP_URL}{path}", resp.status, resp.reason, resp.headers, __import__("io").BytesIO(resp_bytes))
+            return json.loads(resp_bytes.decode("utf-8") or "{}")
+        except urllib.error.HTTPError:
+            raise
+        except Exception:
+            _close_app_http_conn()
+            if attempt == 1:
+                raise
 
 def _crash_hook(exc_type, exc_val, exc_tb):
     import traceback
@@ -1888,15 +1930,63 @@ def _get_llama_caps(bin_path):
             "hasDraftMtp": bool(caps["draft_mtp"]),
             "hasMetrics": bool(caps["metrics"]),
             "isV2Ready": bool(caps["draft_mtp"] and caps["metrics"]),
+            "isNativeSm75": os.path.exists(os.path.join(os.path.dirname(bin_path), ".sm75_native")),
         })
     except Exception:
         pass
     _LLAMA_CAPS_CACHE[bin_path] = caps
     return caps
 
+def _compile_native_sm75_llama(target_bin_dir="/tmp/llama_bin", save_working=False):
+    if not shutil.which("nvcc"):
+        raise RuntimeError("CUDA compiler (nvcc) not found in container; run native sm_75 compile on a GPU session.")
+    def _run_logged(cmd_list, step_label):
+        res = subprocess.run(cmd_list, capture_output=True, text=True)
+        if res.returncode != 0:
+            tail = (res.stderr or res.stdout or "")[-400:]
+            log_event(f"{step_label} failed (rc={res.returncode}): {tail}", category="ERROR", level="ERROR")
+            raise RuntimeError(f"{step_label} failed (rc={res.returncode}): {tail}")
+
+    _run_logged(["bash", "-lc", "which cmake >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq cmake build-essential)"], "apt cmake")
+    if not os.path.exists("/tmp/llama_src"):
+        _run_logged(["git", "clone", "--depth", "1", "https://github.com/ggml-org/llama.cpp.git", "/tmp/llama_src"], "git clone llama.cpp")
+    _run_logged(["cmake", "-B", "/tmp/llama_src/build", "-S", "/tmp/llama_src", "-DGGML_CUDA=ON", "-DCMAKE_CUDA_ARCHITECTURES=75", "-DLLAMA_CURL=OFF"], "cmake configure (sm_75)")
+    _run_logged(["cmake", "--build", "/tmp/llama_src/build", "--config", "Release", "--target", "llama-server", "-j", "3"], "cmake build (sm_75)")
+    os.makedirs(target_bin_dir, exist_ok=True)
+    shutil.copy2("/tmp/llama_src/build/bin/llama-server", os.path.join(target_bin_dir, "llama-server"))
+    for f_so in os.listdir("/tmp/llama_src/build/bin"):
+        if ".so" in f_so:
+            shutil.copy2(os.path.join("/tmp/llama_src/build/bin", f_so), os.path.join(target_bin_dir, f_so))
+    with open(os.path.join(target_bin_dir, ".sm75_native"), "w", encoding="utf-8") as mf:
+        mf.write("sm_75\\n")
+    dst_srv = os.path.join(target_bin_dir, "llama-server")
+    os.chmod(dst_srv, 0o755)
+    arc_tmp = "/tmp/llama_server_t4_sm75_v3.tar.gz"
+    subprocess.run(["tar", "-czf", arc_tmp, "-C", target_bin_dir, "."], check=True)
+    if save_working:
+        try:
+            if shutil.disk_usage("/kaggle/working").free > 500 * (1024 ** 2):
+                shutil.copy2(arc_tmp, "/kaggle/working/llama_server_t4_sm75_v3.tar.gz")
+        except Exception:
+            pass
+    if rclone_ok:
+        try:
+            rc_post("operations/mkdir", {"fs": "gdrive:", "remote": f"{GDRIVE_BASE}/fastboot"})
+            rc_copy_async({"srcFs": "/tmp", "srcRemote": "llama_server_t4_sm75_v3.tar.gz", "dstFs": f"gdrive:{GDRIVE_BASE}/fastboot", "dstRemote": "llama_server_t4_sm75_v3.tar.gz"}, max_wait=180, label="Cache native sm_75 engine")
+        except Exception as ce:
+            log_event(f"Drive sm_75 engine upload notice: {ce}", category="RCLONE", level="WARN")
+    return dst_srv
+
 def _resolve_llama_bin():
     from pathlib import Path as _P
     os.makedirs("/tmp/llama_bin", exist_ok=True)
+    if os.path.exists("/tmp/llama_bin_sm75_ready/llama-server"):
+        for fname in os.listdir("/tmp/llama_bin_sm75_ready"):
+            sp = os.path.join("/tmp/llama_bin_sm75_ready", fname)
+            if os.path.isfile(sp):
+                shutil.copy2(sp, os.path.join("/tmp/llama_bin", fname))
+        os.chmod("/tmp/llama_bin/llama-server", 0o755)
+        shutil.rmtree("/tmp/llama_bin_sm75_ready", ignore_errors=True)
     if os.path.exists("/tmp/llama_bin/llama-server"):
         if _get_llama_caps("/tmp/llama_bin/llama-server").get("draft_mtp"):
             return "/tmp/llama_bin/llama-server"
@@ -1907,27 +1997,34 @@ def _resolve_llama_bin():
             os.chmod(dst, 0o755)
             for so in cand.parent.glob("*.so*"):
                 shutil.copy2(str(so), f"/tmp/llama_bin/{so.name}")
+            sm_mark = cand.parent / ".sm75_native"
+            if sm_mark.exists():
+                shutil.copy2(str(sm_mark), "/tmp/llama_bin/.sm75_native")
             if _get_llama_caps(dst).get("draft_mtp"):
                 return dst
 
     if rclone_ok:
-        try:
-            st = rc_post("operations/stat", {"fs": f"gdrive:{GDRIVE_BASE}/fastboot", "remote": "llama_server_t4_v2.tar.gz"}, timeout=10)
-            if (st.get("item") or {}).get("Size", 0) > 100000:
-                log_event("Restoring cached llama-server v2 binary from Google Drive...", category="SYSTEM", level="SUCCESS")
-                rc_copy_async({
-                    "srcFs": f"gdrive:{GDRIVE_BASE}/fastboot", "srcRemote": "llama_server_t4_v2.tar.gz",
-                    "dstFs": "/tmp", "dstRemote": "llama_bin.tar.gz",
-                }, max_wait=120, label="llama-server restore")
-                subprocess.run(["tar", "-xzf", "/tmp/llama_bin.tar.gz", "-C", "/tmp/llama_bin"], check=True)
-                bpath = "/tmp/llama_bin/llama-server"
-                if os.path.exists(bpath):
-                    os.chmod(bpath, 0o755)
-                    if _get_llama_caps(bpath).get("draft_mtp"):
-                        return bpath
-                    log_event("Cached Drive llama-server lacks draft-mtp; refreshing from GitHub release...", category="SYSTEM", level="WARN")
-        except Exception as re_err:
-            log_event(f"Drive llama-server lookup: {re_err}", category="SYSTEM")
+        for arc_name, mark_sm75 in [("llama_server_t4_sm75_v3.tar.gz", True), ("llama_server_t4_v2.tar.gz", False)]:
+            try:
+                st = rc_post("operations/stat", {"fs": f"gdrive:{GDRIVE_BASE}/fastboot", "remote": arc_name}, timeout=10)
+                if (st.get("item") or {}).get("Size", 0) > 100000:
+                    log_event(f"Restoring cached {'native sm_75 ' if mark_sm75 else 'v2 '}llama-server from Google Drive...", category="SYSTEM", level="SUCCESS")
+                    rc_copy_async({
+                        "srcFs": f"gdrive:{GDRIVE_BASE}/fastboot", "srcRemote": arc_name,
+                        "dstFs": "/tmp", "dstRemote": "llama_bin.tar.gz",
+                    }, max_wait=120, label="llama-server restore")
+                    subprocess.run(["tar", "-xzf", "/tmp/llama_bin.tar.gz", "-C", "/tmp/llama_bin"], check=True)
+                    bpath = "/tmp/llama_bin/llama-server"
+                    if os.path.exists(bpath):
+                        os.chmod(bpath, 0o755)
+                        if mark_sm75:
+                            with open("/tmp/llama_bin/.sm75_native", "w", encoding="utf-8") as mf:
+                                mf.write("sm_75\\n")
+                        if _get_llama_caps(bpath).get("draft_mtp"):
+                            return bpath
+                        log_event(f"Cached Drive {arc_name} lacks draft-mtp; checking fallback...", category="SYSTEM", level="WARN")
+            except Exception as re_err:
+                log_event(f"Drive {arc_name} lookup: {re_err}", category="SYSTEM")
 
     try:
         log_event("Fetching official ggml-org/llama.cpp Ubuntu CUDA release...", category="SYSTEM")
@@ -1996,24 +2093,7 @@ def _resolve_llama_bin():
     except Exception as pe:
         log_event(f"Prebuilt llama-server failed ({pe}); compiling sm_75 once...", category="SYSTEM", level="WARN")
 
-    def _run_logged(cmd_list, step_label):
-        res = subprocess.run(cmd_list, capture_output=True, text=True)
-        if res.returncode != 0:
-            tail = (res.stderr or res.stdout or "")[-400:]
-            log_event(f"{step_label} failed (rc={res.returncode}): {tail}", category="ERROR", level="ERROR")
-            raise RuntimeError(f"{step_label} failed (rc={res.returncode}): {tail}")
-
-    _run_logged(["bash", "-lc", "which cmake >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq cmake build-essential)"], "apt cmake")
-    if not os.path.exists("/tmp/llama_src"):
-        _run_logged(["git", "clone", "--depth", "1", "https://github.com/ggml-org/llama.cpp.git", "/tmp/llama_src"], "git clone llama.cpp")
-    _run_logged(["cmake", "-B", "/tmp/llama_src/build", "-S", "/tmp/llama_src", "-DGGML_CUDA=ON", "-DCMAKE_CUDA_ARCHITECTURES=75", "-DLLAMA_CURL=OFF"], "cmake configure")
-    _run_logged(["cmake", "--build", "/tmp/llama_src/build", "--config", "Release", "--target", "llama-server", "-j", "4"], "cmake build")
-    shutil.copy2("/tmp/llama_src/build/bin/llama-server", "/tmp/llama_bin/llama-server")
-    for f_so in os.listdir("/tmp/llama_src/build/bin"):
-        if ".so" in f_so:
-            shutil.copy2(os.path.join("/tmp/llama_src/build/bin", f_so), os.path.join("/tmp/llama_bin", f_so))
-    os.chmod("/tmp/llama_bin/llama-server", 0o755)
-    return "/tmp/llama_bin/llama-server"
+    return _compile_native_sm75_llama("/tmp/llama_bin", save_working=False)
 
 def _fast_download_hf(repo_id, filename, dst_dir="/tmp/models/llm/qwen3_vl_8b", label="Model"):
     global ACTIVE_LLM_TRANSFER
@@ -2433,6 +2513,46 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
     ll_env["CUDA_CACHE_MAXSIZE"] = "2147483648"
     ll_env["CUDA_SCALE_LAUNCH_QUEUES"] = "4"
 
+    def _restore_cuda_cache_from_drive():
+        if BINARY_INFO.get("isNativeSm75") or os.path.exists("/tmp/cuda_cache/.restored") or not rclone_ok:
+            return
+        try:
+            st = rc_post("operations/stat", {"fs": f"gdrive:{GDRIVE_BASE}/fastboot", "remote": "t4_sm75_cuda_cache_v1.tar.gz"}, timeout=6)
+            if (st.get("item") or {}).get("Size", 0) > 50000:
+                rc_copy_async({
+                    "srcFs": f"gdrive:{GDRIVE_BASE}/fastboot", "srcRemote": "t4_sm75_cuda_cache_v1.tar.gz",
+                    "dstFs": "/tmp", "dstRemote": "t4_cuda_cache.tar.gz",
+                }, max_wait=45, label="CUDA JIT cache restore")
+                subprocess.run(["tar", "-xzf", "/tmp/t4_cuda_cache.tar.gz", "-C", "/tmp/cuda_cache"], check=True)
+                with open("/tmp/cuda_cache/.restored", "w", encoding="utf-8") as rf:
+                    rf.write("ok\\n")
+                log_event("Restored cached Turing CUDA JIT kernels from Drive (~1s)!", category="SYSTEM", level="SUCCESS")
+        except Exception as ce:
+            log_event(f"Drive CUDA JIT cache check: {ce}", category="RCLONE")
+
+    def _backup_cuda_cache_to_drive():
+        if BINARY_INFO.get("isNativeSm75") or os.path.exists("/tmp/cuda_cache/.restored") or not rclone_ok:
+            return
+        def _bk_cuda():
+            try:
+                tot = 0
+                for r_dir, _, files in os.walk("/tmp/cuda_cache"):
+                    for fn in files:
+                        if fn != ".restored":
+                            tot += os.path.getsize(os.path.join(r_dir, fn))
+                if tot < 1000000:
+                    return
+                subprocess.run(["tar", "--exclude=.restored", "-czf", "/tmp/t4_sm75_cuda_cache_v1.tar.gz", "-C", "/tmp/cuda_cache", "."], check=True)
+                rc_post("operations/mkdir", {"fs": "gdrive:", "remote": f"{GDRIVE_BASE}/fastboot"})
+                rc_copy_async({
+                    "srcFs": "/tmp", "srcRemote": "t4_sm75_cuda_cache_v1.tar.gz",
+                    "dstFs": f"gdrive:{GDRIVE_BASE}/fastboot", "dstRemote": "t4_sm75_cuda_cache_v1.tar.gz",
+                }, max_wait=120, label="Cache Turing CUDA JIT")
+                log_event(f"Backed up /tmp/cuda_cache ({round(tot/(1024**2), 1)} MB) to Drive for <2s future warmups.", category="RCLONE", level="SUCCESS")
+            except Exception:
+                pass
+        threading.Thread(target=_bk_cuda, daemon=True).start()
+
     is_moe_35b = (PROFILE_ID == "LLM_QWEN_MOE_35B")
     is_fast_8b = (PROFILE_ID == "LLM_QWEN_FAST_8B")
     is_vlm_27b = (PROFILE_ID == "LLM_QWEN_VLM")
@@ -2481,7 +2601,7 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
         log_event("Worker processes evicted & GPU VRAM cleared.", category="SYSTEM", level="WARN")
 
     def stop_llm_workers(update_mode=True):
-        global RUNTIME_MODE, ACTIVE_MODEL_NAME, ACTIVE_MODEL_REPO, ACTIVE_MODEL_HINTS, LLM_ACTIVE_ENDPOINTS, model_gguf, mmproj_gguf, mode_label, MTP_ACTIVE_FLAG, MTP_DRAFT_MAX
+        global RUNTIME_MODE, ACTIVE_MODEL_NAME, ACTIVE_MODEL_REPO, ACTIVE_MODEL_HINTS, LLM_ACTIVE_ENDPOINTS, model_gguf, mmproj_gguf, mode_label, MTP_ACTIVE_FLAG, MTP_DRAFT_MAX, ACTIVE_SPLIT_MODE
         with WORKER_LOCK:
             _stop_llm_workers_unlocked()
             LLM_ACTIVE_ENDPOINTS = []
@@ -2489,6 +2609,7 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
             mmproj_gguf = None
             MTP_ACTIVE_FLAG = False
             MTP_DRAFT_MAX = 0
+            ACTIVE_SPLIT_MODE = "layer"
             if update_mode:
                 RUNTIME_MODE = "idle_empty"
                 ACTIVE_MODEL_NAME = None
@@ -2499,9 +2620,11 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
     ACTIVE_MODEL_HINTS = {}
 
     def start_llm_workers(target_profile=None, topo_mode=None, repo_override=None, file_hints=None, mmproj_hints=None, model_name=None, companion_repos=None, use_dflash2=False):
-        global PROFILE_ID, LLM_TOPO_MODE, LLM_ACTIVE_ENDPOINTS, RUNTIME_MODE, ACTIVE_MODEL_NAME, ACTIVE_MODEL_REPO, ACTIVE_MODEL_HINTS, is_moe_35b, is_fast_8b, is_vlm_27b, model_gguf, mmproj_gguf, mode_label
+        global PROFILE_ID, LLM_TOPO_MODE, LLM_ACTIVE_ENDPOINTS, RUNTIME_MODE, ACTIVE_MODEL_NAME, ACTIVE_MODEL_REPO, ACTIVE_MODEL_HINTS, is_moe_35b, is_fast_8b, is_vlm_27b, model_gguf, mmproj_gguf, mode_label, ACTIVE_SPLIT_MODE, llama_bin
         with WORKER_LOCK:
             _stop_llm_workers_unlocked()
+            llama_bin = _resolve_llama_bin()
+            _restore_cuda_cache_from_drive()
             if target_profile:
                 PROFILE_ID = target_profile
                 WORKER_STATE["profile"] = target_profile
@@ -2740,25 +2863,26 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
 
                 can_tensor = bool(caps.get("split_tensor"))
                 if use_dflash_spec:
-                    launch_candidates.append(("Dual-T4 Layer Split + DFlash2", False, _build_split_cmd("layer", t_split_layer, dflash_flags, kv_type="q8_0")))
+                    launch_candidates.append(("Dual-T4 Layer Split + DFlash2", False, "layer", _build_split_cmd("layer", t_split_layer, dflash_flags, kv_type="q8_0")))
                     if can_tensor:
-                        launch_candidates.append(("Dual-T4 Tensor Split + DFlash2", False, _build_split_cmd("tensor", "1,1", dflash_flags, kv_type=None)))
-                    launch_candidates.append(("Dual-T4 Layer Split", False, _build_split_cmd("layer", t_split_layer, [], kv_type="q8_0")))
+                        launch_candidates.append(("Dual-T4 Tensor Split + DFlash2", False, "tensor", _build_split_cmd("tensor", "1,1", dflash_flags, kv_type=None)))
+                    launch_candidates.append(("Dual-T4 Layer Split", False, "layer", _build_split_cmd("layer", t_split_layer, [], kv_type="q8_0")))
                 elif use_mtp_spec:
                     if can_tensor:
-                        launch_candidates.append(("Dual-T4 Tensor Split + Native MTP", True, _build_split_cmd("tensor", "1,1", mtp_flags, kv_type=None)))
-                        launch_candidates.append(("Dual-T4 Tensor Split (MTP Off)", False, _build_split_cmd("tensor", "1,1", [], kv_type=None)))
-                    launch_candidates.append(("Dual-T4 Layer Split + Native MTP", True, _build_split_cmd("layer", t_split_layer, mtp_flags_layer, kv_type="q8_0")))
-                    launch_candidates.append(("Dual-T4 Layer Split", False, _build_split_cmd("layer", t_split_layer, [], kv_type="q8_0")))
+                        launch_candidates.append(("Dual-T4 Tensor Split + Native MTP", True, "tensor", _build_split_cmd("tensor", "1,1", mtp_flags, kv_type=None)))
+                        launch_candidates.append(("Dual-T4 Tensor Split (MTP Off)", False, "tensor", _build_split_cmd("tensor", "1,1", [], kv_type=None)))
+                    launch_candidates.append(("Dual-T4 Layer Split + Native MTP", True, "layer", _build_split_cmd("layer", t_split_layer, mtp_flags_layer, kv_type="q8_0")))
+                    launch_candidates.append(("Dual-T4 Layer Split", False, "layer", _build_split_cmd("layer", t_split_layer, [], kv_type="q8_0")))
                 else:
                     if can_tensor:
-                        launch_candidates.append(("Dual-T4 Tensor Split", False, _build_split_cmd("tensor", "1,1", [], kv_type=None)))
-                    launch_candidates.append(("Dual-T4 Layer Split", False, _build_split_cmd("layer", t_split_layer, [], kv_type="q8_0")))
+                        launch_candidates.append(("Dual-T4 Tensor Split", False, "tensor", _build_split_cmd("tensor", "1,1", [], kv_type=None)))
+                    launch_candidates.append(("Dual-T4 Layer Split", False, "layer", _build_split_cmd("layer", t_split_layer, [], kv_type="q8_0")))
 
                 cand_idx = 0
-                init_label, init_mtp, ll_cmd = launch_candidates[0]
+                init_label, init_mtp, init_split, ll_cmd = launch_candidates[0]
                 globals()["MTP_ACTIVE_FLAG"] = bool(init_mtp)
                 globals()["MTP_DRAFT_MAX"] = 2 if init_mtp else 0
+                globals()["ACTIVE_SPLIT_MODE"] = init_split
                 ll_log = open("/tmp/llama_server.log", "w")
                 WORKER_PROCS["main"] = subprocess.Popen(ll_cmd, env=ll_env, stdout=ll_log, stderr=ll_log)
                 LLM_ACTIVE_ENDPOINTS.append({"port": 8190, "gpu": "GPU0+GPU1", "model": os.path.basename(model_gguf), "service": "default", "ready": True})
@@ -2780,9 +2904,10 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                             pass
                         if cand_idx + 1 < len(launch_candidates):
                             cand_idx += 1
-                            next_label, next_mtp, next_cmd = launch_candidates[cand_idx]
+                            next_label, next_mtp, next_split, next_cmd = launch_candidates[cand_idx]
                             globals()["MTP_ACTIVE_FLAG"] = bool(next_mtp)
                             globals()["MTP_DRAFT_MAX"] = 2 if next_mtp else 0
+                            globals()["ACTIVE_SPLIT_MODE"] = next_split
                             mode_label = f"{next_label} ({os.path.basename(model_gguf)})"
                             tail_hint = err_tail.strip().splitlines()[-1] if err_tail.strip() else "early exit"
                             log_event(f"Launch variant exited early (rc={main_p.returncode}: {tail_hint[:140]}); retrying with {next_label}...", category="SYSTEM", level="WARN")
@@ -2835,6 +2960,7 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                         with urllib.request.urlopen(w_req, timeout=220) as wr:
                             _ = wr.read()
                     log_event(f"Silent warmup completed in {round(time.time() - t_warm, 1)}s (kernels & CUDA graphs ready).", category="SYSTEM", level="SUCCESS")
+                    _backup_cuda_cache_to_drive()
                 except Exception as warm_err:
                     main_p = WORKER_PROCS.get("main")
                     if main_p is not None and main_p.poll() is not None and cand_idx + 1 < len(launch_candidates):
@@ -2847,9 +2973,10 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                         except Exception:
                             pass
                         cand_idx += 1
-                        next_label, next_mtp, next_cmd = launch_candidates[cand_idx]
+                        next_label, next_mtp, next_split, next_cmd = launch_candidates[cand_idx]
                         globals()["MTP_ACTIVE_FLAG"] = bool(next_mtp)
                         globals()["MTP_DRAFT_MAX"] = 2 if next_mtp else 0
+                        globals()["ACTIVE_SPLIT_MODE"] = next_split
                         mode_label = f"{next_label} ({os.path.basename(model_gguf)})"
                         tail_hint = err_tail.strip().splitlines()[-1] if err_tail.strip() else str(warm_err)[:120]
                         log_event(f"Warmup crashed variant (rc={main_p.returncode}: {tail_hint[:140]}); retrying with {next_label}...", category="SYSTEM", level="WARN")
@@ -2904,6 +3031,23 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
             stop_llm_workers(update_mode=True)
             post_heartbeat(5, "ONLINE")
             return "Unloaded LLM from VRAM -> Idle (0 GB)"
+        if action == "BUILD_SM75_ENGINE":
+            with SM75_BUILD_LOCK:
+                if BINARY_INFO.get("sm75BuildRunning"):
+                    return "Native sm_75 engine compile already running"
+                BINARY_INFO["sm75BuildRunning"] = True
+            post_heartbeat(5 if EVER_CONNECTED else CURRENT_STEP, "ONLINE")
+            try:
+                log_event("Compiling native CUDA sm_75 llama-server (~3 min) -> Drive cache...", category="SYSTEM")
+                target_dir = "/tmp/llama_bin_sm75_ready" if RUNTIME_MODE == "llm_ready" else "/tmp/llama_bin"
+                _compile_native_sm75_llama(target_bin_dir=target_dir, save_working=bool(payload.get("saveToWorking", True)))
+                BINARY_INFO["isNativeSm75"] = True
+                _LLAMA_CAPS_CACHE.clear()
+                log_event("Native sm_75 llama-server ready & cached to Drive (llama_server_t4_sm75_v3.tar.gz)! Click Load VRAM / Hot Reload to activate.", category="SYSTEM", level="SUCCESS")
+                return "Native sm_75 engine compiled & cached to Drive"
+            finally:
+                BINARY_INFO["sm75BuildRunning"] = False
+                post_heartbeat(5 if EVER_CONNECTED else CURRENT_STEP, "ONLINE")
         return f"Ignored unknown LLM command {action}"
 
     _VM_CMD_HANDLERS["llm_command"] = _handle_llm_command
@@ -3117,7 +3261,10 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                 util_pct = _safe_float(parts[5]) if len(parts) > 5 else None
                 power_w = _safe_float(parts[6]) if len(parts) > 6 else None
                 power_limit = _safe_float(parts[7], 70.0) if len(parts) > 7 else 70.0
-                role = "53% + mmproj" if (gpu_idx == 0 and has_mmproj) else ("53% Weights" if gpu_idx == 0 else "47% + KV Cache")
+                if ACTIVE_SPLIT_MODE == "tensor":
+                    role = "TP 50% + mmproj" if (gpu_idx == 0 and has_mmproj) else ("TP 50% Weights" if gpu_idx == 0 else "TP 50% + KV")
+                else:
+                    role = "53% + mmproj" if (gpu_idx == 0 and has_mmproj) else ("53% Weights" if gpu_idx == 0 else "47% + KV Cache")
                 gpus.append({
                     "index": gpu_idx,
                     "name": g_name,
@@ -3411,12 +3558,13 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
 
     def _llm_outbound_relay_loop(lane_id):
         global LAST_TURN_TELEMETRY
+        local_conns = {}
         while True:
             try:
                 poll_res = _worker_api_post("/api/v1/workers/llm-poll", {"workerId": TARGETS[0]}, timeout=20)
                 req_obj = poll_res.get("request")
                 if not req_obj:
-                    time.sleep(0.6)
+                    time.sleep(0.2)
                     continue
                 globals()["LAST_ACTIVE"] = time.time()
                 rid = req_obj["id"]
@@ -3433,14 +3581,34 @@ if PROFILE_ID in ("LLM_QWEN_VLM", "LLM_QWEN_TEXT_TURBO", "LLM_QWEN_MOE_35B", "LL
                 has_imgs = _payload_has_images(req_payload)
                 t0_req = time.time()
                 try:
-                    c_req = urllib.request.Request(
-                        f"http://127.0.0.1:{svc_port}/v1/chat/completions",
-                        data=json.dumps(req_payload).encode("utf-8"),
-                        headers={"Content-Type": "application/json"},
-                        method="POST",
-                    )
-                    with urllib.request.urlopen(c_req, timeout=180) as cr:
-                        c_res = json.loads(cr.read().decode("utf-8") or "{}")
+                    raw_req_bytes = json.dumps(req_payload).encode("utf-8")
+                    c_res = None
+                    for l_try in range(2):
+                        lconn = local_conns.get(svc_port)
+                        if lconn is None:
+                            lconn = http.client.HTTPConnection("127.0.0.1", svc_port, timeout=180)
+                            local_conns[svc_port] = lconn
+                        try:
+                            lconn.request(
+                                "POST",
+                                "/v1/chat/completions",
+                                body=raw_req_bytes,
+                                headers={"Content-Type": "application/json", "Connection": "keep-alive"},
+                            )
+                            lr = lconn.getresponse()
+                            lbytes = lr.read()
+                            if lr.status >= 400:
+                                raise RuntimeError(f"llama-server HTTP {lr.status}: {lbytes.decode('utf-8', errors='ignore')[:260]}")
+                            c_res = json.loads(lbytes.decode("utf-8") or "{}")
+                            break
+                        except Exception:
+                            try:
+                                lconn.close()
+                            except Exception:
+                                pass
+                            local_conns.pop(svc_port, None)
+                            if l_try == 1:
+                                raise
                     VISION_EVENT_STATE["in_vision_encode"] = False
                     if has_imgs:
                         vis_recent = VISION_EVENT_STATE["last_event_ts"] >= (t0_req - 0.25)

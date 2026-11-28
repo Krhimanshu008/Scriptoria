@@ -135,7 +135,7 @@ export function LlmStudioTab({
   const controlTarget = onlineGpuLlmVm?.target || health?.target || activeAccount?.primaryTarget || null;
 
   async function handleModelControlAction(
-    action: "stage_llm" | "load_llm" | "unload_llm" | "keep_alive"
+    action: "stage_llm" | "load_llm" | "unload_llm" | "keep_alive" | "build_sm75"
   ) {
     if (!onlineGpuLlmVm || modelActionBusy) return;
     setModelActionBusy(action);
@@ -162,6 +162,8 @@ export function LlmStudioTab({
           ? `Queued Qwen3.8-27B VRAM load on ${onlineGpuLlmVm.target.toUpperCase()} (~15-45s)`
           : action === "keep_alive"
           ? `Watchdog +Keep Alive ping sent to ${onlineGpuLlmVm.target.toUpperCase()}`
+          : action === "build_sm75"
+          ? `Queued native sm_75 llama-server compile on ${onlineGpuLlmVm.target.toUpperCase()} -> Drive cache`
           : `Unloaded Qwen3.8-27B from ${onlineGpuLlmVm.target.toUpperCase()} VRAM`
       );
       await refetchHealth();
@@ -197,7 +199,9 @@ export function LlmStudioTab({
   async function handleAttachSuggestedDataset(slug: string) {
     if (!controlTarget) return;
     try {
-      const existing = health?.ancillary?.dataset.attachedSlugs ?? [];
+      const existing = (health?.ancillary?.dataset.attachedSlugs ?? []).filter(
+        (d) => !/scriptoria-comfy-env|comfy-env/i.test(d)
+      );
       const next = existing.includes(slug) ? existing : [...existing, slug].slice(0, 6);
       const res = await fetch(`/api/vm/${encodeURIComponent(controlTarget)}/profile`, {
         method: "PATCH",

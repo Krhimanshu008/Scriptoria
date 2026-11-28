@@ -85,6 +85,8 @@ export interface LlmBinaryInfo {
   hasDraftMtp: boolean;
   hasMetrics: boolean;
   isV2Ready: boolean;
+  isNativeSm75?: boolean;
+  sm75BuildRunning?: boolean;
 }
 
 export interface LlmAncillaryTelemetry {

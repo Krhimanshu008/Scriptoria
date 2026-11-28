@@ -156,13 +156,22 @@ export async function GET() {
         return primaryMeta.gpus;
       }
       if (primaryEntry) {
+        const isTensorSplit =
+          primaryVm?.llmTopologyMode === "llm_layer_split" ||
+          primaryMeta?.requestedLlmTopology === "llm_layer_split";
         return primaryEntry.peerRows.map((r, idx) => {
           const tot = Number((r.vramTotalGb || 15).toFixed(2));
           const used = Number((r.vramUsedGb || 0).toFixed(2));
           return {
             index: idx,
             name: r.gpuName || `Tesla T4 GPU ${idx}`,
-            role: idx === 0 ? "53% + mmproj" : "47% + KV Cache",
+            role: isTensorSplit
+              ? idx === 0
+                ? "TP 50% + mmproj"
+                : "TP 50% + KV"
+              : idx === 0
+              ? "53% + mmproj"
+              : "47% + KV Cache",
             vramTotalGb: tot,
             vramUsedGb: used,
             vramFreeGb: Number(Math.max(0, tot - used).toFixed(2)),
@@ -189,10 +198,14 @@ export async function GET() {
       }
     })();
     const qwenDatasetSlug =
-      attachedDatasets.find((d) => /qwen|llm/i.test(d)) || attachedDatasets[0] || null;
+      attachedDatasets.find((d) => /qwen|llm|gguf/i.test(d)) || null;
+    const wrongDatasetSlug =
+      !qwenDatasetSlug && attachedDatasets.length > 0 ? attachedDatasets[0] : null;
 
     const vaultFallbacks = await resolveCandidateLlmConfigs(user.userId);
     const runtimeMode = primaryVm?.runtimeMode || (startingLlm ? "starting" : "offline");
+    const isNativeSm75 = Boolean(primaryMeta?.binaryInfo?.isNativeSm75);
+    const sm75BuildRunning = Boolean(primaryMeta?.binaryInfo?.sm75BuildRunning);
 
     const ancillary = {
       engine: {
@@ -204,7 +217,9 @@ export async function GET() {
           ? ("partial" as const)
           : ("outdated" as const),
         label: primaryMeta?.binaryInfo?.isV2Ready
-          ? "llama-server CUDA 12 v2 · MTP"
+          ? isNativeSm75
+            ? "llama-server sm_75 Native · MTP"
+            : "llama-server CUDA 12 v2 · MTP"
           : primaryMeta?.binaryInfo?.hasDraftMtp
           ? "CUDA 12 · MTP (No /metrics)"
           : primaryVm
@@ -213,6 +228,8 @@ export async function GET() {
         version: primaryMeta?.binaryInfo?.version ?? null,
         hasDraftMtp: Boolean(primaryMeta?.binaryInfo?.hasDraftMtp),
         hasMetrics: Boolean(primaryMeta?.binaryInfo?.hasMetrics),
+        isNativeSm75,
+        sm75BuildRunning,
       },
       weights: {
         status: !primaryVm
@@ -242,8 +259,13 @@ export async function GET() {
         lastEncodeMs: primaryMeta?.lastTurnTelemetry?.visionEncodeMs ?? null,
       },
       dataset: {
-        status: qwenDatasetSlug ? ("attached" as const) : ("on_demand" as const),
+        status: qwenDatasetSlug
+          ? ("attached" as const)
+          : wrongDatasetSlug
+          ? ("wrong_dataset" as const)
+          : ("on_demand" as const),
         slug: qwenDatasetSlug,
+        wrongSlug: wrongDatasetSlug,
         attachedSlugs: attachedDatasets,
       },
       storage: {

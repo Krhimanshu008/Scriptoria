@@ -24,6 +24,8 @@ export interface LlmAncillaryReadiness {
     version: string | null;
     hasDraftMtp: boolean;
     hasMetrics: boolean;
+    isNativeSm75?: boolean;
+    sm75BuildRunning?: boolean;
   };
   weights: {
     status: "loaded" | "cached" | "staging" | "missing" | "offline";
@@ -39,8 +41,9 @@ export interface LlmAncillaryReadiness {
     lastEncodeMs: number | null;
   };
   dataset: {
-    status: "attached" | "on_demand";
+    status: "attached" | "wrong_dataset" | "on_demand";
     slug: string | null;
+    wrongSlug?: string | null;
     attachedSlugs: string[];
   };
   storage: {

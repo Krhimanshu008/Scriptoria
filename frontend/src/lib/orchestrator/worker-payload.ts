@@ -4,7 +4,7 @@ import type { NextRequest } from "next/server";
 import type { VmInstance } from "@prisma/client";
 import { signVmRegistrationToken } from "@/lib/auth/session";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
-import { getWorkerProfile } from "@/lib/catalog/worker-profiles";
+import { getWorkerProfile, isLlmWorkerProfile } from "@/lib/catalog/worker-profiles";
 import { getOrCreateWorkspaceSettings } from "@/lib/settings/workspace-settings";
 import { buildUnifiedNotebookPythonCode } from "@/lib/orchestrator/notebook-builder";
 import { buildTpuNotebookPythonCode } from "@/lib/orchestrator/tpu-notebook-builder";
@@ -102,13 +102,19 @@ export async function assembleWorkerRuntimePayload(
         // ignore invalid prewarm json
       }
     }
+    const isLlmRuntime = isLlmWorkerProfile(profileSpec.id);
     if (gv.kaggleDatasetsJson) {
       try {
         const parsedDs = JSON.parse(gv.kaggleDatasetsJson);
         if (Array.isArray(parsedDs)) {
           for (const ds of parsedDs) {
             if (typeof ds === "string" && ds.trim().includes("/")) {
-              datasetSet.add(ds.trim());
+              const clean = ds.trim();
+              // Never mount ComfyUI environment archives onto LLM containers
+              if (isLlmRuntime && /scriptoria-comfy-env|comfy-env/i.test(clean)) {
+                continue;
+              }
+              datasetSet.add(clean);
             }
           }
         }

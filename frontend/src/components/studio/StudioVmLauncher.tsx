@@ -814,33 +814,47 @@ export function KaggleVmLauncherDialog({
                             {isLlmMode ? "No Dataset · On-Demand /tmp Download" : "None (Cold Boot)"}
                           </span>
                         ) : (
-                          acc.kaggleDatasets.map((ds) => (
-                            <span
-                              key={ds}
-                              className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono ${
-                                isLlmMode && hasQwenDataset
-                                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
-                                  : "border-cyan-500/35 bg-cyan-500/10 text-cyan-200"
-                              }`}
-                            >
-                              {isLlmMode && /qwen|llm/i.test(ds) ? `${ds} (~15s Mount)` : ds}
-                              {!acc.isOnline && !acc.isStarting && (
-                                <button
-                                  type="button"
-                                  disabled={savingDatasetAlias === acc.alias}
-                                  onClick={() =>
-                                    updateAccountDatasets(
-                                      acc,
-                                      acc.kaggleDatasets.filter((d) => d !== ds)
-                                    )
-                                  }
-                                  className="text-cyan-400/80 hover:text-white"
-                                >
-                                  <X className="h-2.5 w-2.5" />
-                                </button>
-                              )}
-                            </span>
-                          ))
+                          acc.kaggleDatasets.map((ds) => {
+                            const isWrongComfyOnLlm = isLlmMode && /scriptoria-comfy-env|comfy-env/i.test(ds);
+                            return (
+                              <span
+                                key={ds}
+                                className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono ${
+                                  isLlmMode && /qwen|llm|gguf/i.test(ds)
+                                    ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
+                                    : isWrongComfyOnLlm
+                                    ? "border-amber-500/40 bg-amber-500/10 text-amber-200"
+                                    : "border-cyan-500/35 bg-cyan-500/10 text-cyan-200"
+                                }`}
+                                title={
+                                  isWrongComfyOnLlm
+                                    ? "ComfyUI dataset contains no .gguf weights — replace with scriptoria-qwen-llm"
+                                    : undefined
+                                }
+                              >
+                                {isLlmMode && /qwen|llm|gguf/i.test(ds)
+                                  ? `${ds} (~15s Mount)`
+                                  : isWrongComfyOnLlm
+                                  ? `${ds} (Wrong Env)`
+                                  : ds}
+                                {!acc.isOnline && !acc.isStarting && (
+                                  <button
+                                    type="button"
+                                    disabled={savingDatasetAlias === acc.alias}
+                                    onClick={() =>
+                                      updateAccountDatasets(
+                                        acc,
+                                        acc.kaggleDatasets.filter((d) => d !== ds)
+                                      )
+                                    }
+                                    className="text-cyan-400/80 hover:text-white"
+                                  >
+                                    <X className="h-2.5 w-2.5" />
+                                  </button>
+                                )}
+                              </span>
+                            );
+                          })
                         )}
                       </div>
 
@@ -851,11 +865,25 @@ export function KaggleVmLauncherDialog({
                               type="button"
                               disabled={savingDatasetAlias === acc.alias}
                               onClick={() =>
-                                updateAccountDatasets(acc, [...acc.kaggleDatasets, suggestedQwenSlug].slice(0, 6))
+                                updateAccountDatasets(
+                                  acc,
+                                  [
+                                    ...acc.kaggleDatasets.filter(
+                                      (d) => !/scriptoria-comfy-env|comfy-env/i.test(d)
+                                    ),
+                                    suggestedQwenSlug,
+                                  ].slice(0, 6)
+                                )
                               }
-                              className="h-6 rounded border border-cyan-500/35 bg-cyan-500/10 px-2 font-mono text-[10px] text-cyan-200 hover:bg-cyan-500/20"
+                              className={`h-6 rounded border px-2 font-mono text-[10px] ${
+                                !hasQwenDataset && acc.kaggleDatasets.some((d) => /comfy/i.test(d))
+                                  ? "border-amber-500/45 bg-amber-500/15 text-amber-200 hover:bg-amber-500/25"
+                                  : "border-cyan-500/35 bg-cyan-500/10 text-cyan-200 hover:bg-cyan-500/20"
+                              }`}
                             >
-                              + {suggestedQwenSlug}
+                              {!hasQwenDataset && acc.kaggleDatasets.some((d) => /comfy/i.test(d))
+                                ? `Swap → ${suggestedQwenSlug}`
+                                : `+ ${suggestedQwenSlug}`}
                             </button>
                           )}
                           {isLlmMode && (

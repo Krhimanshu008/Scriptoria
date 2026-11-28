@@ -281,6 +281,28 @@ export async function POST(
       });
     }
 
+    if (action === "build_sm75") {
+      const cmd = await enqueueVmCommand({
+        vmInstanceId: vm.id,
+        userId: user.userId,
+        sessionGroup: vm.sessionGroup,
+        target: vm.target,
+        action: "BUILD_SM75_ENGINE",
+        payload: { saveToWorking: true },
+      });
+      await appendSystemLog({
+        userId: user.userId,
+        vmInstanceId: vm.id,
+        category: "ACTION",
+        level: "INFO",
+        message: `Queued native sm_75 llama-server compile on ${vm.sessionGroup} -> fastboot/llama_server_t4_sm75_v3.tar.gz`,
+      });
+      return NextResponse.json({
+        ok: true,
+        command: cmd,
+      });
+    }
+
     if (action === "keep_alive") {
       if (vm.publicUrl) {
         const { VmGateway } = await import("@/lib/orchestrator/vm-gateway");
@@ -431,7 +453,7 @@ export async function POST(
     }
 
     return NextResponse.json(
-      { error: `Unsupported action '${action}'. Allowed: stage_llm, load_llm, unload_llm, free_vram, stage_image_model, stage_image_pack.` },
+      { error: `Unsupported action '${action}'. Allowed: stage_llm, load_llm, unload_llm, keep_alive, build_sm75, free_vram, stage_image_model, stage_image_pack.` },
       { status: 400 }
     );
   } catch (error) {

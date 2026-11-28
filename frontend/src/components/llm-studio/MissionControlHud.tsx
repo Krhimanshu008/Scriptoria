@@ -45,7 +45,7 @@ interface MissionControlHudProps {
   onOpenLauncher: () => void;
   onOpenApiDialog: () => void;
   onRefreshHealth: () => void;
-  onModelAction: (action: "stage_llm" | "load_llm" | "unload_llm" | "keep_alive") => void;
+  onModelAction: (action: "stage_llm" | "load_llm" | "unload_llm" | "keep_alive" | "build_sm75") => void;
   onHotReload: () => void;
   onAttachSuggestedDataset: (slug: string) => void;
   onBuildDataset: () => void;
@@ -250,12 +250,21 @@ export function MissionControlHud({
               <span className="text-zinc-400">Watchdog:</span>
               <span
                 className={
-                  liveWatchdogSec !== null && liveWatchdogSec < 180
+                  health?.watchdog?.idleTimeoutSec === 0
+                    ? "text-emerald-300/90"
+                    : liveWatchdogSec !== null && liveWatchdogSec < 180
                     ? "font-semibold text-rose-300"
                     : "text-zinc-200"
                 }
+                title={
+                  health?.watchdog?.idleTimeoutSec === 0
+                    ? "Auto-shutdown disabled (manual stop)"
+                    : undefined
+                }
               >
-                {formatCountdownSec(liveWatchdogSec)}
+                {health?.watchdog?.idleTimeoutSec === 0
+                  ? "Off"
+                  : formatCountdownSec(liveWatchdogSec)}
               </span>
               <button
                 type="button"
@@ -403,8 +412,8 @@ export function MissionControlHud({
           </div>
 
           {[
-            { label: gpu0?.role || "GPU0 · 53% + mmproj", g: gpu0, barColor: "bg-violet-400" },
-            { label: gpu1?.role || "GPU1 · 47% + KV", g: gpu1, barColor: "bg-indigo-400" },
+            { label: gpu0?.role || "TP 50% + mmproj", g: gpu0, barColor: "bg-violet-400" },
+            { label: gpu1?.role || "TP 50% + KV", g: gpu1, barColor: "bg-indigo-400" },
           ].map((row, idx) => {
             const used = isOnline && row.g ? row.g.vramUsedGb : 0;
             const tot = row.g?.vramTotalGb ?? 15;
@@ -710,7 +719,9 @@ export function MissionControlHud({
             <span
               className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 ${
                 ancillary?.engine.status === "ready"
-                  ? "border-emerald-500/35 bg-emerald-950/30 text-emerald-300"
+                  ? ancillary.engine.isNativeSm75
+                    ? "border-emerald-500/35 bg-emerald-950/30 text-emerald-300"
+                    : "border-cyan-500/35 bg-cyan-950/30 text-cyan-300"
                   : ancillary?.engine.status === "partial"
                   ? "border-amber-500/35 bg-amber-950/30 text-amber-300"
                   : ancillary?.engine.status === "outdated"
@@ -730,6 +741,25 @@ export function MissionControlHud({
                   Hot Reload
                 </button>
               )}
+              {isOnline &&
+                ancillary?.engine.status === "ready" &&
+                !ancillary.engine.isNativeSm75 && (
+                  <button
+                    type="button"
+                    disabled={
+                      Boolean(targetBusyAction) || Boolean(ancillary.engine.sm75BuildRunning)
+                    }
+                    onClick={() => onModelAction("build_sm75")}
+                    className="ml-1 inline-flex items-center gap-1 underline text-white disabled:opacity-50"
+                    title="Compile native CUDA sm_75 llama-server once (~3m) and cache in Drive to skip future PTX JIT warmups"
+                  >
+                    {(ancillary.engine.sm75BuildRunning ||
+                      targetBusyAction === "build_sm75") && (
+                      <Loader2 className="size-2.5 animate-spin" />
+                    )}
+                    {ancillary.engine.sm75BuildRunning ? "Building sm_75..." : "Build sm_75"}
+                  </button>
+                )}
             </span>
 
             {/* 2. Weights */}
@@ -804,18 +834,32 @@ export function MissionControlHud({
               className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 ${
                 ancillary?.dataset.status === "attached"
                   ? "border-emerald-500/35 bg-emerald-950/30 text-emerald-300"
+                  : ancillary?.dataset.status === "wrong_dataset"
+                  ? "border-amber-500/40 bg-amber-950/30 text-amber-200"
                   : "border-zinc-800 bg-zinc-900 text-zinc-300"
               }`}
+              title={
+                ancillary?.dataset.status === "wrong_dataset"
+                  ? `Attached dataset '${ancillary.dataset.wrongSlug}' contains no .gguf weights — replace with ${suggestedSlug || CANONICAL_LLM_DATASET_NAME}`
+                  : undefined
+              }
             >
               <Database className="size-2.5" />
-              Dataset: {ancillary?.dataset.slug || "On-Demand"}
+              Dataset:{" "}
+              {ancillary?.dataset.status === "attached"
+                ? ancillary.dataset.slug
+                : ancillary?.dataset.status === "wrong_dataset"
+                ? `Wrong Dataset (${ancillary.dataset.wrongSlug?.split("/").pop() || "comfy-env"})`
+                : "On-Demand"}
               {ancillary?.dataset.status !== "attached" && suggestedSlug && (
                 <button
                   type="button"
                   onClick={() => onAttachSuggestedDataset(suggestedSlug)}
                   className="ml-1 text-cyan-300 underline hover:text-white"
                 >
-                  +Attach
+                  {ancillary?.dataset.status === "wrong_dataset"
+                    ? `Attach ${CANONICAL_LLM_DATASET_NAME}`
+                    : "+Attach"}
                 </button>
               )}
               {ancillary?.dataset.status !== "attached" && activeAccount?.configured && (

@@ -1,6 +1,12 @@
 import { prisma } from "@/lib/db/prisma";
 
-export type VmCommandAction = "STAGE_LLM" | "LOAD_LLM" | "UNLOAD_LLM" | "FREE_VRAM" | "KEEP_ALIVE";
+export type VmCommandAction =
+  | "STAGE_LLM"
+  | "LOAD_LLM"
+  | "UNLOAD_LLM"
+  | "FREE_VRAM"
+  | "KEEP_ALIVE"
+  | "BUILD_SM75_ENGINE";
 export type VmCommandStatus = "PENDING" | "DISPATCHED" | "COMPLETED" | "FAILED";
 
 export interface VmCommandPayload {
@@ -20,6 +26,7 @@ export interface VmCommandPayload {
   ctxSize?: number;
   approxDiskGb?: number;
   useDflash2?: boolean;
+  saveToWorking?: boolean;
 }
 
 export interface VmCommandAckInput {

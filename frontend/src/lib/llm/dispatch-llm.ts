@@ -343,6 +343,8 @@ export async function dispatchLlmChat(params: DispatchLlmParams): Promise<Dispat
   }
 
   const clampedMaxTokens = Math.min(8192, Math.max(64, maxTokens));
+  const normalizeModelLabel = (raw: string) =>
+    raw.replace(/\\/g, "/").split("/").filter(Boolean).pop() || raw;
   const hasImages = messages.some((m) => m.imageDataUrls && m.imageDataUrls.length > 0);
   const useExplicitVault = targetVm === "vault" || targetVm.startsWith("vault:") || Boolean(vaultProvider);
   const explicitProviderName = targetVm.startsWith("vault:")
@@ -409,17 +411,26 @@ export async function dispatchLlmChat(params: DispatchLlmParams): Promise<Dispat
         }),
       ];
 
+      // Enforce safe Cloudflare 92s headroom when Deep Thinking runs through headless outbound relay
+      const relaySafeMaxTokens =
+        !onlineVm.publicUrl && effectiveEnableThinking
+          ? Math.min(clampedMaxTokens, 1536)
+          : clampedMaxTokens;
+
       const payload: Record<string, unknown> = {
         model: modelOverride || "default",
         messages: openAiMessages,
         temperature,
-        max_tokens: clampedMaxTokens,
+        max_tokens: relaySafeMaxTokens,
         stream: true,
         stream_options: { include_usage: true },
         cache_prompt: cachePrompt,
         chat_template_kwargs: {
           enable_thinking: effectiveEnableThinking,
         },
+        ...(!onlineVm.publicUrl && effectiveEnableThinking
+          ? { reasoning_budget_tokens: 768 }
+          : {}),
       };
       const respFormat = buildLlmResponseFormat(mode, jsonSchema);
       if (respFormat) {
@@ -521,7 +532,7 @@ export async function dispatchLlmChat(params: DispatchLlmParams): Promise<Dispat
           source: `${onlineVm.accountAlias.toUpperCase()} (${onlineVm.workerProfile}${targetService !== "default" ? `:${targetService}` : ""})`,
           executionRoute: "dual_t4_direct_tunnel",
           target: onlineVm.target,
-          model: respModel,
+          model: normalizeModelLabel(respModel),
           answer,
           thinking,
           latencyMs: wallLatencyMs,
@@ -549,7 +560,7 @@ export async function dispatchLlmChat(params: DispatchLlmParams): Promise<Dispat
 
       const startedAt = Date.now();
       while (Date.now() - startedAt < CF_SAFE_RELAY_TIMEOUT_MS) {
-        await new Promise((r) => setTimeout(r, 250));
+        await new Promise((r) => setTimeout(r, 120));
         const row = await prisma.llmRelayRequest.findUnique({ where: { id: relay.id } });
         if (!row) break;
         if (row.status === "FAILED") {
@@ -591,7 +602,7 @@ export async function dispatchLlmChat(params: DispatchLlmParams): Promise<Dispat
             source: `${onlineVm.accountAlias.toUpperCase()} Safe-Relay (${onlineVm.workerProfile}${targetService !== "default" ? `:${targetService}` : ""})`,
             executionRoute: "dual_t4_local_relay",
             target: row.assignedTarget || onlineVm.target,
-            model: resp.model || modelOverride || onlineVm.workerProfile,
+            model: normalizeModelLabel(resp.model || modelOverride || onlineVm.workerProfile),
             answer,
             thinking,
             latencyMs: wallLatencyMs,

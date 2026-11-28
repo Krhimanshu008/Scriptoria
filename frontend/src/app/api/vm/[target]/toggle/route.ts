@@ -5,7 +5,7 @@ import { getAuthUser, signVmClaimToken } from "@/lib/auth/session";
 import { generateVmSecret } from "@/lib/crypto/vault";
 import { getDecryptedCredential, saveUserCredential } from "@/lib/crypto/credentials";
 import { buildKaggleThinClaimStubCode } from "@/lib/orchestrator/notebook-builder";
-import { getWorkerProfile } from "@/lib/catalog/worker-profiles";
+import { getWorkerProfile, isLlmWorkerProfile } from "@/lib/catalog/worker-profiles";
 import { KaggleOrchestrator } from "@/lib/orchestrator/kaggle-client";
 import { VmGateway } from "@/lib/orchestrator/vm-gateway";
 import { resolveReachableWebhookBaseUrl } from "@/lib/orchestrator/webhook-tunnel";
@@ -184,6 +184,7 @@ export async function POST(
 
       const sortedGroupVms = sortVmsByCanonicalTarget(groupVms);
       const profileSpec = getWorkerProfile(vm.workerProfile);
+      const isLlmRuntime = isLlmWorkerProfile(profileSpec.id);
       const customDatasets = Array.from(
         new Set(
           sortedGroupVms.flatMap((gv) => {
@@ -191,7 +192,14 @@ export async function POST(
             try {
               const parsedDs = JSON.parse(gv.kaggleDatasetsJson);
               return Array.isArray(parsedDs)
-                ? parsedDs.filter((ds): ds is string => typeof ds === "string" && ds.trim().includes("/")).map((ds) => ds.trim())
+                ? parsedDs
+                    .filter(
+                      (ds): ds is string =>
+                        typeof ds === "string" &&
+                        ds.trim().includes("/") &&
+                        !(isLlmRuntime && /scriptoria-comfy-env|comfy-env/i.test(ds))
+                    )
+                    .map((ds) => ds.trim())
                 : [];
             } catch {
               return [];

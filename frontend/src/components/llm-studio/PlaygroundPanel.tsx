@@ -418,7 +418,7 @@ export function PlaygroundPanel({
                 onChange={(e) => setMode(e.target.value as LlmChatMode)}
                 className="h-8 w-full rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 text-xs text-zinc-100 outline-none focus:border-violet-500"
               >
-                <option value="chat">Standard Chat / Reasoning</option>
+                <option value="chat">Chat / Reasoning</option>
                 <option value="json">Strict JSON Schema</option>
                 <option value="vision_qa">Vision QA (Multimodal)</option>
               </select>
@@ -577,7 +577,12 @@ export function PlaygroundPanel({
                       variant={turn.role === "user" ? "secondary" : "default"}
                       className="text-[10px] uppercase"
                     >
-                      {turn.role === "user" ? "Prompt" : turn.meta?.model || "Assistant"}
+                      {turn.role === "user"
+                        ? "Prompt"
+                        : (turn.meta?.model
+                            ? turn.meta.model.replace(/\\/g, "/").split("/").filter(Boolean).pop() ||
+                              turn.meta.model
+                            : null) || "Assistant"}
                     </Badge>
                     {turn.meta?.target && (
                       <Badge variant="outline" className="text-[10px] text-cyan-300 border-cyan-500/30">

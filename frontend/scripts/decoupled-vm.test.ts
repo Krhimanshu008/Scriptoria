@@ -83,6 +83,13 @@ test("Generated Python worker & 0-GPU Qwen LLM dataset scripts compile cleanly w
   assert.match(llmIdlePy, /Silent warmup completed in/);
   assert.doesNotMatch(llmIdlePy, /"-bs"/);
   assert.doesNotMatch(llmIdlePy, /still warming up beyond 75s/);
+  assert.match(llmIdlePy, /llama_server_t4_sm75_v3\.tar\.gz/);
+  assert.match(llmIdlePy, /t4_sm75_cuda_cache_v1\.tar\.gz/);
+  assert.match(llmIdlePy, /def _compile_native_sm75_llama\(/);
+  assert.match(llmIdlePy, /BUILD_SM75_ENGINE/);
+  assert.match(llmIdlePy, /http\.client\.HTTPSConnection/);
+  assert.match(llmIdlePy, /time\.sleep\(0\.2\)/);
+  assert.match(llmIdlePy, /TP 50% \+ mmproj/);
   await compilePythonCode(llmIdlePy, "llm_idle_empty");
 
   const llmAutoPy = buildUnifiedNotebookPythonCode({
