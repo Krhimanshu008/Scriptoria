@@ -13,15 +13,17 @@ import {
 import { getOrCreateColabRunnerToken } from "@/lib/orchestrator/colab-runner";
 import { buildColabLauncherNotebookJson } from "@/lib/orchestrator/notebook-builder";
 import { resolveReachableWebhookBaseUrl } from "@/lib/orchestrator/webhook-tunnel";
+import { resolveRequestOrigin } from "@/lib/gdrive/oauth-config";
 import { appendSystemLog } from "@/lib/logs/logger";
 
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ target: string }> }
 ) {
+  const reqOrigin = resolveRequestOrigin(req);
   const user = await getAuthUser(req);
   if (!user) {
-    return NextResponse.redirect(new URL("/login", req.nextUrl.origin));
+    return NextResponse.redirect(new URL("/login", reqOrigin));
   }
 
   const { target } = await params;
@@ -52,7 +54,7 @@ export async function GET(
       );
     }
     return NextResponse.redirect(
-      new URL(`/?colabError=${encodeURIComponent(reason)}`, req.nextUrl.origin)
+      new URL(`/?colabError=${encodeURIComponent(reason)}`, reqOrigin)
     );
   }
 
@@ -222,7 +224,7 @@ export async function GET(
       );
     }
     return NextResponse.redirect(
-      new URL(`/?colabError=${encodeURIComponent(errMsg)}`, req.nextUrl.origin)
+      new URL(`/?colabError=${encodeURIComponent(errMsg)}`, reqOrigin)
     );
   }
 

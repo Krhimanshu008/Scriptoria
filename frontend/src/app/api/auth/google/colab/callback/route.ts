@@ -3,7 +3,11 @@ import jwt from "jsonwebtoken";
 import { getAuthUser } from "@/lib/auth/session";
 import { getDecryptedCredential, saveUserCredential } from "@/lib/crypto/credentials";
 import { getUserGDriveCredential } from "@/lib/gdrive/client";
-import { getGoogleOAuthClientConfig, getOAuthStateSecret } from "@/lib/gdrive/oauth-config";
+import {
+  getGoogleOAuthClientConfig,
+  getOAuthStateSecret,
+  resolveRequestOrigin,
+} from "@/lib/gdrive/oauth-config";
 import { invalidateColabMetaIfEmailChanged } from "@/lib/orchestrator/colab-runner";
 import { appendSystemLog } from "@/lib/logs/logger";
 
@@ -15,7 +19,7 @@ interface ColabOAuthState {
 }
 
 export async function GET(req: NextRequest) {
-  const baseOrigin = req.nextUrl.origin;
+  const baseOrigin = resolveRequestOrigin(req);
 
   try {
     const errParam = req.nextUrl.searchParams.get("error");

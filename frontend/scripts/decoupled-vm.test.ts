@@ -578,3 +578,104 @@ test("Profile-matched image packs and Setup-Only Boot config omit implicit Qwen 
   );
   assert.equal(toggleSource.includes("swift15/qwen38-27b-q4km-gguf"), false);
 });
+
+test("Google Drive OAuth resolves reverse-proxy origins without 0.0.0.0 leakage and formats 403 SERVICE_DISABLED", async () => {
+  const {
+    resolveRequestOrigin,
+    resolveOAuthCallbackOrigin,
+    getGoogleOAuthClientConfig,
+    formatGoogleDriveApiError,
+  } = await import("../src/lib/gdrive/oauth-config");
+  const { GET: gdriveStart } = await import("../src/app/api/auth/google/gdrive/start/route");
+  const { GET: gdriveCallback } = await import("../src/app/api/auth/google/gdrive/callback/route");
+  const { signSessionToken } = await import("../src/lib/auth/session");
+
+  const prevAppUrl = process.env.NEXT_PUBLIC_APP_URL;
+  const prevEnvId = process.env.GDRIVE_CLIENT_ID;
+  const prevEnvSecret = process.env.GDRIVE_CLIENT_SECRET;
+  const prevJwt = process.env.JWT_SECRET;
+
+  process.env.JWT_SECRET = process.env.JWT_SECRET || "isolated-oauth-test-jwt";
+  process.env.NEXT_PUBLIC_APP_URL = "http://localhost:3000";
+  process.env.GDRIVE_CLIENT_ID = "env-client-id.apps.googleusercontent.com";
+  process.env.GDRIVE_CLIENT_SECRET = "env-client-secret";
+
+  try {
+    // 1. Proxied request where container binds 0.0.0.0:3000 behind HTTPS public domain
+    const proxiedReq = new NextRequest("https://0.0.0.0:3000/api/auth/google/gdrive/start", {
+      headers: {
+        "x-forwarded-host": "scriptoria.krhimanshu.in",
+        "x-forwarded-proto": "https",
+        host: "0.0.0.0:3000",
+      },
+    });
+    assert.equal(resolveRequestOrigin(proxiedReq), "https://scriptoria.krhimanshu.in");
+    assert.equal(resolveOAuthCallbackOrigin(proxiedReq), "https://scriptoria.krhimanshu.in");
+
+    // 2. Callback redirect on proxied 0.0.0.0:3000 must stay on public HTTPS host, never 0.0.0.0:3000
+    const cbErrReq = new NextRequest(
+      "https://0.0.0.0:3000/api/auth/google/gdrive/callback?error=access_denied",
+      {
+        headers: {
+          "x-forwarded-host": "scriptoria.krhimanshu.in",
+          "x-forwarded-proto": "https",
+        },
+      }
+    );
+    const cbErrRes = await gdriveCallback(cbErrReq);
+    assert.equal(cbErrRes.status, 307);
+    assert.equal(
+      cbErrRes.headers.get("location"),
+      "https://scriptoria.krhimanshu.in/settings/vault?gdriveError=access_denied"
+    );
+
+    // 3. Unauthenticated redirect uses public origin too (not 0.0.0.0:3000)
+    const unauthStartRes = await gdriveStart(proxiedReq);
+    assert.equal(unauthStartRes.status, 307);
+    assert.equal(
+      unauthStartRes.headers.get("location"),
+      "https://scriptoria.krhimanshu.in/login"
+    );
+
+    // 4. Signed session check: ensure getGoogleOAuthClientConfig never mixes partial Vault ID with Env secret
+    const partialMixed = getGoogleOAuthClientConfig({
+      client_id: "partial-vault-id-only",
+      client_secret: "",
+    });
+    assert.equal(partialMixed.clientId, "env-client-id.apps.googleusercontent.com");
+    assert.equal(partialMixed.clientSecret, "env-client-secret");
+    assert.equal(partialMixed.source, "env");
+
+    const fullVault = getGoogleOAuthClientConfig({
+      client_id: "vault-id",
+      client_secret: "vault-secret",
+    });
+    assert.equal(fullVault.clientId, "vault-id");
+    assert.equal(fullVault.clientSecret, "vault-secret");
+    assert.equal(fullVault.source, "vault");
+
+    // 5. 403 SERVICE_DISABLED formatting yields full console enable URL
+    const formatted = formatGoogleDriveApiError(
+      403,
+      JSON.stringify({
+        error: {
+          code: 403,
+          message:
+            "Google Drive API has not been used in project 902602502828 before or it is disabled.",
+        },
+      })
+    );
+    assert.match(formatted, /902602502828/);
+    assert.match(
+      formatted,
+      /https:\/\/console\.cloud\.google\.com\/apis\/library\/drive\.googleapis\.com\?project=902602502828/
+    );
+
+    void signSessionToken;
+  } finally {
+    process.env.NEXT_PUBLIC_APP_URL = prevAppUrl;
+    process.env.GDRIVE_CLIENT_ID = prevEnvId;
+    process.env.GDRIVE_CLIENT_SECRET = prevEnvSecret;
+    process.env.JWT_SECRET = prevJwt;
+  }
+});

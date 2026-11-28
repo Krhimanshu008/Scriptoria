@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getAuthContext } from "@/lib/auth/api-token";
 import { parseBootMetadata } from "@/lib/orchestrator/vm-helpers";
+import { resolveRequestOrigin } from "@/lib/gdrive/oauth-config";
 
 export async function GET(req: NextRequest) {
   try {
@@ -45,7 +46,7 @@ export async function GET(req: NextRequest) {
 
     const meta = parseBootMetadata(onlineVm.bootMetadataJson);
     const hasPublicUrl = Boolean(onlineVm.publicUrl);
-    const origin = req.nextUrl.origin;
+    const origin = resolveRequestOrigin(req);
 
     return NextResponse.json({
       online: true,

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getGoogleOAuthClientConfig } from "@/lib/gdrive/oauth-config";
+import { formatGoogleDriveApiError, getGoogleOAuthClientConfig } from "@/lib/gdrive/oauth-config";
 import { getAuthUser } from "@/lib/auth/session";
 import { getDecryptedCredential } from "@/lib/crypto/credentials";
 import {
@@ -132,7 +132,7 @@ export async function POST(req: NextRequest) {
         const text = await res.text().catch(() => "");
         return NextResponse.json({
           ok: false,
-          detail: `Google Drive API rejected token (${res.status}): ${text.slice(0, 140)}`,
+          detail: formatGoogleDriveApiError(res.status, text),
         });
       }
 

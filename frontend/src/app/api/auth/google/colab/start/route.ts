@@ -6,13 +6,15 @@ import {
   getGoogleOAuthClientConfig,
   getOAuthStateSecret,
   resolveOAuthCallbackOrigin,
+  resolveRequestOrigin,
 } from "@/lib/gdrive/oauth-config";
 
 export async function GET(req: NextRequest) {
+  const reqOrigin = resolveRequestOrigin(req);
   try {
     const user = await getAuthUser(req);
     if (!user) {
-      return NextResponse.redirect(new URL("/login", req.nextUrl.origin));
+      return NextResponse.redirect(new URL("/login", reqOrigin));
     }
 
     const alias = req.nextUrl.searchParams.get("alias") === "acc2" ? "acc2" : "acc1";
@@ -23,7 +25,7 @@ export async function GET(req: NextRequest) {
 
     if (!clientId) {
       return NextResponse.redirect(
-        new URL("/?colabError=missing_google_oauth_client", req.nextUrl.origin)
+        new URL("/?colabError=missing_google_oauth_client", reqOrigin)
       );
     }
 
@@ -59,7 +61,7 @@ export async function GET(req: NextRequest) {
   } catch (error) {
     const message = error instanceof Error ? error.message : "OAuth start failed";
     return NextResponse.redirect(
-      new URL(`/?colabError=${encodeURIComponent(message)}`, req.nextUrl.origin)
+      new URL(`/?colabError=${encodeURIComponent(message)}`, reqOrigin)
     );
   }
 }

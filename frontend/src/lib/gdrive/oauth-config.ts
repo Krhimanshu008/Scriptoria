@@ -1,5 +1,7 @@
 import type { NextRequest } from "next/server";
 
+export const GDRIVE_OAUTH_NONCE_COOKIE = "scriptoria_gdrive_oauth_nonce";
+
 export interface GoogleOAuthClientConfig {
   clientId: string;
   clientSecret: string;
@@ -58,17 +60,24 @@ export function getGoogleOAuthClientConfig(
     process.env.SECRET?.trim() ||
     "";
 
+  // Never mix one OAuth client ID from Vault with another project's secret from Env.
+  if (vaultId && vaultSecret) {
+    return { clientId: vaultId, clientSecret: vaultSecret, source: "vault" };
+  }
+  if (envId && envSecret) {
+    return { clientId: envId, clientSecret: envSecret, source: "env" };
+  }
+
   const clientId = vaultId || envId;
   const clientSecret = vaultSecret || envSecret;
-
-  let source: GoogleOAuthClientConfig["source"] = "none";
-  if (clientId && clientSecret) {
-    if (vaultId && vaultSecret) source = "vault";
-    else if (!vaultId && !vaultSecret) source = "env";
-    else source = "mixed";
-  } else if (clientId || clientSecret) {
-    source = vaultId || vaultSecret ? "mixed" : "env";
-  }
+  const source: GoogleOAuthClientConfig["source"] =
+    clientId && clientSecret
+      ? "mixed"
+      : vaultId || vaultSecret
+      ? "vault"
+      : clientId || clientSecret
+      ? "env"
+      : "none";
 
   return { clientId, clientSecret, source };
 }
@@ -79,12 +88,92 @@ export function getOAuthStateSecret(): string {
   return secret;
 }
 
-export function resolveOAuthCallbackOrigin(req: NextRequest): string {
-  if (req.nextUrl.hostname === "localhost" || req.nextUrl.hostname === "127.0.0.1") {
+function isUnroutableBindHost(hostOrUrl: string): boolean {
+  return /^(https?:\/\/)?(0\.0\.0\.0|\[::\]|::)(:\d+)?(\/|$)/i.test(hostOrUrl.trim());
+}
+
+/**
+ * Resolves the external browser-facing request origin even when running behind a reverse proxy
+ * (e.g. Docker / standalone `next start` bound to `0.0.0.0:3000` behind Caddy/Nginx/Vercel).
+ */
+export function resolveRequestOrigin(req: NextRequest): string {
+  const fwdHost = req.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
+  const headerHost = req.headers.get("host")?.trim();
+  const host =
+    (fwdHost && !isUnroutableBindHost(fwdHost) ? fwdHost : "") ||
+    (headerHost && !isUnroutableBindHost(headerHost) ? headerHost : "");
+
+  const configured = (process.env.NEXT_PUBLIC_APP_URL || "").trim().replace(/\/$/, "");
+
+  if (host) {
+    const fwdProto = req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
+    const proto =
+      fwdProto ||
+      (/^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(host)
+        ? "http"
+        : req.nextUrl.protocol.replace(/:$/, "") || "https");
+    return `${proto}://${host}`;
+  }
+
+  if (configured && !isUnroutableBindHost(configured)) {
+    return configured;
+  }
+  if (!isUnroutableBindHost(req.nextUrl.origin)) {
     return req.nextUrl.origin;
   }
-  const configured = (process.env.NEXT_PUBLIC_APP_URL || "").trim().replace(/\/$/, "");
   return configured || req.nextUrl.origin;
+}
+
+export function resolveOAuthCallbackOrigin(req: NextRequest): string {
+  const origin = resolveRequestOrigin(req);
+  let hostname = req.nextUrl.hostname;
+  try {
+    hostname = new URL(origin).hostname;
+  } catch {
+    // keep nextUrl hostname
+  }
+  if (hostname === "localhost" || hostname === "127.0.0.1") {
+    return origin;
+  }
+  const configured = (process.env.NEXT_PUBLIC_APP_URL || "").trim().replace(/\/$/, "");
+  if (
+    configured &&
+    !isUnroutableBindHost(configured) &&
+    !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(configured)
+  ) {
+    // Keep same public HTTPS origin when possible so session/nonce cookies match the callback host.
+    if (origin.startsWith("https://")) {
+      return origin;
+    }
+    return configured;
+  }
+  return origin;
+}
+
+/**
+ * Formats Google API 403 `SERVICE_DISABLED` responses cleanly with a direct GCP enable URL.
+ */
+export function formatGoogleDriveApiError(status: number, rawBody: string): string {
+  const trimmed = rawBody.trim();
+  let message = trimmed;
+  try {
+    const parsed = JSON.parse(trimmed) as { error?: { message?: string } };
+    if (parsed?.error?.message) {
+      message = parsed.error.message;
+    }
+  } catch {
+    // keep raw text
+  }
+  const projectMatch =
+    message.match(/project\s+(\d{6,20})/i) || trimmed.match(/project=(\d{6,20})/i);
+  if (status === 403 && (/has not been used in project/i.test(message) || /accessNotConfigured/i.test(trimmed))) {
+    const projectId = projectMatch?.[1];
+    const enableUrl = projectId
+      ? `https://console.cloud.google.com/apis/library/drive.googleapis.com?project=${projectId}`
+      : "https://console.cloud.google.com/apis/library/drive.googleapis.com";
+    return `Google Drive API is disabled for GCP project ${projectId || "(your project)"}. Enable it once here and retry: ${enableUrl}`;
+  }
+  return `Google Drive API rejected token (${status}): ${message.slice(0, 260)}`;
 }
 
 /**

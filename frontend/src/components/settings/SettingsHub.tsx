@@ -103,11 +103,18 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
   useEffect(() => {
     const connected = searchParams.get("gdriveConnected");
     const err = searchParams.get("gdriveError");
+    const warning = searchParams.get("gdriveWarning");
     if (connected) {
       toast.success(`Google Drive connected (${connected}) with auto-refresh enabled.`);
+      if (warning) {
+        toast.warning(warning, { duration: 12000 });
+      }
       router.replace("/settings/vault", { scroll: false });
     } else if (err) {
       toast.error(`Google Drive OAuth failed: ${err}`);
+      router.replace("/settings/vault", { scroll: false });
+    } else if (warning) {
+      toast.warning(warning, { duration: 12000 });
       router.replace("/settings/vault", { scroll: false });
     }
   }, [searchParams, router]);
@@ -1818,11 +1825,13 @@ export function SettingsHub({ defaultTab = "readiness" }: { defaultTab?: Setting
                             return;
                           }
                         }
-                        window.location.assign(
+                        const oauthStartUrl = new URL(
                           `/api/auth/google/gdrive/start?alias=${encodeURIComponent(
                             editingCred.accountAlias || "default"
-                          )}&returnTo=/settings/vault`
-                        );
+                          )}&returnTo=/settings/vault`,
+                          window.location.origin
+                        ).toString();
+                        window.location.href = oauthStartUrl;
                       }}
                       className="inline-flex h-8 shrink-0 items-center gap-1 rounded border border-emerald-700/60 bg-emerald-950/60 px-2.5 text-xs font-medium text-emerald-300 hover:bg-emerald-900/80"
                     >
